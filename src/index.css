@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --font-sans: Poppins, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    --font-mono: Menlo, Monaco, Consolas, 'Courier New', monospace;
+    
+    --color-bg-primary: #121314;
+    --color-bg-secondary: #1a1a1e;
+    --color-bg-tertiary: #1e1e20;
+    --color-bg-card: #1c1c1e;
+    --color-bg-hover: #232328;
+    --color-bg-user: #252526;
+    --color-bg-input: #1f1f23;
+    --color-bg-sidebar: #181818;
+    --color-bg-titlebar: #1f1f1f;
+    --color-bg-code: #161616;
+    
+    --color-text-primary: #e5e5e5;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b6b6b;
+    --color-text-muted: #5a5a5a;
+    
+    --color-border-default: #2e2e33;
+    --color-border-muted: #252526;
+    --color-border-active: #8b7dff;
+    
+    --color-accent-brand: #8b7dff;
+    --color-accent-brand-dim: rgba(139,125,255,0.15);
+    --color-accent-brand-hover: rgba(139,125,255,0.25);
+    --color-accent-brand-active: #6c4dff;
+    
+    --color-accent-blue: #4dabf7;
+    --color-accent-green: #22c55e;
+    --color-accent-red: #ef4444;
+    --color-accent-red-dim: #ef44441a;
+    --color-accent-yellow: #fbbf24;
+    --color-accent-yellow-dim: #fbbf241a;
+    --color-accent-purple: #a855f7;
+    --color-accent-cyan: #22d3ee;
+
+    --sidebar-width: 280px;
+    --titlebar-height: 48px;
+    --input-min-height: 56px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+    height: 100%;
+    font-family: var(--font-sans);
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+}
+
+body { overscroll-behavior: none; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555558; }
+
+::selection { background: rgba(139,125,255,0.3); }
+
+button { border: none; background: none; cursor: pointer; font-family: inherit; color: inherit; outline: none; }
+input, textarea, select { font-family: inherit; outline: none; border: none; }
+
+@layer components {
+    .btn-accent {
+        background: var(--color-accent-brand);
+        color: #fff;
+        padding: 8px 20px;
+        border-radius: 8px;
+        font-weight: 500;
+        font-size: 13px;
+        transition: background 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+    .btn-accent:hover { background: var(--color-accent-brand-active); }
+    .btn-accent:disabled { opacity: 0.5; cursor: not-allowed; }
+    
+    .btn-ghost {
+        color: var(--color-text-secondary);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        transition: all 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+    }
+    .btn-ghost:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+    .btn-icon {
+        width: 32px; height: 32px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 6px;
+        color: var(--color-text-secondary);
+        transition: all 0.15s;
+    }
+    .btn-icon:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+    .input-base {
+        background: var(--color-bg-input);
+        border: 1px solid var(--color-border-muted);
+        border-radius: 8px;
+        padding: 10px 16px;
+        color: var(--color-text-primary);
+        font-size: 13px;
+        transition: border-color 0.15s;
+        width: 100%;
+    }
+    .input-base:focus { border-color: var(--color-border-active); }
+    .input-base::placeholder { color: var(--color-text-muted); }
+
+    .card {
+        background: var(--color-bg-card);
+        border: 1px solid var(--color-border-muted);
+        border-radius: 12px;
+    }
+
+    .text-balance { text-wrap: balance; }
+}
