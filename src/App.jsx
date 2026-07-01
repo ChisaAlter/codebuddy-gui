@@ -1,8 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useStore } from './store';
 import Sidebar from './components/Sidebar';
 import TitleBar from './components/TitleBar';
+import StatusBar from './components/StatusBar';
+import ToastContainer from './components/ToastContainer';
 import ChatView from './components/ChatView';
+import TerminalView from './components/TerminalView';
 import WorkersView from './components/WorkersView';
 import LogsView from './components/LogsView';
 import TasksView from './components/TasksView';
@@ -15,6 +18,7 @@ import MetricsView from './components/MetricsView';
 
 const views = {
     chat: ChatView,
+    terminal: TerminalView,
     workers: WorkersView,
     logs: LogsView,
     tasks: TasksView,
@@ -27,18 +31,20 @@ const views = {
 };
 
 export default function App() {
-    const { currentView } = useStore();
+    const { currentView, sidebarCollapsed } = useStore();
     const View = views[currentView] || ChatView;
 
     return (
-        <div className="fixed inset-0 flex flex-col">
+        <div className="fixed inset-0 flex flex-col" style={{ background: 'var(--color-bg-base)' }}>
             <TitleBar />
             <div className="flex flex-1 overflow-hidden">
                 <Sidebar />
-                <main className="flex-1 flex flex-col overflow-hidden">
+                <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-200 ${sidebarCollapsed ? 'ml-0' : ''}`}>
                     <View />
-                </main>
+                    <StatusBar />
+                </div>
             </div>
+            <ToastContainer />
         </div>
     );
 }
