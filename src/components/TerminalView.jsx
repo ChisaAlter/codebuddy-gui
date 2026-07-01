@@ -1,33 +1,45 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useStore } from '../store';
 
 const API = 'http://127.0.0.1:7890';
 
 export default function TerminalView() {
     const [panels, setPanels] = useState([1]);
+    const [ptyStates, setPtyStates] = useState({});
     const termRefs = useRef({});
 
-    useEffect(() => {
-        const id = panels[panels.length - 1];
-        const el = document.getElementById('terminal-' + id);
-        if (el && window.Terminal && !termRefs.current[id]) {
-            const term = new window.Terminal({ fontSize: 13, fontFamily: 'JetBrains Mono, Menlo, monospace', theme: { background: '#121214', foreground: '#e5e5e5' } });
-            term.open(el);
-            term.write('\x1b[1;32m✓\x1b[0m Connected to CodeBuddy PTY\r\n');
-            termRefs.current[id] = term;
+    const createPty = async () => {
+        try {
+            const res = await fetch(`${API}/api/v1/pty`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ cols: 120, rows: 30 }) });
+            const data = await res.json();
+            return data.id;
+        } catch { return null; }
+    };
 
-            fetch(`${API}/api/v1/pty`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ cols: 120, rows: 30 }) })
-                .then(r => r.json())
-                .then(d => {
-                    if (d.id) {
-                        const es = new EventSource(`${API}/api/v1/pty/${d.id}/output`);
-                        es.onmessage = e => term.write(e.data);
-                        term.onData(data => {
-                            fetch(`${API}/api/v1/pty/${d.id}/input/send`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ data }) });
-                        });
-                    }
-                })
-                .catch(err => term.write(`\r\n\x1b[1;31mError: ${err.message}\x1b[0m\r\n`));
-        }
+    const openPty = async (panelId) => {
+        const id = await createPty();
+        if (!id) return;
+        
+        setPtyStates(s => ({ ...s, [panelId]: { id, connected: true } }));
+        
+        const el = document.getElementById('terminal-' + panelId);
+        if (!el || !window.Terminal) return;
+        
+        const term = new window.Terminal({ fontSize: 13, fontFamily: 'JetBrains Mono, Menlo, monospace', theme: { background: '#121214', foreground: '#e5e5e5' } });
+        term.open(el);
+        termRefs.current[panelId] = term;
+        
+        const es = new EventSource(`${API}/api/v1/pty/${id}/output`);
+        es.onmessage = e => term.write(e.data);
+        es.onerror = () => setPtyStates(s => ({ ...s, [panelId]: { ...s[panelId], connected: false } }));
+        
+        term.onData(data => {
+            fetch(`${API}/api/v1/pty/${id}/input/send`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ data }) });
+        });
+    };
+
+    useEffect(() => {
+        openPty(panels[panels.length - 1]);
     }, [panels]);
 
     const addPanel = () => setPanels([...panels, Date.now()]);
@@ -40,8 +52,9 @@ export default function TerminalView() {
                     <h2 className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>Terminal</h2>
                     <div className="tab-group">
                         {panels.map((id, i) => (
-                            <div key={id} className={`tab ${i === panels.length - 1 ? 'active' : ''}`} onClick={() => setPanels([...panels.slice(0, i), id, ...panels.slice(i+1)])}>
+                            <div key={id} className={`tab ${i === panels.length - 1 ? 'active' : ''}`}>
                                 Tab {i + 1}
+                                {ptyStates[id]?.connected && <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />}
                                 {panels.length > 1 && <span className="ml-1.5 cursor-pointer" onClick={e => { e.stopPropagation(); removePanel(id); }}>×</span>}
                             </div>
                         ))}
@@ -59,3 +72,5 @@ export default function TerminalView() {
         </div>
     );
 }
+
+import { useRef } from 'react';

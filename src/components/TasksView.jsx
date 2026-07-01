@@ -1,27 +1,25 @@
-import React, { useState } from 'react';
-const API = 'http://127.0.0.1:7890';
+import React, { useEffect, useState } from 'react';
+import { useStore } from '../store';
 
 export default function TasksView() {
-    const [tasks, setTasks] = useState([]);
+    const { cronTasks, fetchTasks, deleteTask } = useStore();
     const [showForm, setShowForm] = useState(false);
     const [name, setName] = useState('');
     const [schedule, setSchedule] = useState('');
 
-    React.useEffect(() => {
-        fetch(`${API}/api/v1/scheduled-tasks`, { headers: { 'X-CodeBuddy-Request': '1' } })
-            .then(r => r.ok ? r.json() : []).then(setTasks).catch(() => setTasks([]));
-    }, []);
+    useEffect(() => { fetchTasks(); }, []);
 
     const create = async () => {
         if (!name.trim() || !schedule.trim()) return;
-        await fetch(`${API}/api/v1/scheduled-tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ name, cron: schedule }) });
-        setTasks([...tasks, { id: Date.now().toString(), name, cron: schedule }]);
-        setName(''); setSchedule(''); setShowForm(false);
-    };
-
-    const del = async id => {
-        await fetch(`${API}/api/v1/scheduled-tasks/${id}`, { method: 'DELETE', headers: { 'X-CodeBuddy-Request': '1' } });
-        setTasks(tasks.filter(t => t.id !== id));
+        try {
+            await fetch('http://127.0.0.1:7890/api/v1/scheduled-tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' },
+                body: JSON.stringify({ name, cron: schedule })
+            });
+            setName(''); setSchedule(''); setShowForm(false);
+            fetchTasks();
+        } catch(e) {}
     };
 
     return (
@@ -41,18 +39,16 @@ export default function TasksView() {
                 </div>
             )}
             <div className="flex-1 overflow-y-auto p-5 space-y-2">
-                {tasks.length === 0 && (
-                    <div className="text-center mt-12" style={{ color: 'var(--color-text-muted)' }}>
-                        No scheduled tasks
-                    </div>
+                {cronTasks.length === 0 && (
+                    <div className="text-center mt-12" style={{ color: 'var(--color-text-muted)' }}>No scheduled tasks</div>
                 )}
-                {tasks.map(t => (
+                {cronTasks.map(t => (
                     <div key={t.id} className="card p-4 flex items-center justify-between">
                         <div>
                             <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t.name || t.taskName || 'Unnamed'}</div>
                             <div className="text-xs mt-0.5 font-mono" style={{ color: 'var(--color-accent-blue)' }}>{t.cron || t.schedule}</div>
                         </div>
-                        <button onClick={() => del(t.id)} className="btn-ghost text-red-400 text-xs">Delete</button>
+                        <button onClick={() => deleteTask(t.id)} className="btn-ghost text-red-400 text-xs">Delete</button>
                     </div>
                 ))}
             </div>

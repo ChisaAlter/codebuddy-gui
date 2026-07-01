@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+
 const API = 'http://127.0.0.1:7890';
 
 export default function TracesView() {
     const [traces, setTraces] = useState([]);
     const [filter, setFilter] = useState('');
 
-    React.useEffect(() => {
+    useEffect(() => {
         fetch(`${API}/api/v1/traces?offset=0&limit=50`, { headers: { 'X-CodeBuddy-Request': '1' } })
-            .then(r => r.ok ? r.json() : []).then(d => setTraces(d.traces || d)).catch(() => setTraces([]));
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(d => setTraces(d.traces || d || []))
+            .catch(() => setTraces([]));
     }, []);
 
     return (
@@ -27,7 +30,7 @@ export default function TracesView() {
                             <th className="p-3 text-left text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>Duration</th>
                         </tr></thead>
                         <tbody>{traces.map(t => (
-                            <tr key={t.traceId} style={{ borderTop: '1px solid var(' }}>
+                            <tr key={t.traceId} style={{ borderTop: '1px solid var(--color-border-muted)' }}>
                                 <td className="p-3 font-mono" style={{ color: 'var(--color-accent-blue)' }}>{t.traceId?.slice(0, 12)}...</td>
                                 <td className="p-3" style={{ color: 'var(--color-text-primary)' }}>{t.serviceName || 'unknown'}</td>
                                 <td className="p-3" style={{ color: 'var(--color-text-muted)' }}>{t.durationMs}ms</td>

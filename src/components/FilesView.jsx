@@ -1,14 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useStore } from '../store';
+
 const API = 'http://127.0.0.1:7890';
 
 export default function FilesView() {
     const [path, setPath] = useState('');
     const [items, setItems] = useState([]);
+    const [loading, setLoading] = useState(false);
 
-    React.useEffect(() => {
-        fetch(`${API}/api/v1/fs/list`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ path: path || '.' }) })
-            .then(r => r.ok ? r.json() : []).then(d => setItems(d.files || d)).catch(() => setItems([]));
-    }, [path]);
+    const fetchFiles = async (p) => {
+        setLoading(true);
+        try {
+            const res = await fetch(`${API}/api/v1/fs/list`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CodeBuddy-Request': '1' }, body: JSON.stringify({ path: p || '.' }) });
+            const data = await res.json();
+            setItems(data.files || data.entries || (Array.isArray(data) ? data : []));
+        } catch { setItems([]); }
+        setLoading(false);
+    };
+
+    useEffect(() => { fetchFiles(path); }, [path]);
 
     return (
         <div className="flex flex-col h-full" style={{ background: 'var(--color-bg-primary)' }}>
@@ -22,18 +32,21 @@ export default function FilesView() {
                 ))}
             </div>
             <div className="flex-1 overflow-y-auto p-3" style={{ fontSize: 13 }}>
-                <div className="grid grid-cols-4 gap-2">
-                    {(items || []).map((item, i) => (
-                        <button key={i} onClick={() => item.is_dir && setPath(path ? `${path}/${item.name}` : item.name)}
-                            className="flex flex-col items-center p-4 rounded-lg"
-                            style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
-                            <span className="text-2xl mb-1">{item.is_dir ? '📁' : '📄'}</span>
-                            <span className="text-xs truncate w-full text-center" style={{ color: 'var(--color-text-secondary)' }}>{item.name}</span>
-                        </button>
-                    ))}
-                </div>
-                {items.length === 0 && (
+                {loading ? (
+                    <div className="text-center mt-12" style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
+                ) : items.length === 0 ? (
                     <div className="text-center mt-12" style={{ color: 'var(--color-text-muted)' }}>No files found</div>
+                ) : (
+                    <div className="grid grid-cols-4 gap-2">
+                        {items.map((item, i) => (
+                            <button key={i} onClick={() => item.is_dir && setPath(path ? `${path}/${item.name}` : item.name)}
+                                className="flex flex-col items-center p-4 rounded-lg"
+                                style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+                                <span className="text-2xl mb-1">{item.is_dir ? '📁' : '📄'}</span>
+                                <span className="text-xs truncate w-full text-center" style={{ color: 'var(--color-text-secondary)' }}>{item.name}</span>
+                            </button>
+                        ))}
+                    </div>
                 )}
             </div>
         </div>

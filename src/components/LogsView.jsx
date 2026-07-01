@@ -1,10 +1,37 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useStore } from '../store';
 
+const API = 'http://127.0.0.1:7890';
 const LOG_TYPES = ['telemetry', 'process', 'debug', 'transcript'];
 
 export default function LogsView() {
     const [type, setType] = useState('telemetry');
     const [search, setSearch] = useState('');
+    const [logs, setLogs] = useState([]);
+    const [loading, setLoading] = useState(false);
+
+    const fetchLogs = async () => {
+        setLoading(true);
+        try {
+            const res = await fetch(`${API}/api/v1/workers?kind=bg`, { headers: { 'X-CodeBuddy-Request': '1' } });
+            const workers = await res.json();
+            const list = workers.workers || workers || [];
+            
+            if (list.length > 0) {
+                const wid = list[0].pid;
+                const logRes = await fetch(`${API}/api/v1/workers/${wid}/logs?type=${type}&tail=200`, { headers: { 'X-CodeBuddy-Request': '1' } });
+                const text = await logRes.text();
+                setLogs(text.split('\n').filter(l => l.trim()));
+            } else {
+                setLogs(['No running workers with logs']);
+            }
+        } catch (e) {
+            setLogs(['Error fetching logs: ' + e.message]);
+        }
+        setLoading(false);
+    };
+
+    useEffect(() => { fetchLogs(); }, [type]);
 
     return (
         <div className="flex flex-col h-full" style={{ background: 'var(--color-bg-primary)' }}>
@@ -15,20 +42,21 @@ export default function LogsView() {
                         <div key={t} className={`tab ${type === t ? 'active' : ''}`} onClick={() => setType(t)}>{t}</div>
                     ))}
                 </div>
-                <input
-                    className="input-base ml-auto"
-                    style={{ fontSize: 12, padding: '5px 12px', background: 'var(--color-bg-input)', width: 200 }}
-                    placeholder="Filter logs..."
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                />
+                <button onClick={fetchLogs} className="btn-ghost text-xs ml-auto">Refresh</button>
             </div>
             <div className="flex-1 p-5 overflow-y-auto font-mono" style={{ fontSize: 12 }}>
-                <div className="card p-5" style={{ fontFamily: 'var(--font-mono)' }}>
-                    <div style={{ color: 'var(--color-text-muted)' }}>Select a log source to begin viewing output</div>
-                    <div className="mt-2" style={{ color: 'var(--color-text-tertiary)' }}>
-                        Real-time logs will stream via Server-Sent Events
-                    </div>
+                <div className="card p-4" style={{ fontFamily: 'var(--font-mono)', minHeight: '80%' }}>
+                    {loading ? (
+                        <div style={{ color: 'var(--color-text-muted)' }}>Loading...</div>
+                    ) : logs.length === 0 ? (
+                        <div style={{ color: 'var(--color-text-muted)' }}>No logs available</div>
+                    ) : (
+                        logs.map((line, i) => (
+                            <div key={i} style={{ color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                {line}
+                            </div>
+                        ))
+                    )}
                 </div>
             </div>
         </div>

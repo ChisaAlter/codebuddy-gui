@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useStore } from '../store';
 
 const NAV = [
@@ -10,7 +10,6 @@ const NAV = [
     { id: 'plugins', label: 'Plugins', icon: 'M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z' },
     { id: 'files', label: 'Files', icon: 'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z' },
     { id: 'traces', label: 'Traces', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z' },
-    { id: 'docs', label: 'API Docs', icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z' },
     { id: 'metrics', label: 'Metrics', icon: 'M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z' },
     { id: 'settings', label: 'Settings', icon: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.58 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z' }
 ];
@@ -19,8 +18,10 @@ export default function Sidebar() {
     const {
         currentView, setCurrentView, sidebarCollapsed, toggleSidebar,
         sidebarSearch, setSidebarSearch,
-        sessions, activeSessionId, setActiveSession, addSession
+        sessions, activeSessionId, setActiveSession, fetchSessions
     } = useStore();
+
+    useEffect(() => { fetchSessions(); }, []);
 
     if (sidebarCollapsed) return null;
 
@@ -28,14 +29,8 @@ export default function Sidebar() {
         s.title.toLowerCase().includes(sidebarSearch.toLowerCase())
     );
 
-    const groupedSessions = {
-        'Today': filteredSessions.filter(s => s.groupId === 'today'),
-        'Previous 7 Days': filteredSessions.filter(s => s.groupId === 'week')
-    };
-
     return (
         <aside className="flex flex-col" style={{ width: 'var(--sidebar-width)', background: 'var(--color-bg-sidebar)', borderRight: '1px solid var(--color-border-muted)' }}>
-            {/* Header */}
             <div className="p-3" style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
                 <div className="flex items-center justify-between mb-2.5">
                     <div className="flex items-center gap-2">
@@ -51,13 +46,8 @@ export default function Sidebar() {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
                     </button>
                 </div>
-                <button onClick={() => addSession({ id: Date.now().toString(), title: 'New Chat', time: 'Just now', groupId: 'today' })} className="btn-primary w-full justify-center text-xs" style={{ padding: '7px 12px' }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                    New Chat
-                </button>
             </div>
 
-            {/* Search */}
             <div className="px-3 pt-2 pb-1">
                 <div className="relative">
                     <input
@@ -71,38 +61,35 @@ export default function Sidebar() {
                 </div>
             </div>
 
-            {/* Navigation */}
             <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-                {/* Sessions grouped */}
-                {Object.entries(groupedSessions).map(([group, items]) => items.length > 0 && (
-                    <div key={group} className="mb-2">
-                        <div className="px-3 py-1.5 text-xs font-medium" style={{ color: 'var(--color-text-muted)' }}>{group}</div>
-                        {items.map(session => (
-                            <button
-                                key={session.id}
-                                onClick={() => { setActiveSession(session.id); setCurrentView('chat'); }}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors"
-                                style={{
-                                    background: activeSessionId === session.id && currentView === 'chat'
-                                        ? 'var(--color-accent-primary-dim)' : 'transparent',
-                                    color: activeSessionId === session.id && currentView === 'chat'
-                                        ? 'var(--color-accent-primary)' : 'var(--color-text-secondary)'
-                                }}
-                            >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0, opacity: 0.7 }}>
-                                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
-                                </svg>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-xs font-medium truncate">{session.title}</div>
-                                    <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{session.time}</div>
-                                </div>
-                            </button>
-                        ))}
+                {filteredSessions.length === 0 && (
+                    <div className="text-center py-8 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                        No sessions found
                     </div>
+                )}
+                {filteredSessions.map(session => (
+                    <button
+                        key={session.id}
+                        onClick={() => { setActiveSession(session.id); setCurrentView('chat'); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors"
+                        style={{
+                            background: activeSessionId === session.id && currentView === 'chat'
+                                ? 'var(--color-accent-primary-dim)' : 'transparent',
+                            color: activeSessionId === session.id && currentView === 'chat'
+                                ? 'var(--color-accent-primary)' : 'var(--color-text-secondary)'
+                        }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0, opacity: 0.7 }}>
+                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/>
+                        </svg>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium truncate">{session.title}</div>
+                            <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>{session.time}</div>
+                        </div>
+                    </button>
                 ))}
             </nav>
 
-            {/* Bottom user card */}
             <div className="p-3" style={{ borderTop: '1px solid var(--color-border-muted)' }}>
                 <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg" style={{ background: 'var(--color-bg-hover)' }}>
                     <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium" style={{ background: 'var(--color-accent-primary)', color: '#fff' }}>U</div>

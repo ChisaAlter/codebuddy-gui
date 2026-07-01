@@ -1,14 +1,20 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+
 const API = 'http://127.0.0.1:7890';
 
 export default function MetricsView() {
     const [m, setM] = useState(null);
 
-    React.useEffect(() => {
-        fetch(`${API}/api/v1/metrics`, { headers: { 'X-CodeBuddy-Request': '1' } }).then(r => r.ok ? r.json() : null).then(setM).catch(() => setM(null));
-        const t = setInterval(() => {
-            fetch(`${API}/api/v1/metrics`, { headers: { 'X-CodeBuddy-Request': '1' } }).then(r => r.ok ? r.json() : null).then(setM).catch(() => {});
-        }, 5000);
+    const fetchMetrics = () => {
+        fetch(`${API}/api/v1/metrics`, { headers: { 'X-CodeBuddy-Request': '1' } })
+            .then(r => r.ok ? r.json() : null)
+            .then(setM)
+            .catch(() => setM(null));
+    };
+
+    useEffect(() => {
+        fetchMetrics();
+        const t = setInterval(fetchMetrics, 5000);
         return () => clearInterval(t);
     }, []);
 
