@@ -142,7 +142,7 @@ export async function fsRead(path) {
  * @returns {Promise<object>} 上传结果
  */
 export async function fsUpload(path, content, encoding = 'base64') {
-  const payload = await fetchJson('/api/v1/fs/upload', {
+  const payload = await fetchJson('/api/v1/files/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content, encoding }),

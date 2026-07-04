@@ -551,9 +551,9 @@ input, textarea, select { font-family: inherit; outline: none; border: none; }
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px;
-    border-bottom: 1px solid rgba(42,42,42,0.5);
+    border-top: 1px solid var(--color-border-muted);
 }
-.settings-row:last-child { border-bottom: none; }
+.settings-row:first-child { border-top: none; }
 .settings-label { font-size: 13px; color: var(--color-text-primary); }
 .settings-desc { font-size: 11px; color: var(--color-text-muted); margin-top: 2px; }
 .settings-control { flex-shrink: 0; margin-left: 12px; }

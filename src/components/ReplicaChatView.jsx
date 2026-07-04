@@ -35,7 +35,7 @@ function CopyButton({ text }) {
       title="复制到剪贴板"
     >
       {copied ? (
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#22c55e" strokeWidth="1.5"><path d="M3 8l3 3 7-7" /></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--color-accent-green)" strokeWidth="1.5"><path d="M3 8l3 3 7-7" /></svg>
       ) : (
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="5" y="5" width="10" height="10" rx="1.5" /><path d="M11 5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v7a1 1 0 001 1h2" /></svg>
       )}
@@ -98,11 +98,10 @@ function ToolCallBlock({ item }) {
         <span className="text-[var(--color-text-secondary)]">
           {item.title || '工具调用'} — {item.kind || '执行中'}
         </span>
-        <span className={`ml-auto rounded px-1.5 py-0 text-[10px] font-medium ${
-          isCompleted ? 'bg-[rgba(34,197,94,0.15)] text-[#22c55e]' :
-          isFailed ? 'bg-[rgba(239,68,68,0.15)] text-[#ef4444]' :
-          'bg-[rgba(59,130,246,0.15)] text-[#3b82f6]'
-        }`}>
+        <span className="ml-auto rounded px-1.5 py-0 text-[10px] font-medium" style={{
+          background: isCompleted ? 'var(--color-success-bg)' : isFailed ? 'var(--color-error-bg)' : 'rgba(59,130,246,0.15)',
+          color: isCompleted ? 'var(--color-accent-green)' : isFailed ? 'var(--color-accent-red)' : 'var(--color-accent-blue)'
+        }}>
           {isCompleted ? 'Completed' : isFailed ? 'Failed' : 'Running'}
         </span>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
@@ -144,9 +143,9 @@ function InterruptionCard({ item }) {
   const interruptionId = item.meta?.interruptionId || item.raw?.interruptionId;
 
   return (
-    <div className="my-2 rounded-xl border border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.08)] px-4 py-3">
+    <div className="my-2 rounded-xl px-4 py-3" style={{ border: '1px solid var(--color-accent-yellow, rgba(245,158,11,0.35))', background: 'var(--color-warning-bg, rgba(245,158,11,0.08))' }}>
       <div className="mb-2 flex items-center gap-2">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="#f59e0b"><path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" /></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-yellow)"><path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" /></svg>
         <div className="text-sm font-medium text-[var(--color-text-primary)]">权限请求</div>
       </div>
       <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--color-text-secondary)] mb-3 max-h-24">
@@ -154,7 +153,7 @@ function InterruptionCard({ item }) {
       </pre>
       {interruptionId ? (
         <div className="flex gap-2">
-          <button className="rounded-md bg-[#0078d4] px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" onClick={() => respondToInterruption(interruptionId, 'allow')}>允许</button>
+          <button className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" style={{ background: 'var(--color-accent-blue)' }} onClick={() => respondToInterruption(interruptionId, 'allow')}>允许</button>
           <button className="rounded-md bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]" onClick={() => respondToInterruption(interruptionId, 'deny')}>拒绝</button>
         </div>
       ) : null}
@@ -169,9 +168,9 @@ function QuestionCard({ item }) {
   const [answers, setAnswers] = useState({});
 
   return (
-    <div className="my-2 rounded-xl border border-[rgba(0,120,212,0.35)] bg-[rgba(0,120,212,0.08)] px-4 py-3">
+    <div className="my-2 rounded-xl px-4 py-3" style={{ border: '1px solid var(--color-accent-blue, rgba(0,120,212,0.35))', background: 'var(--color-info-bg, rgba(0,120,212,0.08))' }}>
       <div className="mb-2 flex items-center gap-2">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="#0078d4"><path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 2.5c.7 0 1.3.6 1.3 1.3s-.6 1.3-1.3 1.3-1.3-.6-1.3-1.3.6-1.3 1.3-1.3zm1.5 9H6.5v-1h1V8H6.5V7h2.5v4.5H9.5V12z" /></svg>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-blue)"><path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 2.5c.7 0 1.3.6 1.3 1.3s-.6 1.3-1.3 1.3-1.3-.6-1.3-1.3.6-1.3 1.3-1.3zm1.5 9H6.5v-1h1V8H6.5V7h2.5v4.5H9.5V12z" /></svg>
         <span className="text-sm font-medium text-[var(--color-text-primary)]">问题</span>
       </div>
       <div className="space-y-3">
@@ -179,7 +178,7 @@ function QuestionCard({ item }) {
           <div key={q.id || index}>
             <div className="mb-1 text-xs text-[var(--color-text-primary)]">{q.question || `问题 ${index + 1}`}</div>
             <input
-              className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[#0078d4]"
+              className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
               value={answers[q.id || index] || ''}
               onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id || index]: e.target.value }))}
               placeholder="输入你的答案..."
@@ -188,7 +187,7 @@ function QuestionCard({ item }) {
         ))}
       </div>
       {toolCallId ? (
-        <button className="mt-3 rounded-md bg-[#0078d4] px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" onClick={() => submitQuestionAnswers(toolCallId, answers)}>
+        <button className="mt-3 rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" style={{ background: 'var(--color-accent-blue)' }} onClick={() => submitQuestionAnswers(toolCallId, answers)}>
           提交
         </button>
       ) : null}
@@ -312,6 +311,13 @@ export default function ReplicaChatView() {
   }, [modes]);
   const currentModeName = modeOptions.find((m) => m.id === currentMode)?.name || currentMode || '始终询问';
 
+  const permissionLabel = (() => {
+    if (!currentMode) return null;
+    if (['bypassPermissions', 'auto', 'dontAsk'].includes(currentMode)) return '跳过权限确认';
+    if (currentMode === 'plan') return '规划模式';
+    return null;
+  })();
+
   const isStreaming = useMemo(() => timeline.some(item => item.streaming === true), [timeline]);
 
   // Auto-scroll to bottom when timeline changes (new messages arrive)
@@ -419,7 +425,7 @@ export default function ReplicaChatView() {
       {/* Input area */}
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto max-w-3xl">
-          <div className="relative rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-sm transition-all focus-within:shadow-md focus-within:border-[rgba(0,120,212,0.3)]">
+          <div className="relative rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-sm transition-all focus-within:shadow-md focus-within:border-[var(--color-border-focus)]">
             <textarea
               rows={2}
               value={input}
@@ -448,9 +454,8 @@ export default function ReplicaChatView() {
                         {modeOptions.map((m) => (
                           <button
                             key={m.id}
-                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors ${
-                              m.id === currentMode ? 'text-[#0078d4]' : 'text-[var(--color-text-secondary)]'
-                            }`}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors"
+                            style={{ color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)' }}
                             onClick={() => {
                               setMode(m.id);
                               setShowModePicker(false);
@@ -463,6 +468,16 @@ export default function ReplicaChatView() {
                     </>
                   )}
                 </div>
+                {permissionLabel && (
+                  <span className="text-xs px-2 py-1 rounded"
+                        style={{
+                          background: 'var(--color-info-bg, rgba(59,130,246,0.1))',
+                          color: 'var(--color-accent-blue)',
+                          border: '1px solid var(--color-accent-blue, rgba(59,130,246,0.3))'
+                        }}>
+                    {permissionLabel}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5">
                 <div className="relative">
@@ -479,9 +494,8 @@ export default function ReplicaChatView() {
                         {models.length > 0 ? models.map((m) => (
                           <button
                             key={m.id || m.name}
-                            className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors ${
-                              (m.id || m.name) === currentModel ? 'text-[#0078d4]' : 'text-[var(--color-text-secondary)]'
-                            }`}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors"
+                            style={{ color: (m.id || m.name) === currentModel ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)' }}
                             onClick={() => {
                               setModel(m.id || m.name);
                               setShowModelPicker(false);
@@ -498,7 +512,7 @@ export default function ReplicaChatView() {
                 </div>
                 {isStreaming ? (
                   <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#ef4444] text-white hover:brightness-110 transition-all"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all" style={{ background: 'var(--color-accent-red)' }}
                     onClick={() => closeAssistantStream()}
                     title="停止生成"
                   >
@@ -508,7 +522,7 @@ export default function ReplicaChatView() {
                   </button>
                 ) : (
                   <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0078d4] text-white hover:brightness-110 transition-all disabled:opacity-40"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
                     onClick={onSubmit}
                     disabled={!input.trim()}
                   >

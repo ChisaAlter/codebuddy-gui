@@ -109,11 +109,12 @@ export default function ReplicaSidebar() {
     >
       {/* Brand */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded bg-[#0078d4] text-white text-xs font-bold">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg text-white text-xs font-bold"
+             style={{ background: 'linear-gradient(135deg, var(--color-accent-blue), var(--color-accent-purple))' }}>
           CB
         </div>
         {!sidebarCollapsed && (
-          <span className="text-sm font-semibold tracking-tight">CodeBuddy</span>
+          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy</span>
         )}
       </div>
 
@@ -144,10 +145,11 @@ export default function ReplicaSidebar() {
                   <button
                     key={item.id}
                     onClick={() => setRoute(item.id)}
-                    className={`sidebar-nav-link group w-full ${isActive ? 'bg-[rgba(0,120,212,0.12)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                    className={`sidebar-nav-link group w-full ${isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                    style={isActive ? {background:'rgba(59,130,246,0.12)'} : undefined}
                     title={sidebarCollapsed ? item.label : undefined}
                   >
-                    <span className={`flex-shrink-0 w-4 h-4 flex items-center justify-center ${isActive ? 'text-[#0078d4]' : 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]'}`}>
+                    <span className={`flex-shrink-0 w-4 h-4 flex items-center justify-center ${!isActive ? 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]' : ''}`} style={isActive ? {color:'var(--color-accent-blue)'} : undefined}>
                       {ITEM_ICONS[item.id] || (
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="2" /></svg>
                       )}
@@ -156,7 +158,7 @@ export default function ReplicaSidebar() {
                       <span className="truncate text-left">{item.label}</span>
                     )}
                     {!sidebarCollapsed && item.id === 'changes' && changesCount > 0 && (
-                      <span className="ml-auto rounded-full bg-[#60a5fa] px-1.5 py-0 text-[10px] text-white font-medium">{changesCount}</span>
+                      <span className="ml-auto rounded-full px-1.5 py-0 text-[10px] text-white font-medium" style={{background:'var(--color-accent-blue)'}}>{changesCount}</span>
                     )}
                   </button>
                 );
@@ -229,7 +231,7 @@ export default function ReplicaSidebar() {
       {/* User section at bottom */}
       <div className="shrink-0 border-t border-[var(--color-border-default)] p-2">
         <div className="sidebar-user-section" style={sidebarCollapsed ? { justifyContent: 'center', padding: '0.5rem' } : {}}>
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#0078d4] text-xs font-bold text-white">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white" style={{background:'var(--color-accent-blue)'}}>
             {(info?.userName || 'U')[0].toUpperCase()}
           </div>
           {!sidebarCollapsed && (
@@ -239,11 +241,11 @@ export default function ReplicaSidebar() {
                 <div className="text-[10px] text-[var(--color-text-muted)]">{info?.version || 'v?'}</div>
               </div>
               {connectionState === 'connected' ? (
-                <div className="h-2 w-2 rounded-full bg-[#22c55e]" title="已连接" />
+                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-green)'}} title="已连接" />
               ) : connectionState === 'error' ? (
-                <div className="h-2 w-2 rounded-full bg-[#ef4444]" title="连接错误" />
+                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-red)'}} title="连接错误" />
               ) : (
-                <div className="h-2 w-2 rounded-full bg-[#f59e0b]" title="连接中..." />
+                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-yellow)'}} title="连接中..." />
               )}
             </>
           )}

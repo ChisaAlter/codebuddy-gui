@@ -3,7 +3,7 @@ import { AcpClient, getApiBase, setApiBase, fetchJson } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite, fsRead, fsUpload } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
-import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs, updateSetting, updateSettingsBatch, fetchChannels, fetchWorkerDetail, stopWorker, restartWorker, togglePlugin, searchTraces, fetchTraceDetail } from './lib/ops';
+import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs, updateSetting, updateSettingsBatch, fetchChannels, fetchWorkerDetail, stopWorker, restartWorker, enablePlugin, disablePlugin, searchTraces, fetchTraceDetail } from './lib/ops';
 import { PtySocket } from './lib/pty';
 import {
   closeAssistantStream,
@@ -403,6 +403,8 @@ export const useStore = create((set, get) => ({
     }));
     get().appendTimelineEvent('question_answered', { toolCallId, answers });
     try {
+      // NOTE: _codebuddy.ai/answerQuestion 在真实 webui-js.js 中未找到，可能真实 UI 使用不同机制
+      // 保留此方法直到确认正确的 question 应答流程
       await acp.request('_codebuddy.ai/answerQuestion', {
         sessionId: get().sessionId,
         toolCallId,

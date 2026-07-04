@@ -134,7 +134,30 @@ export async function uninstallPlugin(pluginId) {
   return payload.data || payload;
 }
 
-/** 启用/禁用插件 */
+/** 启用插件 */
+export async function enablePlugin(pluginId) {
+  const payload = await fetchJson('/api/v1/plugins/enable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pluginId }),
+  });
+  return payload.data || payload;
+}
+
+/** 禁用插件 */
+export async function disablePlugin(pluginId) {
+  const payload = await fetchJson('/api/v1/plugins/disable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pluginId }),
+  });
+  return payload.data || payload;
+}
+
+/**
+ * @deprecated 使用 enablePlugin / disablePlugin
+ * 启用/禁用插件
+ */
 export async function togglePlugin(pluginId, enabled) {
   const payload = await fetchJson(`/api/v1/plugins/${encodeURIComponent(pluginId)}/toggle`, {
     method: 'POST',

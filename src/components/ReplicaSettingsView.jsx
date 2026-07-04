@@ -42,7 +42,7 @@ function TextInput({ value, onChange, placeholder = '未设置' }) {
   return (
     <input
       type="text"
-      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[#0078d4] w-40"
+      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)] w-40"
       value={value || ''}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
@@ -126,9 +126,10 @@ export default function ReplicaSettingsView() {
                     onClick={() => updateSetting('theme', theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')}
                     className={`rounded-md px-2.5 py-1 text-xs border transition-colors ${
                     (settings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')
-                      ? 'border-[#0078d4] bg-[rgba(0,120,212,0.1)] text-[#0078d4]' 
+                      ? '' 
                       : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
                   }`}
+                  style={(settings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system') ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
                   >{theme}</button>
                 ))}
               </div>
@@ -141,9 +142,10 @@ export default function ReplicaSettingsView() {
                     onClick={() => updateSetting('language', lang)}
                     className={`rounded-md px-2.5 py-1 text-xs border transition-colors ${
                     (settings?.language || '简体中文') === lang
-                      ? 'border-[#0078d4] bg-[rgba(0,120,212,0.1)] text-[#0078d4]' 
+                      ? '' 
                       : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
                   }`}
+                  style={(settings?.language || '简体中文') === lang ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
                   >{lang}</button>
                 ))}
               </div>
