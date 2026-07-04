@@ -154,9 +154,19 @@ async function waitForRenderer(url, attempts = 30) {
 
 async function createWindow() {
   logStartup('createWindow called');
-  const entry = getRendererEntry();
+  let entry = getRendererEntry();
   const ready = await waitForRenderer(entry, 40);
   logStartup(`renderer ready=${ready} entry=${entry}`);
+
+  // 如果 Vite dev server 不可达，回退到生产构建
+  if (!ready && isDev) {
+    const prodIndex = path.join(__dirname, '..', 'out', 'dist', 'index.html');
+    const prodEntry = `file://${prodIndex.replace(/\\/g, '/')}`;
+    if (fs.existsSync(prodIndex)) {
+      logStartup(`dev server unreachable, falling back to ${prodEntry}`);
+      entry = prodEntry;
+    }
+  }
 
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -192,6 +202,16 @@ async function createWindow() {
         if (mainWindow && !mainWindow.isDestroyed()) {
           const ok = await waitForRenderer(entry, 10);
           logStartup(`retry after fail ready=${ok}`);
+          // 如果 Vite 仍然不可达，回退到生产构建
+          if (!ok) {
+            const prodIndex = path.join(__dirname, '..', 'out', 'dist', 'index.html');
+            const prodEntry = `file://${prodIndex.replace(/\\/g, '/')}`;
+            if (fs.existsSync(prodIndex)) {
+              logStartup(`fallback to prod: ${prodEntry}`);
+              mainWindow.loadURL(prodEntry).catch(() => {});
+              return;
+            }
+          }
           mainWindow.loadURL(entry).catch(() => {});
         }
       }, 1200);
