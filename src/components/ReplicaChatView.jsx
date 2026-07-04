@@ -267,6 +267,13 @@ export default function ReplicaChatView() {
   const scrollContainerRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
+  // Auto-dismiss error banner after 8 seconds
+  useEffect(() => {
+    if (!chatError) return;
+    const timer = setTimeout(() => setChatError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [chatError]);
+
   const timeline = useStore((s) => s.timeline);
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
@@ -281,6 +288,7 @@ export default function ReplicaChatView() {
   const setMode = useStore((s) => s.setMode);
   const currentModelName = useStore((s) => s.models.find(m => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '');
   const [input, setInput] = useState('');
+  const [chatError, setChatError] = useState(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
   const modeOptions = useMemo(() => {
@@ -326,7 +334,12 @@ export default function ReplicaChatView() {
     const value = input.trim();
     if (!value) return;
     setInput('');
-    await sendPrompt(value);
+    setChatError(null);
+    try {
+      await sendPrompt(value);
+    } catch (err) {
+      setChatError('发送消息失败: ' + (err.message || '未知错误'));
+    }
   };
 
   const handleKeyDown = (e) => {
@@ -374,6 +387,14 @@ export default function ReplicaChatView() {
                   <TimelineItem item={item} />
                 </React.Fragment>
               ))}
+            </div>
+          )}
+          {chatError && (
+            <div className="mx-0 mb-4 p-3 rounded-lg flex items-center justify-between"
+                 style={{ background: 'var(--color-error-bg)', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}>
+              <span className="text-sm">{chatError}</span>
+              <button className="btn-ghost text-sm" style={{ color: 'var(--color-error)' }}
+                      onClick={() => setChatError(null)}>关闭</button>
             </div>
           )}
           <div ref={messagesEndRef} />

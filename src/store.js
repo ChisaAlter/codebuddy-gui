@@ -731,6 +731,18 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  async cancelSession() {
+    try {
+      await acp.request('session/cancel', {
+        sessionId: get().sessionId,
+      });
+      get().closeAssistantStream();
+      get().appendTimelineEvent('status_change', { status: 'cancelled', role: 'system' });
+    } catch (error) {
+      set({ error: error.message });
+    }
+  },
+
   async sendPrompt(text) {
     const content = String(text || '').trim();
     if (!content) return;

@@ -23,6 +23,7 @@ export default function ReplicaLogsView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [logError, setLogError] = useState(null);
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -45,9 +46,13 @@ export default function ReplicaLogsView() {
   const loadLogs = useCallback(async () => {
     if (!workerPid) return;
     setLoading(true);
+    setLogError(null);
     try {
       const text = await fetchWorkerLogs(workerPid, logType, 200);
       setLogs(text || '');
+    } catch (err) {
+      setLogError('日志加载失败: ' + (err?.message || '未知错误'));
+      setLogs('');
     } finally {
       setLoading(false);
     }
@@ -58,6 +63,12 @@ export default function ReplicaLogsView() {
     const interval = setInterval(loadLogs, 5000);
     return () => clearInterval(interval);
   }, [autoRefresh, loadLogs, workerPid]);
+
+  useEffect(() => {
+    if (!logError) return;
+    const timer = setTimeout(() => setLogError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [logError]);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -147,6 +158,13 @@ export default function ReplicaLogsView() {
         />
       </div>
 
+      {logError && (
+        <div className="mx-6 mb-2 p-2 rounded flex items-center justify-between text-xs"
+             style={{ background: 'var(--color-error-bg, rgba(248,113,113,0.1))', border: '1px solid var(--color-accent-red)', color: 'var(--color-accent-red)' }}>
+          <span>{logError}</span>
+          <button className="underline" onClick={() => setLogError(null)}>关闭</button>
+        </div>
+      )}
       <div className="flex-1 overflow-hidden relative">
         {logs && (
           <button

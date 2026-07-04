@@ -183,10 +183,17 @@ export default function ReplicaWorkspaceView() {
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
+  const [workspaceError, setWorkspaceError] = useState(null);
 
   useEffect(() => {
     initializeWorkspace();
   }, [initializeWorkspace]);
+
+  useEffect(() => {
+    if (!workspaceError) return;
+    const timer = setTimeout(() => setWorkspaceError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [workspaceError]);
 
   const handleNewFile = () => {
     setShowNewFolderInput(false);
@@ -210,8 +217,9 @@ export default function ReplicaWorkspaceView() {
       setShowNewFileInput(false);
       setNewFileName('');
       openDirectory(fileCwd || '.');
-    } catch {
+    } catch (err) {
       setShowNewFileInput(false);
+      setWorkspaceError('创建文件失败: ' + (err?.message || '未知错误'));
     }
   };
 
@@ -224,8 +232,8 @@ export default function ReplicaWorkspaceView() {
       await window.electronAPI?.runGit(['-C', fileCwd || '.', 'init', '-q']).catch(() => {});
       // Placeholder: backend mkdir API not yet available
       setStatusMessage(`目录 "${name}" 创建功能开发中`);
-    } catch {
-      setStatusMessage('创建目录失败');
+    } catch (err) {
+      setWorkspaceError('创建目录失败: ' + (err?.message || '未知错误'));
     }
   };
 
@@ -315,6 +323,13 @@ export default function ReplicaWorkspaceView() {
             />
             <button onClick={handleCreateFolder} className="text-xs text-[#4ade80] hover:underline">确定</button>
             <button onClick={() => setShowNewFolderInput(false)} className="text-xs text-[var(--color-text-muted)] hover:underline">取消</button>
+          </div>
+        )}
+        {workspaceError && (
+          <div className="mx-2 mb-2 p-2 rounded flex items-center justify-between text-xs"
+               style={{ background: 'var(--color-error-bg, rgba(248,113,113,0.1))', border: '1px solid var(--color-accent-red)', color: 'var(--color-accent-red)' }}>
+            <span>{workspaceError}</span>
+            <button className="underline" onClick={() => setWorkspaceError(null)}>关闭</button>
           </div>
         )}
         <FileTree onContextMenu={handleContextMenu} />
