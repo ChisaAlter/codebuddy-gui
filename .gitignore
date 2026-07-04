@@ -5,3 +5,13 @@ out/
 .DS_Store
 .env
 .env.local
+
+# Reference files from real CodeBuddy Web UI (large, not for version control)
+webui-css.css
+webui-js.js
+*.yaml
+
+# Test and launch scripts (temporary)
+START-REAL-WEBUI.bat
+Playwright-cli/
+.playwright-cli/

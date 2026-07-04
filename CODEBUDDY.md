@@ -107,7 +107,7 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 
 | 位置 | 值 | 说明 |
 |------|-----|------|
-| `src/lib/acp.js` | `API_BASE = 'http://127.0.0.1:50943'` | 后端基址，当前不可配置 |
+| `src/lib/acp.js` | `API_BASE = 'http://127.0.0.1:63918'` | 后端基址，当前不可配置 |
 | `electron/main.cjs` | `cwd = 'C:/Ai/ChisaCode'` | Git 工作目录，修改 Git 工作区需改此处 |
 | `vite.config.js` | `base: './'` | **关键**：相对路径使 Electron `file://` 协议正确加载资源 |
 | `tailwind.config.js` | `darkMode: 'class'` | 暗色模式由 `<html class="dark">` 控制 |
@@ -138,3 +138,17 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 | 阶段 5：对照审查 | ✅ 完成 | 2026-07-04 |
 
 全部 5 个阶段已完成。协议层 30+ 端点、34 函数；视图层 19 组件全覆盖 Loading/Empty/Error 三态；样式消除 28+ 硬编码色值，CSS 变量对齐真实 UI。
+
+## 已知待修复问题 (2026-07-04 审查)
+
+| 优先级 | 问题 | 状态 |
+|--------|------|------|
+| P0 | PTY 重连后 onclose 不触发自动重连 (pty.js) | 已修复 |
+| P0 | 端口 fallback 从 63917 修正为 63918 (acp.js) | 已修复 |
+| P0 | ACP 重连计数器初始值偏移 (acp.js) | 已修复 |
+| P1 | 5 个组件缺 Loading 骨架屏 (Workers/Plugins/Tasks/Logs/Monitor) | 已修复 |
+| P1 | store.js 未使用导入清理 (fsRead/fsUpload) | 已修复 |
+| P1 | PTY socket 关闭时不清理全局引用 (store.js) | 已修复 |
+| P1 | SSE 解析错误静默吞掉 (acp.js) | 已修复 |
+| P2 | Electron 31 → 34 升级 + express 4.19→4.21 安全补丁 | 已修复 |
+| P2 | .gitignore 添加对照文件和测试脚本 | 已修复 |

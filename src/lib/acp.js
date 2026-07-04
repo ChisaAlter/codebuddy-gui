@@ -1,4 +1,4 @@
-let _apiBase = 'http://127.0.0.1:63917';
+let _apiBase = 'http://127.0.0.1:63918';
 
 export function getApiBase() {
   return _apiBase;
@@ -29,7 +29,7 @@ function parseEventStreamMessages(text) {
     const joined = dataLines.join('');
     try {
       messages.push(JSON.parse(joined));
-    } catch (_) {}
+    } catch (_) { console.warn('ACP SSE JSON parse failed:', _); }
   }
 
   return messages;
@@ -153,7 +153,7 @@ export class AcpClient {
     if (this.reconnecting) return;
     this.reconnecting = true;
     this._connectionError = false;
-    this.reconnectAttempts = 1;
+    this.reconnectAttempts = 0;
     this._scheduleReconnect(this.reconnectDelay);
   }
 
@@ -168,8 +168,9 @@ export class AcpClient {
         await this.connect();
         if (this.connected) {
           this.reconnecting = false;
+          const attempts = this.reconnectAttempts;
           this.reconnectAttempts = 0;
-          this.emit('reconnected', { attempts: this.reconnectAttempts });
+          this.emit('reconnected', { attempts });
           return;
         }
       } catch (_) {

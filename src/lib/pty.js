@@ -69,18 +69,14 @@ export class PtySocket {
 
   sendInput(data) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      const err = new Error('PTY socket is not connected');
-      this.emit('error', err);
-      throw err;
+      throw new Error('PTY socket is not connected');
     }
     this.socket.send(JSON.stringify({ type: 'input', data }));
   }
 
   resize(cols, rows) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      const err = new Error('PTY socket is not connected');
-      this.emit('error', err);
-      throw err;
+      throw new Error('PTY socket is not connected');
     }
     this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
@@ -137,6 +133,10 @@ export class PtySocket {
 
         socket.onclose = (event) => {
           this.emit('close', event);
+          // 非主动关闭时尝试重连
+          if (!this._reconnecting && event.code !== 1000) {
+            this._tryReconnect();
+          }
         };
 
         socket.onerror = (event) => {

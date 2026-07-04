@@ -92,7 +92,17 @@ export default function ReplicaMonitorView() {
           <button className="btn-primary" onClick={load}>刷新</button>
         </div>
 
-        {loading ? <div className="text-sm text-[var(--color-text-muted)]">加载中...</div> : null}
+        {loading ? (
+          <div className="grid grid-cols-2 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-5">
+                <div className="skeleton h-3 w-16 rounded" />
+                <div className="skeleton mt-2 h-7 w-28 rounded" />
+                <div className="skeleton mt-2 h-3 w-20 rounded" />
+              </div>
+            ))}
+          </div>
+        ) : null}
         {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300 flex items-center gap-2"><span>{error}</span><button className="btn-ghost text-sm underline" onClick={load}>重试</button></div> : null}
 
         <div className="grid grid-cols-2 gap-4">

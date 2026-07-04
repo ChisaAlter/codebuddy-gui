@@ -23,6 +23,7 @@ export default function ReplicaLogsView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [initialWorkersLoad, setInitialWorkersLoad] = useState(true);
   const [logError, setLogError] = useState(null);
   const containerRef = useRef(null);
 
@@ -38,6 +39,9 @@ export default function ReplicaLogsView() {
   }, [refreshWorkers]);
 
   useEffect(() => {
+    if (workers.length > 0) {
+      setInitialWorkersLoad(false);
+    }
     if (!workerPid && workers.length) {
       setWorkerPid(String(workers[0].pid));
     }
@@ -112,12 +116,18 @@ export default function ReplicaLogsView() {
           value={workerPid}
           onChange={(e) => setWorkerPid(e.target.value)}
         >
-          <option value="">选择 Worker</option>
-          {workers.map((w) => (
-            <option key={w.pid} value={String(w.pid)}>
-              {w.pid} · {w.kind} · {w.sessionId || '-'}
-            </option>
-          ))}
+          {initialWorkersLoad && workers.length === 0 ? (
+            <option value="">加载 Worker 列表中...</option>
+          ) : (
+            <>
+              <option value="">选择 Worker</option>
+              {workers.map((w) => (
+                <option key={w.pid} value={String(w.pid)}>
+                  {w.pid} · {w.kind} · {w.sessionId || '-'}
+                </option>
+              ))}
+            </>
+          )}
         </select>
 
         <select
@@ -134,7 +144,7 @@ export default function ReplicaLogsView() {
           onClick={loadLogs}
           disabled={!workerPid || loading}
         >
-          {loading ? '加载中...' : '加载日志'}
+          加载日志
         </button>
 
         {!workerPid && (
@@ -181,7 +191,13 @@ export default function ReplicaLogsView() {
         )}
 
         <div ref={containerRef} className="h-full overflow-auto p-6 pt-10">
-          {!logs ? (
+          {loading ? (
+            <pre className="min-h-full rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4 space-y-2.5">
+              {[88, 72, 91, 55, 85, 63, 94, 50, 78].map((w, i) => (
+                <div key={i} className="skeleton" style={{ height: '0.75rem', width: `${w}%` }} />
+              ))}
+            </pre>
+          ) : !logs ? (
             <div className="flex items-center justify-center h-full">
               <p className="text-sm text-[var(--color-text-muted)]">暂无日志</p>
             </div>

@@ -14,6 +14,13 @@ export default function ReplicaWorkersView() {
   const [refreshing, setRefreshing] = React.useState(false);
   const [expandedPid, setExpandedPid] = React.useState(null);
   const [searchTerm, setSearchTerm] = React.useState('');
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    if (workers != null) {
+      setLoading(false);
+    }
+  }, [workers]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -97,8 +104,37 @@ export default function ReplicaWorkersView() {
           />
         </div>
 
+        {/* Loading skeleton */}
+        {loading && (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4 shimmer"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="skeleton h-5 w-16 rounded-full" />
+                  <div className="skeleton h-5 w-12 rounded-full" />
+                  <div className="skeleton h-3 w-14 ml-auto" />
+                </div>
+                <div className="space-y-1.5">
+                  <div className="skeleton h-3 w-2/3" />
+                  <div className="skeleton h-3 w-1/2" />
+                  <div className="skeleton h-3 w-3/4" />
+                </div>
+                <div className="flex items-center gap-1 mt-3 pt-2 border-t border-[var(--color-border-muted)]">
+                  <div className="skeleton h-3 w-10" />
+                  <div className="skeleton h-3 w-10" />
+                  <div className="skeleton h-3 w-10" />
+                  <div className="skeleton h-3 w-14 ml-auto" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Empty state */}
-        {filtered.length === 0 ? (
+        {!loading && filtered.length === 0 ? (
           <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-16 text-center">
             <p className="text-sm text-[var(--color-text-muted)]">
               {workersList.length === 0 ? '暂无活跃 worker' : '无匹配 Worker'}

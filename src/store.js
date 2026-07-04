@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { AcpClient, getApiBase, setApiBase, fetchJson } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
-import { fsList, fsSearchContent, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite, fsRead, fsUpload } from './lib/fs';
+import { fsList, fsSearchContent, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
 import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs, updateSetting, updateSettingsBatch, fetchChannels, fetchWorkerDetail, stopWorker, restartWorker, enablePlugin, disablePlugin, searchTraces, fetchTraceDetail } from './lib/ops';
 import { PtySocket } from './lib/pty';
@@ -341,6 +341,11 @@ export const useStore = create((set, get) => ({
   closePane(paneId) {
     set((state) => {
       if (state.terminalPanes.length === 1) return state;
+      const closedPane = state.terminalPanes.find((x) => x.id === paneId);
+      if (closedPane?.sessionId && window.__ptySockets && window.__ptySockets[closedPane.sessionId]) {
+        try { window.__ptySockets[closedPane.sessionId].close(); } catch (_) {}
+        delete window.__ptySockets[closedPane.sessionId];
+      }
       const nextPanes = state.terminalPanes.filter((x) => x.id !== paneId);
       return {
         terminalPanes: nextPanes,

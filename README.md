@@ -1,48 +1,23 @@
 # CodeBuddy GUI
 
-桌面版 CodeBuddy Code — Electron + React 18 + Tailwind CSS
+目标：在 Electron 桌面端内本地 1:1 复刻 CodeBuddy Web UI，而不是套壳加载真实网页。
 
-## 功能
+当前状态：
+- Electron 已恢复为加载本地前端
+- 开发模式：`http://127.0.0.1:5173`
+- 生产模式：加载 `out/dist/index.html`
+- 真实 CodeBuddy Web UI（50943）仅作为布局、样式和协议对照源，不再作为正式运行路径
 
-- **Chat** — SSE 流式对话 + Markdown 渲染
-- **Terminal** — xterm.js 分屏终端
-- **Workers** — Worker/Daemon 进程管理
-- **Logs** — 4 种日志类型切换
-- **Tasks** — 定时任务管理
-- **Plugins** — 插件安装/卸载
-- **Files** — 文件浏览器
-- **Traces** — 链路追踪
-- **Metrics** — 系统监控
-- **API Docs** — Swagger UI 内嵌
-- **Settings** — 主题/语言/模型/权限
+开发：
+1. 终端 1：`npm run dev`
+2. 终端 2：`npm run dev:electron`
 
-## 启动
+构建：
+- `npm run build`
 
-```bash
-# 启动 CodeBuddy 后端服务
-codebuddy --serve --port 7890
+安装包产物：
+- `dist\\CodeBuddy GUI Setup 0.1.0.exe`
 
-# 启动前端开发服务器
-npx vite --port 8080
-
-# 启动 Electron
-npx electron .
-```
-
-## 打包
-
-```bash
-npm run build
-```
-
-## 技术栈
-
-- Electron 31
-- React 18 + Vite 5
-- Zustand 状态管理
-- Tailwind CSS
-- xterm.js
-
-## 许可证
-
-MIT
+说明：
+- 当前仓库仍在从壳层向真实 1:1 本地复刻重构中
+- 以真实 CodeBuddy Web UI 的布局、样式、交互、状态和协议为唯一标准

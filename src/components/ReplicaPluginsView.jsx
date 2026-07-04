@@ -3,6 +3,7 @@ import { useStore } from '../store';
 
 export default function ReplicaPluginsView() {
   const { plugins, refreshPlugins, error } = useStore();
+  const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all'); // 'all' | 'enabled' | 'disabled'
@@ -14,6 +15,7 @@ export default function ReplicaPluginsView() {
     setRefreshing(true);
     await refreshPlugins();
     setRefreshing(false);
+    setLoading(false);
   };
 
   const pluginsList = Array.isArray(plugins) ? plugins : [];
@@ -102,8 +104,39 @@ export default function ReplicaPluginsView() {
           </div>
         </div>
 
+        {/* Loading skeleton */}
+        {loading && pluginsList.length === 0 && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4 flex flex-col"
+              >
+                {/* Plugin name + status badge + toggle row */}
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="skeleton h-4 w-28" />
+                  <div className="skeleton h-5 w-14 rounded-full ml-auto" />
+                  <div className="skeleton h-5 w-8 rounded-full" />
+                </div>
+                {/* Description lines */}
+                <div className="skeleton h-3 w-full mb-2" />
+                <div className="skeleton h-3 w-3/4 mb-2" />
+                {/* Meta badges area */}
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="skeleton h-4 w-12 rounded" />
+                  <div className="skeleton h-4 w-16 rounded" />
+                </div>
+                {/* Bottom actions area */}
+                <div className="mt-auto pt-3 border-t border-[var(--color-border-muted)]">
+                  <div className="skeleton h-3 w-10" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Empty state */}
-        {filtered.length === 0 ? (
+        {!loading && (filtered.length === 0 ? (
           <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-16 text-center">
             <p className="text-sm text-[var(--color-text-muted)]">
               {pluginsList.length === 0 ? '暂无已安装插件' : '无匹配插件'}
@@ -172,7 +205,7 @@ export default function ReplicaPluginsView() {
               );
             })}
           </div>
-        )}
+        ))}
 
         {/* Install Modal */}
         {showInstallModal && (

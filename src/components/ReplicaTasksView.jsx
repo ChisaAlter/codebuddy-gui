@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaTasksView() {
@@ -7,6 +7,11 @@ export default function ReplicaTasksView() {
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');
   const [creating, setCreating] = useState(false);
   const [localError, setLocalError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(false);
+  }, []);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -67,7 +72,18 @@ export default function ReplicaTasksView() {
         {/* Task list */}
         <h2 className="mb-3 text-sm font-medium text-[var(--color-text-primary)]">任务列表</h2>
 
-        {tasksList.length === 0 ? (
+        {loading ? (
+          <div className="space-y-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-3">
+                <div className="flex-1 min-w-0">
+                  <div className="skeleton h-4 rounded mb-2" style={{ width: `${50 + i * 12}%` }} />
+                  <div className="skeleton h-3 rounded" style={{ width: `${20 + i * 7}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : tasksList.length === 0 ? (
           <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-12 text-center">
             <p className="text-sm text-[var(--color-text-muted)]">暂无定时任务</p>
             <p className="mt-1 text-xs text-[var(--color-text-muted)]">使用上方表单创建新的定时任务</p>
