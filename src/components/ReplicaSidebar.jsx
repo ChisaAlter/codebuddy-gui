@@ -104,6 +104,7 @@ export default function ReplicaSidebar() {
 
   return (
     <aside
+      role="navigation" aria-label="Main navigation"
       className="sidebar-nav flex h-full shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] transition-all duration-200"
       style={{ width: sidebarCollapsed ? 60 : 252 }}
     >
@@ -179,49 +180,65 @@ export default function ReplicaSidebar() {
 
           {/* Model & Mode selectors */}
           <div className="space-y-1.5">
-            <select
-              className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
-              value={currentModel || ''}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              <option value="">选择模型</option>
-              {models.map((m, i) => (
-                <option key={m.id || i} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-            <select
-              className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
-              value={currentMode || ''}
-              onChange={(e) => setMode(e.target.value)}
-            >
-              <option value="">选择模式</option>
-              {modes.map((m, i) => (
-                <option key={m.id || i} value={m.id}>{m.name}</option>
-              ))}
-            </select>
+            {connectionState !== 'connected' && models.length === 0 && modes.length === 0 ? (
+              <>
+                <div className="skeleton animate-pulse h-7 w-4/5 rounded" style={{background:'var(--color-bg-hover)'}} />
+                <div className="skeleton animate-pulse h-7 w-3/5 rounded" style={{background:'var(--color-bg-hover)'}} />
+              </>
+            ) : (
+              <>
+                <select
+                  className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
+                  value={currentModel || ''}
+                  onChange={(e) => setModel(e.target.value)}
+                >
+                  <option value="">选择模型</option>
+                  {models.map((m, i) => (
+                    <option key={m.id || i} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+                <select
+                  className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
+                  value={currentMode || ''}
+                  onChange={(e) => setMode(e.target.value)}
+                >
+                  <option value="">选择模式</option>
+                  {modes.map((m, i) => (
+                    <option key={m.id || i} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
           </div>
 
           {/* Session history */}
           <div>
             <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)] mb-1">会话历史</div>
             <div className="max-h-40 overflow-y-auto space-y-0.5">
-              {sessions.slice(0, 10).map((session) => {
-                const sessionId = session.id || session.sessionId;
-                return (
-                  <button
-                    key={sessionId}
-                    className="block w-full rounded-md px-2 py-1 text-left transition-colors hover:bg-[var(--color-bg-hover)]"
-                    onClick={() => changeSession(sessionId)}
-                  >
-                    <div className="truncate text-xs text-[var(--color-text-primary)]">{session.name || sessionId}</div>
-                    {session.messageCount != null && (
-                      <div className="text-[10px] text-[var(--color-text-muted)]">{session.messageCount} 条消息</div>
-                    )}
-                  </button>
-                );
-              })}
-              {sessions.length === 0 && (
+              {connectionState !== 'connected' && sessions.length === 0 ? (
+                <>
+                  <div className="skeleton animate-pulse h-6 w-full rounded" style={{background:'var(--color-bg-hover)'}} />
+                  <div className="skeleton animate-pulse h-6 w-4/5 rounded mt-1" style={{background:'var(--color-bg-hover)'}} />
+                  <div className="skeleton animate-pulse h-6 w-3/5 rounded mt-1" style={{background:'var(--color-bg-hover)'}} />
+                </>
+              ) : sessions.length === 0 ? (
                 <div className="px-2 py-1 text-xs text-[var(--color-text-muted)]">暂无历史会话</div>
+              ) : (
+                sessions.slice(0, 10).map((session) => {
+                  const sessionId = session.id || session.sessionId;
+                  return (
+                    <button
+                      key={sessionId}
+                      className="block w-full rounded-md px-2 py-1 text-left transition-colors hover:bg-[var(--color-bg-hover)]"
+                      onClick={() => changeSession(sessionId)}
+                    >
+                      <div className="truncate text-xs text-[var(--color-text-primary)]">{session.name || sessionId}</div>
+                      {session.messageCount != null && (
+                        <div className="text-[10px] text-[var(--color-text-muted)]">{session.messageCount} 条消息</div>
+                      )}
+                    </button>
+                  );
+                })
               )}
             </div>
           </div>

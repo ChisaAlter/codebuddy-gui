@@ -236,4 +236,58 @@ export async function fetchAuthStatus() {
   return payload.data || payload;
 }
 
+// ===== Daemon 管理 =====
+
+/** 获取 daemon 运行状态 */
+export async function fetchDaemonStatus() {
+  const payload = await fetchJson('/api/v1/daemon/status');
+  return payload.data || payload;
+}
+
+/** 启动 daemon */
+export async function startDaemon() {
+  const payload = await fetchJson('/api/v1/daemon/start', { method: 'POST' });
+  return payload.data || payload;
+}
+
+/** 停止 daemon */
+export async function stopDaemon() {
+  const payload = await fetchJson('/api/v1/daemon/stop', { method: 'POST' });
+  return payload.data || payload;
+}
+
+/** 重启 daemon */
+export async function restartDaemon() {
+  const payload = await fetchJson('/api/v1/daemon/restart', { method: 'POST' });
+  return payload.data || payload;
+}
+
+// ===== Keybindings 管理 =====
+
+/** 获取快捷键绑定列表 */
+export async function fetchKeybindings() {
+  const payload = await fetchJson('/api/v1/keybindings');
+  return payload.data?.keybindings || payload.keybindings || [];
+}
+
+/** 重置快捷键绑定为默认值 */
+export async function resetKeybindings() {
+  const payload = await fetchJson('/api/v1/keybindings/reset', { method: 'POST' });
+  return payload.data || payload;
+}
+
+// ===== Plugin Marketplaces =====
+
+/** 获取插件市场列表 */
+export async function fetchMarketplaces() {
+  const payload = await fetchJson('/api/v1/plugins/marketplaces');
+  return payload.data?.marketplaces || payload.marketplaces || [];
+}
+
+/** 浏览指定市场的插件 */
+export async function browseMarketplace(marketplaceId, query) {
+  const payload = await fetchJson(`/api/v1/plugins/marketplaces/browse?marketplace=${encodeURIComponent(marketplaceId)}&q=${encodeURIComponent(query || '')}`);
+  return payload.data?.plugins || payload.plugins || [];
+}
+
 export { getApiBase };

@@ -84,6 +84,8 @@ export default function ReplicaSettingsView() {
 
   const [localSettings, setLocalSettings] = useState({});
 
+  const isLoading = !info || Object.keys(info).length === 0 || !settings || Object.keys(settings).length === 0;
+
   const modelOptions = (models || []).map((m) => ({
     value: m.id || m.modelId,
     label: m.name || m.id || m.modelId,
@@ -98,6 +100,21 @@ export default function ReplicaSettingsView() {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-2xl px-8 py-8">
         <h1 className="mb-8 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
+
+        {isLoading ? (
+          <>
+            {[1, 2, 3].map((n) => (
+              <div key={n} className="card mb-6">
+                <div className="skeleton animate-pulse h-5 w-1/3 rounded mb-4" style={{background:'var(--color-bg-hover)'}} />
+                <div className="skeleton animate-pulse h-4 w-full rounded mb-2" style={{background:'var(--color-bg-hover)'}} />
+                <div className="skeleton animate-pulse h-4 w-5/6 rounded mb-2" style={{background:'var(--color-bg-hover)'}} />
+                <div className="skeleton animate-pulse h-4 w-4/6 rounded mb-2" style={{background:'var(--color-bg-hover)'}} />
+                <div className="skeleton animate-pulse h-4 w-3/6 rounded" style={{background:'var(--color-bg-hover)'}} />
+              </div>
+            ))}
+          </>
+        ) : (
+          <>
 
         {/* 连接状态 */}
         <div className="settings-group">
@@ -291,13 +308,22 @@ export default function ReplicaSettingsView() {
           <h2 className="settings-heading">系统信息</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="工作目录" control={
-              <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[200px]">{info?.cwd || '-'}</span>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[180px]">{info?.cwd || '-'}</span>
+                <button className="btn-icon ml-1 shrink-0" title="复制路径" onClick={() => { navigator.clipboard.writeText(info?.cwd || '').catch(() => {}); }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                  </svg>
+                </button>
+              </div>
             } />
             <SettingRow label="操作系统" control={<span className="text-xs text-[var(--color-text-secondary)]">{info?.os || '-'} {info?.arch || ''}</span>} />
             <SettingRow label="Node.js" control={<span className="text-xs text-[var(--color-text-secondary)]">{info?.nodeVersion || '-'}</span>} />
             <SettingRow label="网关模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{info?.gatewayMode || '-'}</span>} />
           </div>
         </div>
+        </>)}
       </div>
     </div>
   );

@@ -52,7 +52,7 @@ function StatusBar() {
   const apiBase = useStore((s) => s.apiBase);
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-4 text-xs flex-shrink-0">
+    <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
       <button
         className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}

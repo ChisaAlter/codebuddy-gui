@@ -274,6 +274,7 @@ export default function ReplicaChatView() {
   }, [chatError]);
 
   const timeline = useStore((s) => s.timeline);
+  const connectionState = useStore((s) => s.connectionState);
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
   const sessionTitle = useStore((s) => s.sessionTitle);
@@ -372,18 +373,27 @@ export default function ReplicaChatView() {
       <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
         <div className="mx-auto max-w-3xl px-6 py-4">
           {timeline.length === 0 ? (
-            <div className="flex flex-col items-center justify-center pt-20">
-              <div className="mb-3 text-2xl font-semibold text-[var(--color-text-primary)]">CodeBuddy Code</div>
-              <div className="mb-4 text-sm text-[var(--color-text-secondary)]">今天有什么可以帮到你？</div>
-              <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-                {['幻灯片生成', '深度研究', '文档处理', '数据分析'].map((tag) => (
-                  <span key={tag} className="rounded-full bg-[var(--color-bg-secondary)] border border-[var(--color-border-muted)] px-3 py-1 text-[var(--color-text-secondary)] cursor-pointer hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)] transition-colors"
-                    onClick={() => setInput(`帮我做一个${tag}任务`)}>
-                    {tag}
-                  </span>
-                ))}
+            connectionState === 'connecting' ? (
+              <div className="flex items-center justify-center h-64">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="animate-spin w-6 h-6 border-2 border-[var(--color-border-default)] border-t-[var(--color-accent-blue)] rounded-full" />
+                  <span className="text-sm" style={{color:'var(--color-text-tertiary)'}}>正在加载对话...</span>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center pt-20">
+                <div className="mb-3 text-2xl font-semibold text-[var(--color-text-primary)]">CodeBuddy Code</div>
+                <div className="mb-4 text-sm text-[var(--color-text-secondary)]">今天有什么可以帮到你？</div>
+                <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
+                  {['幻灯片生成', '深度研究', '文档处理', '数据分析'].map((tag) => (
+                    <span key={tag} className="rounded-full bg-[var(--color-bg-secondary)] border border-[var(--color-border-muted)] px-3 py-1 text-[var(--color-text-secondary)] cursor-pointer hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)] transition-colors"
+                      onClick={() => setInput(`帮我做一个${tag}任务`)}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )
           ) : (
             <div>
               <div className="text-xs text-[var(--color-text-muted)] text-center py-2">回答由 AI 生成，仅供参考</div>

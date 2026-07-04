@@ -149,6 +149,7 @@ function CanvasTerminalPane({ pane, scale, onClose, onDuplicate, onToggleMinimiz
 export default function ReplicaCanvasView() {
   const [panes, setPanes] = useState([]);
   const [zoom, setZoom] = useState(100);
+  const connectionState = useStore((s) => s.connectionState);
 
   useEffect(() => {
     if (!panes.length) {
@@ -226,9 +227,12 @@ export default function ReplicaCanvasView() {
         <button className="btn-ghost" onClick={openStandalone}>在新窗口打开画布</button>
       </div>
 
-      {!panes.length ? (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-[var(--color-text-muted)]">
-          点击工具栏 + 按钮添加终端
+      {(!panes.length || connectionState === 'connecting') ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-[var(--color-bg-primary)] z-10">
+          <div className="flex flex-col items-center gap-3">
+            <div className="animate-spin w-6 h-6 border-2 border-[var(--color-border-default)] border-t-[var(--color-accent-blue)] rounded-full" />
+            <span className="text-sm" style={{color:'var(--color-text-tertiary)'}}>正在初始化画布...</span>
+          </div>
         </div>
       ) : null}
     </div>

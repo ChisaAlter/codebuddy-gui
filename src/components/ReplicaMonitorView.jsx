@@ -93,7 +93,7 @@ export default function ReplicaMonitorView() {
         </div>
 
         {loading ? <div className="text-sm text-[var(--color-text-muted)]">加载中...</div> : null}
-        {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300">{error}</div> : null}
+        {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300 flex items-center gap-2"><span>{error}</span><button className="btn-ghost text-sm underline" onClick={load}>重试</button></div> : null}
 
         <div className="grid grid-cols-2 gap-4">
           <StatCard title="认证" value={auth?.authenticated ? 'authenticated' : 'unauthenticated'} subtitle={`authEnabled: ${String(!!auth?.authEnabled)}`} />
