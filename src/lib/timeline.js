@@ -1,0 +1,319 @@
+export function createTimelineEntry(partial = {}) {
+  return {
+    id: partial.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: partial.type || 'message',
+    role: partial.role || 'assistant',
+    content: partial.content || '',
+    streaming: Boolean(partial.streaming),
+    createdAt: partial.createdAt || Date.now(),
+    raw: partial.raw || null,
+    meta: partial.meta || {},
+    messageId: partial.messageId || null,
+    toolCallId: partial.toolCallId || null,
+    status: partial.status || null,
+    title: partial.title || null,
+    kind: partial.kind || null,
+    rawInput: partial.rawInput || null,
+    rawOutput: partial.rawOutput || null,
+    locations: partial.locations || null,
+  };
+}
+
+function findLastByMessageId(timeline, type, messageId) {
+  if (!messageId) return null;
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.type === type && item.messageId === messageId) return item;
+  }
+  return null;
+}
+
+function findLastByToolCallId(timeline, toolCallId) {
+  if (!toolCallId) return null;
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.type === 'tool_call' && item.toolCallId === toolCallId) return item;
+  }
+  return null;
+}
+
+export function closeAssistantStream(timeline) {
+  return timeline.map((item) =>
+    item.type === 'message' && item.role === 'assistant'
+      ? { ...item, streaming: false }
+      : item,
+  );
+}
+
+export function pushUserMessage(timeline, content) {
+  return [
+    ...timeline,
+    createTimelineEntry({
+      type: 'message',
+      role: 'user',
+      content,
+      streaming: false,
+    }),
+  ];
+}
+
+export function pushSystemEvent(timeline, type, payload) {
+  return [
+    ...timeline,
+    createTimelineEntry({
+      type,
+      role: 'system',
+      raw: payload,
+      meta: payload,
+      content: typeof payload === 'string' ? payload : payload?.message || '',
+      streaming: false,
+    }),
+  ];
+}
+
+function mergeUserChunk(timeline, payload) {
+  const next = [...timeline];
+  const messageId = payload?.messageId || null;
+  const target = findLastByMessageId(next, 'message', messageId);
+  if (target && target.role === 'user') {
+    target.content += payload?.content || '';
+    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    return next;
+  }
+  next.push(
+    createTimelineEntry({
+      type: 'message',
+      role: 'user',
+      content: payload?.content || '',
+      streaming: false,
+      raw: payload,
+      meta: payload,
+      messageId,
+    }),
+  );
+  return next;
+}
+
+function mergeAssistantChunk(timeline, payload) {
+  const next = [...timeline];
+  const messageId = payload?.messageId || null;
+  const target = findLastByMessageId(next, 'message', messageId);
+  if (target && target.role === 'assistant') {
+    target.content += payload?.content || '';
+    target.streaming = true;
+    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    return next;
+  }
+  next.push(
+    createTimelineEntry({
+      type: 'message',
+      role: 'assistant',
+      content: payload?.content || '',
+      streaming: true,
+      raw: payload,
+      meta: payload,
+      messageId,
+    }),
+  );
+  return next;
+}
+
+function mergeThinkingChunk(timeline, payload) {
+  const next = [...timeline];
+  const messageId = payload?.messageId || null;
+  const target = findLastByMessageId(next, 'thinking', messageId);
+  if (target) {
+    target.content += payload?.content || '';
+    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    return next;
+  }
+  next.push(
+    createTimelineEntry({
+      type: 'thinking',
+      role: 'assistant',
+      content: payload?.content || payload?.message || '',
+      raw: payload,
+      meta: payload,
+      messageId,
+    }),
+  );
+  return next;
+}
+
+function mergeToolCall(timeline, payload, isUpdate = false) {
+  const next = [...timeline];
+  const toolCallId = payload?.toolCallId || null;
+  const target = findLastByToolCallId(next, toolCallId);
+  if (target) {
+    target.status = payload?.status || target.status;
+    target.title = payload?.title || target.title;
+    target.kind = payload?.kind || target.kind;
+    target.content = payload?.content || target.content;
+    target.rawInput = payload?.rawInput ?? target.rawInput;
+    target.rawOutput = payload?.rawOutput ?? target.rawOutput;
+    target.locations = payload?.locations ?? target.locations;
+    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    target.raw = payload;
+    return next;
+  }
+  next.push(
+    createTimelineEntry({
+      type: 'tool_call',
+      role: 'assistant',
+      raw: payload,
+      meta: payload,
+      messageId: payload?.messageId || null,
+      toolCallId,
+      status: payload?.status || (isUpdate ? 'update' : 'created'),
+      title: payload?.title || null,
+      kind: payload?.kind || null,
+      content: payload?.content || '',
+      rawInput: payload?.rawInput || null,
+      rawOutput: payload?.rawOutput || null,
+      locations: payload?.locations || null,
+    }),
+  );
+  return next;
+}
+
+export function reduceAcpEvent(timeline, eventType, payload) {
+  if (eventType === 'message') {
+    if (payload?.messageId && payload?.content) {
+      return mergeAssistantChunk(timeline, payload);
+    }
+    return pushSystemEvent(timeline, 'message', payload);
+  }
+
+  if (eventType === 'agent_thought_chunk' || payload?.sessionUpdate === 'agent_thought_chunk') {
+    return mergeThinkingChunk(timeline, payload);
+  }
+
+  if (eventType === 'agent_message_chunk' || payload?.sessionUpdate === 'agent_message_chunk') {
+    return mergeAssistantChunk(timeline, payload);
+  }
+
+  if (eventType === 'user_message_chunk' || payload?.sessionUpdate === 'user_message_chunk') {
+    return mergeUserChunk(timeline, payload);
+  }
+
+  if (eventType === 'tool_call' || payload?.sessionUpdate === 'tool_call') {
+    return mergeToolCall(timeline, payload, false);
+  }
+
+  if (eventType === 'tool_call_update' || payload?.sessionUpdate === 'tool_call_update') {
+    return mergeToolCall(timeline, payload, true);
+  }
+
+  if (eventType === 'thinking' || payload?.type === 'thinking' || payload?.sessionUpdate === 'thinking') {
+    return mergeThinkingChunk(timeline, payload);
+  }
+
+  if (eventType === 'interruption_request' || payload?.sessionUpdate === 'interruption_request' || payload?.type === 'interruption') {
+    return [
+      ...timeline,
+      createTimelineEntry({
+        type: 'interruption',
+        role: 'assistant',
+        raw: payload,
+        meta: payload,
+        messageId: payload?.messageId || null,
+        toolCallId: payload?.toolCallId || null,
+      }),
+    ];
+  }
+
+  if (eventType === 'question_request' || payload?.sessionUpdate === 'question_request' || payload?.type === 'question') {
+    return [
+      ...timeline,
+      createTimelineEntry({
+        type: 'question',
+        role: 'assistant',
+        raw: payload,
+        meta: payload,
+        messageId: payload?.messageId || null,
+        toolCallId: payload?.toolCallId || null,
+      }),
+    ];
+  }
+
+  if (eventType === 'config_option_update' || payload?.sessionUpdate === 'config_option_update') {
+    return pushSystemEvent(timeline, 'config_option_update', payload);
+  }
+
+  if (eventType === 'session_info_update' || payload?.sessionUpdate === 'session_info_update') {
+    return pushSystemEvent(timeline, 'session_info_update', payload);
+  }
+
+  if (eventType === 'available_commands_update' || payload?.sessionUpdate === 'available_commands_update') {
+    return pushSystemEvent(timeline, 'available_commands_update', payload);
+  }
+
+  if (eventType === 'usage_update' || payload?.sessionUpdate === 'usage_update') {
+    return pushSystemEvent(timeline, 'usage_update', payload);
+  }
+
+  if (eventType === 'artifact' || payload?.type === 'artifact') {
+    return pushSystemEvent(timeline, 'artifact', payload);
+  }
+
+  if (eventType === 'checkpoint' || payload?.type === 'checkpoint') {
+    return pushSystemEvent(timeline, 'checkpoint', payload);
+  }
+
+  if (eventType === 'taskCreated' || eventType === 'taskStatus' || payload?.type === 'taskCreated' || payload?.type === 'taskStatus') {
+    return pushSystemEvent(timeline, eventType, payload);
+  }
+
+  if (eventType === 'goal-progress' || eventType === 'goal-status' || payload?.type === 'goal-progress' || payload?.type === 'goal-status') {
+    return pushSystemEvent(timeline, eventType, payload);
+  }
+
+  if (eventType === 'question_answered' || payload?.type === 'question_answered') {
+    return [
+      ...timeline,
+      createTimelineEntry({
+        type: 'question_answered',
+        role: 'system',
+        content: '已回答问题',
+        raw: payload,
+        meta: payload,
+        streaming: false,
+      }),
+    ];
+  }
+
+  if (eventType === 'promptSuggestion' || payload?.type === 'promptSuggestion') {
+    const suggestion = payload?.suggestion || (typeof payload === 'string' ? payload : '');
+    return [
+      ...timeline,
+      createTimelineEntry({
+        type: 'promptSuggestion',
+        role: 'system',
+        content: suggestion ? `建议: ${suggestion}` : '收到建议',
+        raw: payload,
+        meta: payload,
+        streaming: false,
+      }),
+    ];
+  }
+
+  if (eventType === 'teamUpdate' || payload?.type === 'teamUpdate') {
+    return [
+      ...timeline,
+      createTimelineEntry({
+        type: 'teamUpdate',
+        role: 'system',
+        content: '团队更新',
+        raw: payload,
+        meta: payload,
+        streaming: false,
+      }),
+    ];
+  }
+
+  if (eventType === 'status_change' || eventType === 'model_update' || eventType === 'mode_update' || eventType === 'current_mode_update' || eventType === 'initialized') {
+    return pushSystemEvent(timeline, eventType, payload);
+  }
+
+  return pushSystemEvent(timeline, eventType, payload);
+}

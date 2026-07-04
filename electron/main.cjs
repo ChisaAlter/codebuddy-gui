@@ -1,212 +1,252 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
+const { spawn } = require('child_process');
+const fs = require('fs');
 const http = require('http');
+const net = require('net');
 
-// ═══════════════════════════════════════════
-// Mock CodeBuddy API Server (fallback)
-// ═══════════════════════════════════════════
-function startMockServer() {
-  const PORT = 7890;
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://localhost:${PORT}`);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Access-Control-Allow-Methods', '*');
-    if (req.method === 'OPTIONS') { res.writeHead(200); return res.end(); }
+const isDev = !app.isPackaged;
+let mainWindow = null;
+const startupLog = path.join(__dirname, '..', 'electron-startup.log');
 
-    const send = (code, data) => {
-      res.writeHead(code, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(data));
-    };
+// CodeBuddy 端口管理
+const CODEBUDDY_PORT = 63918;
+let codebuddyProc = null;
+let codebuddyPortPromise = null;
+let codebuddyPort = null;
 
-    try {
-      // Health
-      if (url.pathname === '/api/v1/health') return send(200, { status: 'ok', uptime: 60 });
+function logStartup(message) {
+  try {
+    fs.appendFileSync(startupLog, `[${new Date().toISOString()}] ${message}\n`);
+  } catch (_) {}
+}
 
-      // Sessions
-      if (url.pathname === '/api/v1/sessions' && req.method === 'GET') {
-        return send(200, {
-          sessions: [
-            { id: 'sess_001', name: 'Mock Session Alpha', lastActiveAt: 'Just now' },
-            { id: 'sess_002', name: 'Code Review', lastActiveAt: '2 hours ago' },
-            { id: 'sess_003', name: 'Debugging Help', lastActiveAt: '1 day ago' },
-          ]
-        });
-      }
+logStartup('main.cjs loaded');
 
-      if (url.pathname.match(/\/api\/v1\/sessions\/[^/]+\/messages/)) {
-        return send(200, { messages: [
-          { role: 'user', content: 'Hello', ts: Date.now() - 60000 },
-          { role: 'assistant', content: 'Hi! This is a mock response. How can I help?', ts: Date.now() - 30000 },
-        ]});
-      }
+// ====== CodeBuddy 生命周期管理 ======
 
-      // Workers
-      if (url.pathname === '/api/v1/workers' && req.method === 'GET') {
-        return send(200, { workers: [
-          { pid: 1234, sessionId: 'interactive-1234', kind: 'interactive', cwd: '/home/user', status: 'running' },
-        ]});
-      }
-      if (url.pathname.match(/\/api\/v1\/workers\/\d+/) && req.method === 'DELETE') return send(200, {});
-      if (url.pathname.match(/\/api\/v1\/workers\/\w+\/logs/)) return send(200, { logs: '[INFO] Mock log line 1\n[INFO] Mock log line 2' });
+function healthCheck(port) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(2000);
+    socket.on('connect', () => { socket.destroy(); resolve(true); });
+    socket.on('error', () => resolve(false));
+    socket.on('timeout', () => { socket.destroy(); resolve(false); });
+    socket.connect(port, '127.0.0.1');
+  });
+}
 
-      // Daemon
-      if (url.pathname === '/api/v1/daemon/status') return send(200, { status: 'running', pid: 5678, endpoint: 'http://127.0.0.1:7890', rssMib: 128, startedAt: Date.now() - 3600000 });
-
-      // Metrics
-      if (url.pathname === '/api/v1/metrics') return send(200, { cpuUsedPct: 12, memUsedMib: 512, memTotalMib: 16384, diskUsed: 45, diskTotal: 100 });
-
-      // Plugins
-      if (url.pathname === '/api/v1/plugins' && req.method === 'GET') return send(200, { plugins: [
-        { name: 'github-copilot', version: '1.0.0', description: 'GitHub Copilot' },
-        { name: 'code-review', version: '2.1.0', description: 'Automated code review' },
-      ]});
-      if (url.pathname === '/api/v1/plugins' && req.method === 'POST') return send(200, {});
-
-      // Tasks
-      if (url.pathname === '/api/v1/scheduled-tasks') {
-        if (req.method === 'GET') return send(200, { tasks: [{ id: 'task_001', name: 'Nightly Build', cron: '0 2 * * *' }] });
-        if (req.method === 'POST') return send(200, { id: 'task_' + Date.now() });
-        if (req.method === 'DELETE') return send(200, {});
-      }
-
-      // Traces
-      if (url.pathname === '/api/v1/traces' && req.method === 'GET') return send(200, { traces: [
-        { traceId: 'trace_abc123', serviceName: 'codebuddy-api', durationMs: 45 },
-        { traceId: 'trace_def456', serviceName: 'codebuddy-worker', durationMs: 120 },
-      ]});
-      if (url.pathname.match(/\/api\/v1\/traces\//)) return send(200, { spans: [
-        { spanId: 's1', name: 'HTTP POST /runs', durationMs: 45, attributes: { 'http.method': 'POST' } },
-      ]});
-
-      // Files
-      if (url.pathname === '/api/v1/fs/list' && req.method === 'POST') {
-        const body = await new Promise(resolve => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>resolve(JSON.parse(d||'{}'))); });
-        const p = body.path || '';
-        if (!p || p === '.') return send(200, { files: [
-          { name: 'Documents', is_dir: true }, { name: 'Desktop', is_dir: true },
-          { name: 'package.json', is_dir: false }, { name: 'src', is_dir: true },
-        ]});
-        return send(200, { files: [{ name: 'file1.txt', is_dir: false }, { name: 'subdir', is_dir: true }] });
-      }
-
-      // Chat SSE
-      if (url.pathname === '/api/v1/runs' && req.method === 'POST') {
-        const body = await new Promise(resolve => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>resolve(JSON.parse(d||'{}'))); });
-        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-        const send = (text) => res.write(`data: ${JSON.stringify({ text })}\n\n`);
-        setTimeout(() => send('Hi! You said: "' + (body.text || '') + '"'), 100);
-        setTimeout(() => send(' I can help with that.'), 500);
-        setTimeout(() => { send('.'); res.write('data: [DONE]\n\n'); res.end(); }, 1200);
-        return;
-      }
-
-      // PTY
-      if (url.pathname === '/api/v1/pty' && req.method === 'POST') {
-        return send(200, { id: 'pty_' + Date.now(), cols: 120, rows: 30 });
-      }
-      if (url.pathname.match(/\/api\/v1\/pty\/[^/]+$/) && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-        res.write('data: Mock PTY\n');
-        res.write('data: $ \n\n');
-        const iv = setInterval(() => res.write('data: $ \n\n'), 5000);
-        req.on('close', () => clearInterval(iv));
-        return;
-      }
-      if (url.pathname.startsWith('/api/v1/pty/') && url.pathname.endsWith('/output')) {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-        res.write('data: $ \n\n');
-        setTimeout(() => res.end(), 10000);
-        return;
-      }
-      if (url.pathname.startsWith('/api/v1/pty/') && url.pathname.endsWith('/input/send')) return send(200, {});
-
-      send(404, { error: 'Not found', path: url.pathname });
-    } catch (e) {
-      send(500, { error: e.message });
+async function waitForCodeBuddy(port, timeoutMs = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await healthCheck(port);
+    if (ok) {
+      logStartup(`CodeBuddy ready on port ${port}`);
+      return true;
     }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function startCodeBuddy(port) {
+  logStartup(`Starting codebuddy --serve --port ${port}...`);
+
+  // 先检查是否已有 CodeBuddy 在这个端口上运行
+  const alreadyRunning = await healthCheck(port);
+  if (alreadyRunning) {
+    logStartup(`CodeBuddy already running on port ${port}`);
+    return port;
+  }
+
+  // 启动新的 CodeBuddy 实例
+  return new Promise((resolve, reject) => {
+    const proc = spawn('codebuddy', ['--serve', '--port', String(port)], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: true,
+    });
+
+    codebuddyProc = proc;
+
+    proc.stdout.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) logStartup(`codebuddy stdout: ${text}`);
+    });
+
+    proc.stderr.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) logStartup(`codebuddy stderr: ${text}`);
+    });
+
+    proc.on('error', (err) => {
+      logStartup(`codebuddy spawn error: ${err.message}`);
+      codebuddyProc = null;
+      reject(err);
+    });
+
+    proc.on('exit', (code, signal) => {
+      logStartup(`codebuddy exited code=${code} signal=${signal}`);
+      codebuddyProc = null;
+      codebuddyPort = null;
+    });
+
+    // 轮询等待就绪
+    waitForCodeBuddy(port).then((ready) => {
+      if (ready) {
+        logStartup(`CodeBuddy started on port ${port}`);
+        resolve(port);
+      } else {
+        logStartup('CodeBuddy start timeout');
+        // 即使超时也返回端口（可能稍后就绪）
+        resolve(port);
+      }
+    });
+  });
+}
+
+// IPC: 渲染进程获取端口
+ipcMain.handle('codebuddy:getPort', async () => {
+  if (codebuddyPort) return codebuddyPort;
+  if (codebuddyPortPromise) return codebuddyPortPromise;
+
+  codebuddyPortPromise = startCodeBuddy(CODEBUDDY_PORT).then((port) => {
+    codebuddyPort = port;
+    return port;
   });
 
-  server.listen(PORT, () => console.log('[mock-api] Running on port ' + PORT));
-  return server;
+  return codebuddyPortPromise;
+});
+
+function getRendererEntry() {
+  if (isDev) return 'http://localhost:5173';
+  const prodIndex = path.join(__dirname, '..', 'out', 'dist', 'index.html');
+  return `file://${prodIndex.replace(/\\/g, '/')}`;
 }
 
-// ═══════════════════════════════════════════
-// Try to find codebuddy, fall back to mock
-// ═══════════════════════════════════════════
-const { existsSync } = require('fs');
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-function findCodeBuddy() {
-  const candidates = ['codebuddy', 'codebuddy.cmd'];
-  for (const cmd of candidates) {
-    if (existsSync(cmd)) return cmd;
+function probeUrl(url) {
+  return new Promise((resolve) => {
+    const req = http.get(url, (res) => {
+      res.resume();
+      resolve(res.statusCode >= 200 && res.statusCode < 500);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1500, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function waitForRenderer(url, attempts = 30) {
+  if (!isDev) return true;
+  for (let i = 0; i < attempts; i += 1) {
+    const ok = await probeUrl(url);
+    logStartup(`probe ${i + 1}/${attempts} ${url} => ${ok}`);
+    if (ok) return true;
+    await wait(500);
   }
-  return null;
+  return false;
 }
 
-let mockServer = null;
+async function createWindow() {
+  logStartup('createWindow called');
+  const entry = getRendererEntry();
+  const ready = await waitForRenderer(entry, 40);
+  logStartup(`renderer ready=${ready} entry=${entry}`);
 
-function startBackend() {
-  const execPath = findCodeBuddy();
-  if (execPath) {
-    const { spawn } = require('child_process');
-    const proc = spawn(execPath, ['--serve', '--port', '7890'], { stdio: 'pipe' });
-    proc.stdout.on('data', d => console.log('[cb]', d.toString().trim()));
-    proc.stderr.on('data', d => console.error('[cb:err]', d.toString().trim()));
-    console.log('[backend] Started codebuddy from', execPath);
-    return proc;
-  } else {
-    // Start mock server
-    mockServer = startMockServer();
-    console.log('[backend] CodeBuddy not found, started mock API');
-    return null;
-  }
-}
-
-// ═══════════════════════════════════════════
-// Electron Window
-// ═══════════════════════════════════════════
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1400, height: 900,
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 1200,
+    minHeight: 760,
     frame: false,
-    backgroundColor: '#121214',
+    autoHideMenuBar: true,
+    backgroundColor: '#000000',
+    title: 'CodeBuddy GUI',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-    }
+      webSecurity: true,
+      devTools: true,
+    },
   });
 
-  win.webContents.on('did-finish-load', async () => {
-    console.log('[electron] Page loaded');
-    await new Promise(r => setTimeout(r, 3000));
-    try {
-      const text = await win.webContents.executeJavaScript('document.body.innerText');
-      console.log('[electron] PAGE TEXT:\n' + text);
-    } catch (e) {
-      console.log('[electron] JS Error:', e.message);
-    }
+  mainWindow.loadURL(entry).catch((error) => {
+    logStartup(`loadURL failed: ${error?.message || error}`);
   });
 
-  win.loadURL('http://localhost:8080');
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  if (isDev) {
+    mainWindow.webContents.on('did-fail-load', (_event, code, desc, validatedURL) => {
+      logStartup(`did-fail-load code=${code} desc=${desc} url=${validatedURL}`);
+      setTimeout(async () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const ok = await waitForRenderer(entry, 10);
+          logStartup(`retry after fail ready=${ok}`);
+          mainWindow.loadURL(entry).catch(() => {});
+        }
+      }, 1200);
+    });
+    mainWindow.webContents.on('did-finish-load', () => {
+      logStartup('did-finish-load');
+    });
+  }
 }
 
-// ═══════════════════════════════════════════
-// App lifecycle
-// ═══════════════════════════════════════════
-let backendProcess = null;
+ipcMain.handle('app:ping', async () => 'pong');
+ipcMain.handle('git:run', async (_event, args = []) => {
+  return await new Promise((resolve) => {
+    const cwd = 'C:/Ai/ChisaCode';
+    const proc = spawn('git', args, { cwd, shell: true });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('close', (code) => {
+      if (code === 0) resolve({ ok: true, output: stdout.trim() });
+      else resolve({ ok: false, error: stderr.trim() || stdout.trim() || `git exited ${code}` });
+    });
+  });
+});
+ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
+ipcMain.on('window:maximize', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+});
+ipcMain.on('window:close', () => { if (mainWindow) mainWindow.close(); });
+ipcMain.on('window:reload', () => { if (mainWindow) mainWindow.webContents.reload(); });
+ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' }); });
 
-app.whenReady().then(() => {
-  backendProcess = startBackend();
+app.whenReady().then(async () => {
+  // 后台启动 CodeBuddy（不阻塞窗口创建）
+  // 存入 codebuddyPortPromise 避免 IPC handler 重复启动
+  codebuddyPortPromise = startCodeBuddy(CODEBUDDY_PORT).then((port) => {
+    codebuddyPort = port;
+    logStartup(`CodeBuddy port ready: ${port}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('codebuddy:portReady', port);
+    }
+    return port;
+  }).catch((err) => {
+    logStartup(`CodeBuddy start failed: ${err.message}`);
+    codebuddyPortPromise = null;
+    throw err;
+  });
+
+  // 立即创建窗口（渲染进程会等待端口就绪）
   createWindow();
 });
-
-app.on('window-all-closed', (e) => {
-  e.preventDefault();
-});
-
-app.on('will-quit', () => {
-  if (backendProcess) backendProcess.kill();
-  if (mockServer) mockServer.close();
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
