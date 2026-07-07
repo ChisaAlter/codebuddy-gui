@@ -441,7 +441,8 @@ app.whenReady().then(async () => {
   // - style-src 'unsafe-inline' 足 React 内联样式；Google Fonts 域名放开
   const CSP = [
     "default-src 'self'",
-    "script-src 'self' 'wasm-unsafe-eval'",
+    // dev: Vite HMR client + @vitejs/plugin-react preamble 需 inline script；生产构建无 inline，更严
+    `script-src ${isDev ? "'self' 'wasm-unsafe-eval' 'unsafe-inline'" : "'self' 'wasm-unsafe-eval'"}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob:",
