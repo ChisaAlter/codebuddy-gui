@@ -15,3 +15,23 @@ webui-js.js
 START-REAL-WEBUI.bat
 Playwright-cli/
 .playwright-cli/
+
+# IDE 本地 spec 缓存
+.trae/
+
+# codebuddy 运行时锁文件
+.codebuddy/
+
+# 废弃的老 mock-server 测试脚本（已被 scripts/test/e2e-launch.cjs 取代）
+scripts/dev/
+scripts/test/Full-Test.ps1
+scripts/test/RUN-ALL.cjs
+scripts/test/RUN-TEST.ps1
+scripts/test/Test-All.bat
+scripts/test/Test-Full-Sequence.ps1
+scripts/test/mock-server.cjs
+scripts/test/start-with-mock.cjs
+scripts/test/test-app.cjs
+scripts/test/test-full.ps1
+scripts/test/test-launch.cjs
+scripts/test/test_all.py
