@@ -1,6 +1,6 @@
-const { app, BrowserWindow, ipcMain, shell, net, safeStorage, dialog, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net, safeStorage, dialog, session, Tray, Menu } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const express = require('express');
@@ -10,8 +10,8 @@ const isDev = !app.isPackaged;
 // 生产构建本地 HTTP 服务器端口（动态分配）
 let prodServerPort = null;
 
-
 let mainWindow = null;
+let tray = null;
 const startupLog = path.join(__dirname, '..', 'electron-startup.log');
 
 // CodeBuddy 后端端口由 CLI --port 默认 auto-assign 随机分配，从 stdout 解析
@@ -20,6 +20,10 @@ let codebuddyPortPromise = null;
 let codebuddyPort = null;
 let codebuddyPassword = null;
 const PASSWORD_FILE = path.join(app.getPath('userData'), 'codebuddy-password.txt');
+
+// 真退出标志：tray 点"退出"或 Cmd/Q 时为 true，window-all-closed 看到 true 才 quit
+// 普通 X 关窗口不设它，window-all-closed 改 hide 不 quit
+let reallyQuitting = false;
 
 function canEncryptPassword() {
   try {
@@ -33,10 +37,21 @@ function readSavedPassword() {
   try {
     if (!fs.existsSync(PASSWORD_FILE)) return null;
     const saved = fs.readFileSync(PASSWORD_FILE, 'utf8').trim();
-    if (!saved) return null;
+    if (!saved) {
+      // 空文件 = stale，清掉避免 userData 目录累积
+      try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
+      return null;
+    }
     if (saved.startsWith('enc:')) {
-      const encrypted = Buffer.from(saved.slice(4), 'base64');
-      return safeStorage.decryptString(encrypted);
+      try {
+        const encrypted = Buffer.from(saved.slice(4), 'base64');
+        return safeStorage.decryptString(encrypted);
+      } catch (decErr) {
+        // 解密失败 = stale（换过 OS keychain / 换过密码），清掉不累积
+        logStartup(`Saved password decrypt failed, removing stale: ${decErr.message}`);
+        try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
+        return null;
+      }
     }
     if (canEncryptPassword()) savePassword(saved);
     return saved;
@@ -66,6 +81,14 @@ codebuddyPassword = readSavedPassword();
 
 function logStartup(message) {
   try {
+    // 日志轮转：超 1MB 截断保留尾 200KB，避免长期启动累积占满磁盘 + 测试全文读越来越慢
+    try {
+      const stats = fs.statSync(startupLog);
+      if (stats.size > 1024 * 1024) {
+        const tail = fs.readFileSync(startupLog);
+        fs.writeFileSync(startupLog, tail.slice(-200 * 1024));
+      }
+    } catch (_) { /* 文件不存在或读失败不阻塞写入 */ }
     fs.appendFileSync(startupLog, `[${new Date().toISOString()}] ${message}\n`);
   } catch (_) {}
 }
@@ -341,7 +364,6 @@ function createTimeoutSignal(timeoutMs) {
   };
 }
 
-ipcMain.handle('app:ping', async () => 'pong');
 ipcMain.handle('git:run', async (_event, payload = {}) => {
   const { args, cwd } = normalizeGitRequest(payload);
   const validationError = validateGitArgs(args);
@@ -451,6 +473,7 @@ app.whenReady().then(async () => {
     "form-action 'self'",
     "object-src 'none'",
   ].join('; ');
+  logStartup(`CSP injected: ${isDev ? 'dev(unsafe-inline)' : 'prod(strict)'} script-src`);
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: Object.assign({}, details.responseHeaders, {
@@ -483,8 +506,68 @@ app.whenReady().then(async () => {
 
   // 立即创建窗口（渲染进程会等待端口就绪）
   createWindow();
+
+  // Tray 图标：关窗口不退出，最小化到系统托盘，用户从托盘右键退出才真 quit
+  // 没有真图标资源时用空 Tray（Electron 允许），点托盘显窗口
+  try {
+    tray = new Tray('');
+    tray.setToolTip('CodeBuddy GUI');
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow();
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    tray.on('right-click', () => {
+      const menu = Menu.buildFromTemplate([
+        { label: '显示窗口', click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
+        { type: 'separator' },
+        { label: '退出', click: () => { reallyQuitting = true; app.quit(); } },
+      ]);
+      tray.popUpContextMenu(menu);
+    });
+    logStartup('Tray icon created');
+  } catch (err) {
+    logStartup(`Tray creation failed: ${err.message}`);
+  }
+
+  // cookie 跨 session 校验：主进程 net.fetch 认证后写 default session cookie，
+  // 渲染进程 fetch 也走 default session —— 理论上共享。加日志给后续诊断真证据。
+  // 真发 session/prompt 时若认证失效，渲染进程 store.bootstrap 会自己 fetch 认证兜底
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+// 真退出前树杀 codebuddy 子进程：shell:true spawn 出来的 node.exe 不会随 Electron 退
+// 不树杀会变孤儿进程占 stdout + 占端口，下次启动端口冲突（实测残留过 PID 42940/18192）
+app.on('before-quit', () => {
+  reallyQuitting = true;
+  if (codebuddyProc && !codebuddyProc.killed) {
+    try {
+      // Windows shell:true spawn 出来的 codebuddy 是 node.exe 包装，taskkill /T 树杀
+      // 包括它 spawn 出的任何子进程
+      execSync(`taskkill /T /F /PID ${codebuddyProc.pid}`, { stdio: 'ignore' });
+      logStartup(`Tree-killed codebuddy PID ${codebuddyProc.pid}`);
+    } catch (e) {
+      // taskkill 失败兜底走 proc.kill
+      try { codebuddyProc.kill('SIGKILL'); } catch (_) {}
+      logStartup(`Tree-kill failed, fallback SIGKILL: ${e.message}`);
+    }
+    codebuddyProc = null;
+  }
+  if (tray) { try { tray.destroy(); } catch (_) {} tray = null; }
+});
+
+// 关窗口不退出 = 最小化到托盘；只有 reallyQuitting（托盘退出 / Cmd+Q）才真 quit
+app.on('window-all-closed', () => {
+  if (reallyQuitting) {
+    if (process.platform !== 'darwin') app.quit();
+    return;
+  }
+  // 普通关窗口：不 quit，保留托盘供用户重开
+  // darwin 上原生行为是关窗口留进程，其他平台走托盘逻辑
+});
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });

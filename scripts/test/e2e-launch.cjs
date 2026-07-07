@@ -165,11 +165,8 @@ async function main() {
   check('store setWorkspace 起新 cwd 会话 + 持久化', /async setWorkspace\(path\)/.test(store) && /localStorage\.setItem\('codebuddy-gui-workspace'/.test(store), '');
   check('Sidebar 渲染 切换 按钮 onClick chooseWorkspace', /onClick=\{\(\)\s*=>\s*useStore\.getState\(\)\.chooseWorkspace\(\)\}/.test(sidebar), '');
 
-  // 3b. app:ping IPC —— preload 写 `app:ping`、main 注册 `app:ping`、字符串必须精确一致
-  check('preload 暴露 ping IPC → app:ping', /ping:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('app:ping'\)/.test(preload), '');
-  check('main 注册 app:ping handler', /ipcMain\.handle\('app:ping'\s*,\s*async\s*\(\)\s*=>\s*'pong'\)/.test(main), '');
-
-  // 3c. preload 暴露的所有 invoke channel 必须在 main 有对应 handle（一致性硬校验）
+  // 3b. preload 暴露的所有 invoke channel 必须在 main 有对应 handle（一致性硬校验）
+  //     能抓出 preload 写 app:pingg 但 main 注册成 app:ping 这类真拼写 bug
   const channelsInPreload = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'\)/g)].map(m => m[1]);
   const channelsInMain = [...main.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(m => m[1]);
   const missingHandlers = channelsInPreload.filter(c => !channelsInMain.includes(c));

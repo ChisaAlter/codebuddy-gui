@@ -254,9 +254,16 @@ export const useStore = create((set, get) => ({
 
   // 切工作区：经 IPC 弹目录选择框 → set workspacePath + 持久化 → 用新 cwd 起新会话 + 重定向文件树根
   // cwd 一次性注入到 session/new，agent 工具调用就以此目录为工作根；不动后端进程
+  // ⚠ 注意：CLI 协议 cwd 只在 session/new|load 一次性注入，运行中改不了 cwd。
+  //   所以切工作区 = 起新会话（旧 sessionId + timeline 丢），UI 要明告知用户。
   async chooseWorkspace() {
     if (!window.electronAPI?.chooseWorkspace) {
       set({ error: '工作区选择不可用（IPC 缺失）' });
+      return;
+    }
+    // 当前会话有对话历史时，弹确认（避免用户误切丢对话）
+    const hasHistory = get().timeline.some(it => it.type === 'message' || it.type === 'assistant');
+    if (hasHistory && !window.confirm('切换工作区将开启新会话，当前对话历史不会被保留。是否继续？')) {
       return;
     }
     let path = null;

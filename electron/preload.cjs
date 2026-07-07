@@ -2,7 +2,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
-  ping: () => ipcRenderer.invoke('app:ping'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),
   windowClose: () => ipcRenderer.send('window:close'),
