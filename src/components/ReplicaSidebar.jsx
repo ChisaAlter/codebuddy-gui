@@ -100,6 +100,7 @@ export default function ReplicaSidebar() {
     route, setRoute, sidebarCollapsed,
     sessions, info, currentModel, currentMode, models, modes,
     connectionState, changeSession, newSession, setModel, setMode, changesCount,
+    workspacePath,
   } = useStore();
 
   return (
@@ -173,8 +174,19 @@ export default function ReplicaSidebar() {
       {!sidebarCollapsed && (
         <div className="shrink-0 border-t border-[var(--color-border-default)] p-3 space-y-2">
           <div className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-2.5 text-xs">
-            <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)] mb-1">工作区</div>
-            <div className="truncate text-[var(--color-text-secondary)]">{info?.cwd || '加载中...'}</div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">工作区</div>
+              <button
+                className="btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                title="切换工作区目录"
+                onClick={() => useStore.getState().chooseWorkspace()}
+              >
+                切换
+              </button>
+            </div>
+            <div className="truncate text-[var(--color-text-secondary)]" title={workspacePath || info?.cwd || ''}>
+              {workspacePath || info?.cwd || '加载中...'}
+            </div>
             <div className="text-[var(--color-text-muted)] mt-0.5">{info?.os || '-'} | {info?.version || '-'}</div>
           </div>
 

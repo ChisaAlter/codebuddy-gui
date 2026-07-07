@@ -1,4 +1,10 @@
+// 后端基址兜底值：仅当 Electron 主进程 IPC 不可达时使用。
+// 正常运行时 store.bootstrap() 会调 window.electronAPI.getCodeBuddyPort() 拿主进程从 stdout 解析出的真实随机端口并 setApiBase 覆盖此值。
 let _apiBase = 'http://127.0.0.1:63918';
+
+const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt']);
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const LONG_REQUEST_IDLE_TIMEOUT_MS = 120000;
 
 export function getApiBase() {
   return _apiBase;
@@ -8,11 +14,81 @@ export function setApiBase(base) {
   _apiBase = base;
 }
 
+let _acpSessionToken = null;
+export function setAcpSessionToken(token) {
+  _acpSessionToken = token;
+}
+export function getAcpSessionToken() {
+  return _acpSessionToken;
+}
+
 function makeHeaders(extra = {}) {
-  return {
+  const headers = {
     'X-CodeBuddy-Request': '1',
     ...extra,
   };
+  if (_acpSessionToken) {
+    headers['acp-session-token'] = _acpSessionToken;
+  }
+  return headers;
+}
+
+export async function requestCodeBuddy(pathOrUrl, init = {}) {
+  const url = /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : `${_apiBase}${pathOrUrl}`;
+  const timeoutMs = init.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const signal = init.signal;
+  const request = {
+    ...init,
+    signal,
+    headers: {
+      ...makeHeaders(),
+      ...(init.headers || {}),
+    },
+  };
+  delete request.timeoutMs;
+
+  const controller = new AbortController();
+  // 走 IPC 代理通道时由主进程统一管超时（避免前端 30s 抢盖主进程 120s 长响应）
+  const viaIpc = typeof window !== 'undefined' && window.electronAPI?.requestCodeBuddy;
+  const timeoutId = (!viaIpc && timeoutMs > 0) ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const onAbort = () => controller.abort();
+  const cleanup = () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    signal?.removeEventListener?.('abort', onAbort);
+  };
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.('abort', onAbort, { once: true });
+
+  if (viaIpc) {
+    try {
+      const proxied = await window.electronAPI.requestCodeBuddy({
+        url,
+        method: request.method || 'GET',
+        headers: request.headers,
+        body: request.body,
+        timeoutMs,
+      });
+      if (controller.signal.aborted && !proxied?.ok) {
+        throw new Error(`CodeBuddy request timeout: ${request.method || 'GET'} ${url}`);
+      }
+      return {
+        ok: !!proxied?.ok,
+        status: proxied?.status || 0,
+        statusText: proxied?.statusText || 'CodeBuddy request failed',
+        headers: proxied?.headers || {},
+        text: async () => proxied?.body || '',
+        json: async () => proxied?.body ? JSON.parse(proxied.body) : null,
+      };
+    } finally {
+      cleanup();
+    }
+  }
+
+  try {
+    return await fetch(url, { ...request, signal: controller.signal });
+  } finally {
+    cleanup();
+  }
 }
 
 function parseEventStreamMessages(text) {
@@ -111,11 +187,12 @@ export class AcpClient {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(`${_apiBase}/api/v1/acp/connect`, {
+      const response = await requestCodeBuddy('/api/v1/acp/connect', {
         method: 'POST',
         headers: makeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({}),
         signal: controller.signal,
+        timeoutMs: 10000,
       });
 
       clearTimeout(timeoutId);
@@ -125,12 +202,17 @@ export class AcpClient {
       }
 
       const payload = await response.json();
+      const previousConnectionId = this.connectionId;
       this.connectionId = payload.connectionId;
       this.sessionToken = payload.sessionToken || null;
       this.connected = true;
       this._connecting = false;
       this.reconnecting = false;
       this._connectionError = false;
+      if (previousConnectionId && previousConnectionId !== this.connectionId) {
+        this.releaseConnection(previousConnectionId);
+        this.emit('connection/replaced', { previousConnectionId, connectionId: this.connectionId });
+      }
       this.emit('connected', payload);
 
       // 连接成功后自动启用心跳
@@ -257,16 +339,18 @@ export class AcpClient {
     return result;
   }
 
-  async initializeSession(sessionId = null) {
+  async initializeSession(sessionId = null, cwd = '.') {
     await this.connect();
     const init = await this.initialize();
+    // cwd 决定该会话 agent 工具调用的实际工作目录；session/new 时一次性注入，运行时不可改
     const loaded = sessionId
-      ? await this.request('session/load', { sessionId, cwd: '.', mcpServers: [] })
-      : await this.request('session/new', { cwd: '.', mcpServers: [] });
+      ? await this.request('session/load', { sessionId, cwd, mcpServers: [] })
+      : await this.request('session/new', { cwd, mcpServers: [] });
     return { init, loaded };
   }
 
   async disconnect() {
+    const previousConnectionId = this.connectionId;
     this.connected = false;
     this.initialized = false;
     this.reconnecting = false;
@@ -281,6 +365,15 @@ export class AcpClient {
     }
 
     this.stopHeartbeat();
+    if (previousConnectionId) await this.releaseConnection(previousConnectionId);
+  }
+
+  async releaseConnection(connectionId) {
+    if (!connectionId) return;
+    await requestCodeBuddy(`/api/v1/acp/connect/${encodeURIComponent(connectionId)}`, {
+      method: 'DELETE',
+      timeoutMs: 5000,
+    }).catch(() => null);
   }
 
   async request(method, params = {}) {
@@ -290,12 +383,19 @@ export class AcpClient {
 
     const id = String(++this.requestCounter);
     const payload = { jsonrpc: '2.0', method, params, id };
+    const isLongRunning = LONG_RUNNING_ACP_METHODS.has(method);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    let timeoutId = null;
+    const armTimeout = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      const timeoutMs = isLongRunning ? LONG_REQUEST_IDLE_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    };
+    armTimeout();
 
     try {
-      const response = await fetch(`${_apiBase}/api/v1/acp`, {
+      const response = await requestCodeBuddy('/api/v1/acp', {
         method: 'POST',
         headers: makeHeaders({
           Accept: 'application/json, text/event-stream',
@@ -305,15 +405,28 @@ export class AcpClient {
         }),
         body: JSON.stringify(payload),
         signal: controller.signal,
+        timeoutMs: isLongRunning ? LONG_REQUEST_IDLE_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`ACP POST failed: ${response.status}`);
       }
 
-      const text = await response.text();
+      const reader = response.body?.getReader?.();
+      const decoder = new TextDecoder();
+      let text = '';
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          armTimeout();
+          text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+      } else {
+        text = await response.text();
+      }
+
       const messages = parseEventStreamMessages(text);
 
       let matchedResult = null;
@@ -341,23 +454,18 @@ export class AcpClient {
 
       return null;
     } catch (err) {
-      clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        throw new Error(`ACP request timeout: ${method}`);
+        throw new Error(`ACP request ${isLongRunning ? 'idle ' : ''}timeout: ${method}`);
       }
       throw err;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 }
 
 export async function fetchJson(path, init = {}) {
-  const response = await fetch(`${_apiBase}${path}`, {
-    ...init,
-    headers: {
-      ...makeHeaders(),
-      ...(init.headers || {}),
-    },
-  });
+  const response = await requestCodeBuddy(path, init);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }

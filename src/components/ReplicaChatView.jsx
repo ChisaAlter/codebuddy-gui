@@ -266,13 +266,6 @@ export default function ReplicaChatView() {
   const scrollContainerRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
-  // Auto-dismiss error banner after 8 seconds
-  useEffect(() => {
-    if (!chatError) return;
-    const timer = setTimeout(() => setChatError(null), 8000);
-    return () => clearTimeout(timer);
-  }, [chatError]);
-
   const timeline = useStore((s) => s.timeline);
   const connectionState = useStore((s) => s.connectionState);
   const currentModel = useStore((s) => s.currentModel);
@@ -282,6 +275,7 @@ export default function ReplicaChatView() {
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const closeAssistantStream = useStore((s) => s.closeAssistantStream);
+  const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
   const models = useStore((s) => s.models);
   const modes = useStore((s) => s.modes);
   const setModel = useStore((s) => s.setModel);
@@ -291,6 +285,12 @@ export default function ReplicaChatView() {
   const [chatError, setChatError] = useState(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
+  // Auto-dismiss error banner after 8 seconds
+  useEffect(() => {
+    if (!chatError) return;
+    const timer = setTimeout(() => setChatError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [chatError]);
   const modeOptions = useMemo(() => {
     const items = [
       { id: 'default', name: '始终询问' },
@@ -319,7 +319,7 @@ export default function ReplicaChatView() {
     return null;
   })();
 
-  const isStreaming = useMemo(() => timeline.some(item => item.streaming === true), [timeline]);
+  const isStreaming = useMemo(() => timeline.some(item => item.streaming === true) || isAwaitingResponse, [timeline, isAwaitingResponse]);
 
   // Auto-scroll to bottom when timeline changes (new messages arrive)
   useEffect(() => {
@@ -449,7 +449,7 @@ export default function ReplicaChatView() {
                 <div className="relative">
                   <button
                     className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-                    onClick={() => setShowModePicker(!showModePicker)}
+                    onClick={(e) => { e.stopPropagation(); setShowModePicker(!showModePicker); }}
                   >
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M8 2c-1.5 0-3 .5-4 1.5l1.5 1.5C6.5 4.5 7.5 4 8 4c2 0 4 1.5 4 4h-1.5l2 2.5 2-2.5H13c0-2.5-2-4-5-4z" />
@@ -493,7 +493,7 @@ export default function ReplicaChatView() {
                 <div className="relative">
                   <button
                     className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors truncate max-w-[180px]"
-                    onClick={() => setShowModelPicker(!showModelPicker)}
+                    onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
                   >
                     {currentModelName || currentModel || '选择模型'}
                   </button>

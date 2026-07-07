@@ -1,4 +1,4 @@
-import { getApiBase, fetchJson } from './acp';
+import { fetchJson, requestCodeBuddy } from './acp';
 
 export async function fsList(path = '.', depth = 1) {
   const payload = await fetchJson('/api/v1/fs/list', {
@@ -54,9 +54,8 @@ export async function removeWatcher(watcherId) {
 }
 
 export async function downloadFile(path) {
-  const response = await fetch(`${getApiBase()}/api/v1/files/download?path=${encodeURIComponent(path)}`, {
+  const response = await requestCodeBuddy(`/api/v1/files/download?path=${encodeURIComponent(path)}`, {
     method: 'GET',
-    headers: { 'X-CodeBuddy-Request': '1' },
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.text();
@@ -126,9 +125,8 @@ export async function fsWrite(path, content) {
  * @returns {Promise<string>} 文件文本内容
  */
 export async function fsRead(path) {
-  const response = await fetch(`${getApiBase()}/api/v1/fs/read?path=${encodeURIComponent(path)}`, {
+  const response = await requestCodeBuddy(`/api/v1/fs/read?path=${encodeURIComponent(path)}`, {
     method: 'GET',
-    headers: { 'X-CodeBuddy-Request': '1' },
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.text();
@@ -162,4 +160,4 @@ export function joinPath(base, child) {
   return `${base.replace(/\\/g, '/')}/${child}`;
 }
 
-export { getApiBase };
+export { requestCodeBuddy as getCodeBuddyRequest };

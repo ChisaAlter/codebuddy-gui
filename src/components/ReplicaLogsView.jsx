@@ -16,7 +16,7 @@ function highlightText(text, term) {
 export default function ReplicaLogsView() {
   const workers = useStore((s) => s.workers);
   const refreshWorkers = useStore((s) => s.refreshWorkers);
-  const fetchWorkerLogs = useStore((s) => s.fetchWorkerLogs);
+  const loadWorkerLogs = useStore((s) => s.loadWorkerLogs);
   const [workerPid, setWorkerPid] = useState('');
   const [logType, setLogType] = useState('stdout');
   const [logs, setLogs] = useState('');
@@ -52,7 +52,7 @@ export default function ReplicaLogsView() {
     setLoading(true);
     setLogError(null);
     try {
-      const text = await fetchWorkerLogs(workerPid, logType, 200);
+      const text = await loadWorkerLogs(workerPid, logType, 200);
       setLogs(text || '');
     } catch (err) {
       setLogError('日志加载失败: ' + (err?.message || '未知错误'));
@@ -60,7 +60,7 @@ export default function ReplicaLogsView() {
     } finally {
       setLoading(false);
     }
-  }, [workerPid, logType, fetchWorkerLogs]);
+  }, [workerPid, logType, loadWorkerLogs]);
 
   useEffect(() => {
     if (!autoRefresh || !workerPid) return;

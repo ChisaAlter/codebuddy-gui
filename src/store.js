@@ -1,10 +1,9 @@
 import { create } from 'zustand';
-import { AcpClient, getApiBase, setApiBase, fetchJson } from './lib/acp';
+import { AcpClient, getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
-import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs, updateSetting, updateSettingsBatch, fetchChannels, fetchWorkerDetail, stopWorker, restartWorker, enablePlugin, disablePlugin, searchTraces, fetchTraceDetail } from './lib/ops';
-import { PtySocket } from './lib/pty';
+import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSetting } from './lib/ops';
 import {
   closeAssistantStream,
   pushUserMessage,
@@ -65,6 +64,8 @@ export const useStore = create((set, get) => ({
   currentMode: 'default',
   info: null,
   settings: null,
+  infoLoaded: false,
+  settingsLoaded: false,
   sessionTitle: null,
   usage: null,
   availableCommands: [],
@@ -72,6 +73,9 @@ export const useStore = create((set, get) => ({
   workers: [],
   plugins: [],
   timeline: [],
+  // 发消息后等 agent 首 SSE 块期间：UI 需立即显"思考中"态（发送键变终止键）
+  // 收到 agent_message_chunk/agent_thought_chunk/tool_call 等真内容事件时清
+  isAwaitingResponse: false,
   sidebarCollapsed: false,
   changesCount: 0,
   leftTab: 'chat',
@@ -89,6 +93,9 @@ export const useStore = create((set, get) => ({
   questions: [],
   teamState: null,
   fileCwd: '.',
+  // 工作区路径：决定 ACP 会话 agent 工具调用目录、Git cwd、文件树根的统一来源
+  // 通过 setWorkspace(path) 切换 = 用新 cwd 起新会话；持久化在 localStorage
+  workspacePath: null,
   fileEntries: [],
   fileLoading: false,
   fileSearchQuery: '',
@@ -136,44 +143,44 @@ export const useStore = create((set, get) => ({
   },
 
   handleSessionUpdate(update) {
-    if (update === null || !update || typeof update !== 'object') return;
+    const su = update.sessionUpdate || update.session_update || update.type;
+    if (!su) return;
 
-    if (update.sessionUpdate === 'config_option_update') {
+    if (su === 'config_option_update') {
       const patch = get().applySessionConfigUpdate(update.configOptions || []);
       set(patch);
+      return;
     }
 
-    if (update.sessionUpdate === 'session_info_update') {
-      set({
-        sessionTitle: update.title || get().sessionTitle,
-      });
+    if (su === 'session_info_update') {
+      set({ sessionTitle: update.title || get().sessionTitle });
+      return;
     }
 
-    if (update.sessionUpdate === 'usage_update') {
-      set({
-        usage: {
-          used: update.used,
-          size: update.size,
-          meta: update._meta || null,
-        },
-      });
+    if (su === 'usage_update') {
+      set({ usage: { used: update.used, size: update.size, meta: update._meta || null } });
+      return;
     }
 
-    if (update.sessionUpdate === 'available_commands_update') {
-      set({
-        availableCommands: update.availableCommands || [],
-      });
+    if (su === 'available_commands_update') {
+      set({ availableCommands: update.availableCommands || [] });
+      return;
     }
 
-    if (update.sessionUpdate === 'interruption_request') {
+    if (su === 'interruption_request') {
       set((state) => ({ permissionRequests: [...state.permissionRequests, update] }));
+      get().appendTimelineEvent(su, update);
+      return;
     }
 
-    if (update.sessionUpdate === 'question_request') {
+    if (su === 'question_request') {
       set((state) => ({ questions: [...state.questions, update] }));
+      get().appendTimelineEvent(su, update);
+      return;
     }
 
-    get().appendTimelineEvent(update.sessionUpdate || 'session/update', update);
+    // 内容事件：agent_message_chunk, agent_thought_chunk, tool_call, tool_call_update, status_change 等
+    get().appendTimelineEvent(su || 'session/update', update);
   },
 
   async changeSession(sessionId) {
@@ -187,7 +194,8 @@ export const useStore = create((set, get) => ({
         usage: null,
         availableCommands: [],
       });
-      const { init, loaded } = await acp.initializeSession(sessionId);
+      // cwd 用当前 workspacePath（切工作区后 load 旧会话仍带它，CLI 会尊重 load 的 cwd 用于工具调用）
+      const { init, loaded } = await acp.initializeSession(sessionId, get().workspacePath || '.');
       const availableModels = loaded?.models?.availableModels
         || init?.models?.availableModels
         || init?.agentCapabilities?.availableModels
@@ -243,8 +251,78 @@ export const useStore = create((set, get) => ({
   async newSession() {
     return get().changeSession(null);
   },
+
+  // 切工作区：经 IPC 弹目录选择框 → set workspacePath + 持久化 → 用新 cwd 起新会话 + 重定向文件树根
+  // cwd 一次性注入到 session/new，agent 工具调用就以此目录为工作根；不动后端进程
+  async chooseWorkspace() {
+    if (!window.electronAPI?.chooseWorkspace) {
+      set({ error: '工作区选择不可用（IPC 缺失）' });
+      return;
+    }
+    let path = null;
+    try {
+      path = await window.electronAPI.chooseWorkspace();
+    } catch (err) {
+      set({ error: '工作区选择失败: ' + err.message });
+      return;
+    }
+    if (!path) return; // 用户取消
+    await get().setWorkspace(path);
+  },
+
+  async setWorkspace(path) {
+    if (!path || path === get().workspacePath) return;
+    try { localStorage.setItem('codebuddy-gui-workspace', path); } catch (_) {}
+    set({ workspacePath: path, fileCwd: path });
+    // 用新 cwd 起新会话（不走 changeSession(sessionId) 路径，要带 cwd 起新）
+    try {
+      set({
+        sessionId: null,
+        timeline: [],
+        permissionRequests: [],
+        questions: [],
+        sessionTitle: null,
+        usage: null,
+        availableCommands: [],
+      });
+      const { init, loaded } = await acp.initializeSession(null, path);
+      const availableModels = loaded?.models?.availableModels
+        || init?.models?.availableModels
+        || init?.agentCapabilities?.availableModels
+        || get().models;
+      const currentModel = loaded?.models?.currentModelId
+        || init?.models?.currentModelId
+        || get().currentModel;
+      const availableModes = loaded?.modes?.availableModes
+        || init?.modes?.availableModes
+        || get().modes;
+      const currentMode = loaded?.modes?.currentModeId
+        || init?.modes?.currentModeId
+        || get().currentMode;
+      set({
+        sessionId: loaded?.sessionId || null,
+        currentModel,
+        models: normalizeModels(availableModels),
+        modes: normalizeModes(availableModes),
+        currentMode,
+        connectionState: 'connected',
+        error: null,
+      });
+      // 文件树根切到新工作区
+      await get().openDirectory(path);
+      await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+    } catch (error) {
+      set({ error: error.message, connectionState: 'error' });
+    }
+  },
+
   async initializeWorkspace() {
-    await get().openDirectory('.');
+    // 启动时若已有持久化的 workspacePath，用它；否则文件树根兜底 '.'
+    const persisted = (function () { try { return localStorage.getItem('codebuddy-gui-workspace'); } catch (_) { return null; } })();
+    if (persisted && !get().workspacePath) {
+      set({ workspacePath: persisted });
+    }
+    await get().openDirectory(get().workspacePath || '.');
   },
 
   async openDirectory(path) {
@@ -341,11 +419,6 @@ export const useStore = create((set, get) => ({
   closePane(paneId) {
     set((state) => {
       if (state.terminalPanes.length === 1) return state;
-      const closedPane = state.terminalPanes.find((x) => x.id === paneId);
-      if (closedPane?.sessionId && window.__ptySockets && window.__ptySockets[closedPane.sessionId]) {
-        try { window.__ptySockets[closedPane.sessionId].close(); } catch (_) {}
-        delete window.__ptySockets[closedPane.sessionId];
-      }
       const nextPanes = state.terminalPanes.filter((x) => x.id !== paneId);
       return {
         terminalPanes: nextPanes,
@@ -380,6 +453,13 @@ export const useStore = create((set, get) => ({
   },
 
   appendTimelineEvent(eventType, payload) {
+    // 收到 agent 真内容/工具事件时清"等响应"态（UI 态已转 streaming，不再需占位）
+    const su = payload?.sessionUpdate || eventType;
+    if (su === 'agent_message_chunk' || su === 'agent_thought_chunk' ||
+        su === 'tool_call' || su === 'tool_call_update' ||
+        eventType === 'message' || eventType === 'thinking') {
+      set({ isAwaitingResponse: false });
+    }
     set((state) => ({ timeline: reduceAcpEvent(state.timeline, eventType, payload) }));
   },
 
@@ -403,20 +483,19 @@ export const useStore = create((set, get) => ({
   },
 
   async submitQuestionAnswers(toolCallId, answers) {
-    set((state) => ({
-      questions: state.questions.filter((x) => x.toolCallId !== toolCallId),
-    }));
-    get().appendTimelineEvent('question_answered', { toolCallId, answers });
     try {
-      // NOTE: _codebuddy.ai/answerQuestion 在真实 webui-js.js 中未找到，可能真实 UI 使用不同机制
-      // 保留此方法直到确认正确的 question 应答流程
       await acp.request('_codebuddy.ai/answerQuestion', {
         sessionId: get().sessionId,
         toolCallId,
         answers,
       });
+      set((state) => ({
+        questions: state.questions.filter((x) => x.toolCallId !== toolCallId),
+      }));
+      get().appendTimelineEvent('question_answered', { toolCallId, answers });
     } catch (error) {
       set({ error: error.message });
+      get().appendTimelineEvent('error', { message: error.message, type: 'error', source: '_codebuddy.ai/answerQuestion' });
     }
   },
 
@@ -425,13 +504,25 @@ export const useStore = create((set, get) => ({
       set({ route: parseHashRoute() });
     });
 
-    // 1. 从 Electron 主进程获取 CodeBuddy 端口（带降级）
+    // 1. 从 Electron 主进程获取 CodeBuddy 端口和密码（带降级）
+    let cbPassword = null;
     try {
       if (window.electronAPI?.getCodeBuddyPort) {
-        const port = await window.electronAPI.getCodeBuddyPort();
+        const result = await window.electronAPI.getCodeBuddyPort();
+        const port = result?.port || result;
         const base = `http://127.0.0.1:${port}`;
         setApiBase(base);
         set({ apiBase: base });
+        cbPassword = result?.password || null;
+        if (cbPassword) {
+          // 通过密码 URL 获取认证 cookie
+          try {
+            await requestCodeBuddy(`/?password=${encodeURIComponent(cbPassword)}`, {
+              headers: { 'X-CodeBuddy-Request': '1' },
+              credentials: 'include',
+            });
+          } catch (_) { /* cookie 认证失败不阻塞 */ }
+        }
       }
     } catch (err) {
       console.warn('Failed to get CodeBuddy port, using default:', err.message);
@@ -442,6 +533,7 @@ export const useStore = create((set, get) => ({
 
     acp.on('connected', () => {
       set({ connectionState: 'connected', sessionToken: acp.sessionToken, error: null });
+      setAcpSessionToken(acp.sessionToken);
     });
 
     acp.on('reconnecting', () => {
@@ -450,6 +542,7 @@ export const useStore = create((set, get) => ({
 
     acp.on('reconnected', () => {
       set({ connectionState: 'connected', error: null });
+      setAcpSessionToken(acp.sessionToken);
     });
 
     acp.on('reconnect_failed', () => {
@@ -461,8 +554,8 @@ export const useStore = create((set, get) => ({
       get().appendTimelineEvent('initialized', capabilities);
     });
 
-    acp.on('session/update', (params) => {
-      get().handleSessionUpdate(params.update || {});
+    acp.on('session/update', (event) => {
+      get().handleSessionUpdate((event.detail || {}).update || {});
     });
 
     acp.on('message', (event) => {
@@ -559,14 +652,14 @@ export const useStore = create((set, get) => ({
 
   async refreshInfo() {
     const payload = await fetchJson('/api/v1/info');
-    set({ info: payload.data || payload });
+    set({ info: payload.data || payload, infoLoaded: true });
   },
 
   async refreshSettings() {
     const payload = await fetchJson('/api/v1/settings');
     const loaded = payload.data || payload;
     try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(loaded)); } catch (_) {}
-    set({ settings: loaded });
+    set({ settings: loaded, settingsLoaded: true });
   },
 
   loadSettingsFromStorage() {
@@ -583,7 +676,7 @@ export const useStore = create((set, get) => ({
     set((state) => {
       const next = { ...(state.settings || {}), [key]: value };
       try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
-      return { settings: next };
+      return { settings: next, settingsLoaded: true };
     });
   },
 
@@ -647,9 +740,9 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async fetchWorkerLogs(workerPid, type = 'stdout', tail = 200) {
+  async loadWorkerLogs(workerPid, type = 'stdout', tail = 200) {
     try {
-      return await fetchWorkerLogs(workerPid, type, tail);
+      return await fetchWorkerLogsApi(workerPid, type, tail);
     } catch (error) {
       set({ error: error.message });
       return '';
@@ -722,15 +815,6 @@ export const useStore = create((set, get) => ({
         ptySessionId: data.sessionId,
         terminalSessions: [...state.terminalSessions.filter((x) => x.sessionId !== data.sessionId), data],
       }));
-      // 自动创建 PtySocket 并连接
-      try {
-        const socket = new PtySocket(data.sessionId);
-        socket.connect();
-        window.__ptySockets = window.__ptySockets || {};
-        window.__ptySockets[data.sessionId] = socket;
-      } catch (socketErr) {
-        console.warn('PTY auto-connect failed:', socketErr.message);
-      }
       return data;
     } catch (error) {
       set({ error: error.message });
@@ -738,11 +822,23 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  async releasePty(sessionId) {
+    if (!sessionId) return;
+    try {
+      await fetchJson(`/api/v1/pty/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+    } catch (_) {}
+    set((state) => ({
+      terminalSessions: state.terminalSessions.filter((x) => x.sessionId !== sessionId),
+      ptySessionId: state.ptySessionId === sessionId ? null : state.ptySessionId,
+    }));
+  },
+
   async cancelSession() {
     try {
       await acp.request('session/cancel', {
         sessionId: get().sessionId,
       });
+      set({ isAwaitingResponse: false });
       get().closeAssistantStream();
       get().appendTimelineEvent('status_change', { status: 'cancelled', role: 'system' });
     } catch (error) {
@@ -753,17 +849,22 @@ export const useStore = create((set, get) => ({
   async sendPrompt(text) {
     const content = String(text || '').trim();
     if (!content) return;
-    set((state) => ({ timeline: pushUserMessage(state.timeline, content) }));
+    set((state) => ({ timeline: pushUserMessage(state.timeline, content), isAwaitingResponse: true }));
     try {
       await acp.request('session/prompt', {
         sessionId: get().sessionId,
         prompt: [{ type: 'text', text: content }],
       });
     } catch (error) {
+      set({ isAwaitingResponse: false });
       get().appendTimelineEvent('error', { message: error.message, type: 'error' });
       get().closeAssistantStream();
     }
   },
 }));
 
+if (typeof window !== "undefined" && import.meta.env.DEV) {
+  window.__sendPrompt = (text) => useStore.getState().sendPrompt(text);
+  window.__ZUSTAND_STORE = useStore;
+}
 export { acp };

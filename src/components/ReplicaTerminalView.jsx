@@ -15,6 +15,7 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
   const setPaneStatus = useStore((s) => s.setPaneStatus);
   const appendPaneOutput = useStore((s) => s.appendPaneOutput);
   const setPaneSession = useStore((s) => s.setPaneSession);
+  const currentSessionIdRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) return;
@@ -71,11 +72,14 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
     if (socketRef.current?.sessionId === pane.sessionId) return;
 
     socketRef.current?.close();
+    socketRef.current = null;
+    currentSessionIdRef.current = pane.sessionId;
     const socket = new PtySocket(pane.sessionId);
     socketRef.current = socket;
     setPaneSession(pane.id, pane.sessionId);
 
     socket.on('open', () => {
+      if (currentSessionIdRef.current !== pane.sessionId) return;
       setPaneStatus(pane.id, 'connected');
       try {
         fitRef.current?.fit();
@@ -84,6 +88,7 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
     });
 
     socket.on('message', (payload) => {
+      if (currentSessionIdRef.current !== pane.sessionId) return;
       if (typeof payload === 'string') {
         terminalRef.current.write(payload);
         appendPaneOutput(pane.id, payload);
@@ -98,11 +103,18 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
       }
     });
 
-    socket.on('close', () => setPaneStatus(pane.id, 'disconnected'));
-    socket.on('error', () => setPaneStatus(pane.id, 'error'));
+    socket.on('close', () => {
+      if (currentSessionIdRef.current === pane.sessionId) setPaneStatus(pane.id, 'disconnected');
+    });
+    socket.on('error', () => {
+      if (currentSessionIdRef.current === pane.sessionId) setPaneStatus(pane.id, 'error');
+    });
     socket.connect();
 
-    return () => socket.close();
+    return () => {
+      if (socketRef.current === socket) socketRef.current = null;
+      socket.close();
+    };
   }, [pane.id, pane.sessionId, appendPaneOutput, setPaneSession, setPaneStatus]);
 
   return (
@@ -166,6 +178,7 @@ export default function ReplicaTerminalView() {
   const closePane = useStore((s) => s.closePane);
   const setActivePane = useStore((s) => s.setActivePane);
   const createPty = useStore((s) => s.createPty);
+  const releasePty = useStore((s) => s.releasePty);
   const setPaneStatus = useStore((s) => s.setPaneStatus);
   const bindPtyToPane = useStore((s) => s.bindPtyToPane);
   const initializeTerminal = useStore((s) => s.initializeTerminal);
@@ -194,6 +207,11 @@ export default function ReplicaTerminalView() {
     const pane = panes.find(p => p.id === paneId);
     if (!pane) return;
     setPaneStatus(paneId, 'connecting');
+    const previousSessionId = pane.sessionId;
+    if (previousSessionId) {
+      bindPtyToPane(paneId, null);
+      await releasePty(previousSessionId);
+    }
     try {
       const created = await createPty(120, 32);
       if (created && created.sessionId) {

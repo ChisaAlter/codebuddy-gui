@@ -9,7 +9,8 @@
     "dev": "vite --port 5173",
     "dev:vite": "vite --port 5173",
     "dev:electron": "electron .",
-    "build": "vite build && electron-builder"
+    "build": "vite build && electron-builder --publish never",
+    "build:dir": "vite build && electron-builder --dir --publish never"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -43,10 +44,14 @@
     },
     "win": {
       "target": "nsis",
-      "icon": null
+      "icon": null,
+      "signAndEditExecutable": false
     },
     "nsis": {
-      "packElevateHelper": false
+      "packElevateHelper": false,
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     },
     "files": [
       "out/**/*",

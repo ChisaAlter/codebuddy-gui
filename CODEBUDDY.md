@@ -58,8 +58,10 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 | `window:close` | 渲染→主 | 关闭 |
 | `window:reload` | 渲染→主 | 重载 |
 | `window:openDevTools` | 渲染→主 | 打开 DevTools |
+| `codebuddy:getPort` (invoke) | 渲染→主 | 获取主进程 spawn 的 CodeBuddy 后端端口+密码，`store.bootstrap()` 据此 `setApiBase` 动态覆盖 acp.js 的初始兜底值 |
+| `codebuddy:request` (invoke) | 渲染→主 | 请求代理通道：渲染层 `acp.js` 的 `requestCodeBuddy()` 会优先经此把请求转发到主进程发出，绕过渲染层 CORS/证书限制 |
+| `workspace:choose` (invoke) | 渲染→主 | 弹原生目录选择框（`dialog.showOpenDialog`），返回所选绝对路径或 null（用户取消） |
 
-注意：`preload.cjs` 还暴露了 `windowBack`/`windowForward`，但 `main.cjs` 中**没有对应的 IPC handler**，这些是死 API。
 - 启动日志写入 `electron-startup.log`，排查黑屏/加载失败先看这个文件。
 
 ### 路由
@@ -81,12 +83,13 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 - 不要在组件里另建独立状态管理；新增全局状态应扩展 `useStore`。
 
 ### 与真实 CodeBuddy 后端的协议
-- 后端基址 `API_BASE = http://127.0.0.1:50943`（`src/lib/acp.js`）。真实 Web UI（50943 端口）仅作对照源，不再作为正式运行路径。
+- 后端基址由 Electron 主进程 spawn `codebuddy --serve`（不传 `--port`，CLI 默认 `auto-assign` 随机端口）后，从 stdout 解析 `http://127.0.0.1:(\d+)` 拿真实端口，经 `codebuddy:getPort` IPC 给前端 `store.bootstrap()` 调 `setApiBase()` 动态设置。`src/lib/acp.js` 的 `_apiBase = 'http://127.0.0.1:63918'` 仅是 IPC 不可达时的兜底。注意区分两个端口：**50943 = 真实 CodeBuddy Web UI 对照源端口**（不再作为正式运行路径），**本项目后端端口每次启动随机分配**。
 - **ACP**（`AcpClient`）：先 `POST /api/v1/acp/connect` 拿 `connectionId` + `sessionToken`，再 `POST /api/v1/acp` 发 JSON-RPC 请求，响应可能是 SSE 多消息流，按 `id` 匹配请求结果，其余消息经 `handleIncomingRpc` 派发为事件。所有请求带 `X-CodeBuddy-Request: 1` 头。
 - **REST**：`fetchJson`（`src/lib/acp.js`）直连 `/api/v1/info|settings|sessions|workers|plugins|metrics|stats/...|scheduled-tasks|traces|pty|files/download` 等。`src/lib/ops.js` 封装了 stats、scheduled-tasks、traces、worker-logs、channels、daemon、keybindings、marketplaces、settings write-back 等 30+ 端点。
-- **PTY**：`src/lib/pty.js` 的 `PtySocket` 走 `ws://127.0.0.1:50943/api/v1/pty/{sessionId}`，消息 JSON 化为 `{type:'input'|'resize', ...}`。PTY session 先通过 REST `POST /api/v1/pty` 创建，再建 WebSocket。
+- **PTY**：`src/lib/pty.js` 的 `PtySocket` 走 `ws://127.0.0.1:<动态端口>/api/v1/pty/{sessionId}`（由 `getApiBase().replace(/^http/, 'ws')` 派生，基址随 acp.js 动态端口），消息 JSON 化为 `{type:'input'|'resize', ...}`。PTY session 先通过 REST `POST /api/v1/pty` 创建，再建 WebSocket。
 - **FS**：`src/lib/fs.js` 封装 list/search-content/mkdir/move/remove/write/read/upload/watcher（create/poll/remove）/download，共 12 个操作。
-- **Git**：`src/lib/git.js` 封装 commit/log/stash/fetch/push/pull/branch/diff/status 等 25 个操作，通过 `window.electronAPI.runGit(args)` → IPC `git:run` → 主进程 `spawn('git', args, { cwd: 'C:/Ai/ChisaCode' })`。**`main.cjs` 中 git 工作目录硬编码为 `C:/Ai/ChisaCode`**，如需改工作区，改这一处（未来应改为可配置/动态 cwd）。
+- **Git**：`src/lib/git.js` 封装 commit/log/stash/fetch/push/pull/branch/diff/status 等 25 个操作，通过 `window.electronAPI.runGit(args)` → IPC `git:run` → 主进程 `spawn('git', args, { cwd })`。**cwd 由 `git.js` 的 `getWorkspaceCwd()` 动态读 `useStore.getState().workspacePath`**，跟工作区切换联动；主进程 `normalizeGitRequest` 兜底 `process.cwd()`。切工作区后下一次 git 调用立即生效，无需重启。
+- **工作区（cwd）机制**：后端 `info.cwd` 是**进程级单值**（CLI spawn 时定死，不可运行时改），但 ACP `session/new` / `session/load` 的 `params.cwd` **是会话级**——决定该会话 agent 工具调用的实际工作目录，一次性注入。因此**切工作区 = 用新 cwd 起新会话**（`store.setWorkspace(path)` → `acp.initializeSession(null, path)`），不动后端进程；旧会话仍活在旧 cwd。`workspacePath` 持久化于 localStorage，Sidebar 工作区卡片有"切换"按钮 → `chooseWorkspace` IPC → 主进程 `dialog.showOpenDialog` 弹原生目录选择框。
 
 ### 组件命名约定
 - `src/components/` 下有两套并存：
@@ -107,8 +110,8 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 
 | 位置 | 值 | 说明 |
 |------|-----|------|
-| `src/lib/acp.js` | `API_BASE = 'http://127.0.0.1:63918'` | 后端基址，当前不可配置 |
-| `electron/main.cjs` | `cwd = 'C:/Ai/ChisaCode'` | Git 工作目录，修改 Git 工作区需改此处 |
+| `src/lib/acp.js` | `_apiBase = 'http://127.0.0.1:63918'` | 后端基址兜底值，仅当 Electron 主进程 IPC 不可达时使用；正常运行时被 `store.bootstrap()` 经 `getCodeBuddyPort` IPC 拿主进程从 stdout 解析出的随机端口动态覆盖 |
+| `src/lib/git.js` `getWorkspaceCwd()` | 动态读 `useStore.getState().workspacePath`，兜底 `'.'` | Git cwd 跟随当前工作区，切工作区后下一次 git 调用立即生效 |
 | `vite.config.js` | `base: './'` | **关键**：相对路径使 Electron `file://` 协议正确加载资源 |
 | `tailwind.config.js` | `darkMode: 'class'` | 暗色模式由 `<html class="dark">` 控制 |
 

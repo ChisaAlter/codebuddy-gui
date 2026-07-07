@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { fetchJson, getApiBase } from '../lib/acp';
+import { fetchJson, requestCodeBuddy } from '../lib/acp';
 
 async function postJson(path, method = 'POST') {
-  const response = await fetch(`${getApiBase()}${path}`, {
+  const response = await requestCodeBuddy(path, {
     method,
     headers: {
-      'X-CodeBuddy-Request': '1',
       'Content-Type': 'application/json',
     },
   });

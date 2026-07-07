@@ -213,7 +213,7 @@ export default function ReplicaWorkspaceView() {
     if (!newFileName.trim()) return;
     const path = fileCwd ? `${fileCwd}/${newFileName.trim()}` : newFileName.trim();
     try {
-      await window.electronAPI.runGit(['add', '-N', path]);
+      await window.electronAPI.runGit({ args: ['add', '-N', path], cwd: fileCwd || '.' });
       setShowNewFileInput(false);
       setNewFileName('');
       openDirectory(fileCwd || '.');
@@ -229,7 +229,7 @@ export default function ReplicaWorkspaceView() {
     setShowNewFolderInput(false);
     setNewFolderName('');
     try {
-      await window.electronAPI?.runGit(['-C', fileCwd || '.', 'init', '-q']).catch(() => {});
+      await window.electronAPI?.runGit({ args: ['init', '-q'], cwd: fileCwd || '.' }).catch(() => {});
       // Placeholder: backend mkdir API not yet available
       setStatusMessage(`目录 "${name}" 创建功能开发中`);
     } catch (err) {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useStore } from '../store';
 
 function Toggle({ value, onChange }) {
@@ -79,12 +79,10 @@ function SettingRow({ label, desc, control }) {
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
-    settings, sessionId, setModel, setMode, updateSetting,
+    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting,
   } = useStore();
 
-  const [localSettings, setLocalSettings] = useState({});
-
-  const isLoading = !info || Object.keys(info).length === 0 || !settings || Object.keys(settings).length === 0;
+  const isLoading = connectionState !== 'error' && (!infoLoaded || !settingsLoaded);
 
   const modelOptions = (models || []).map((m) => ({
     value: m.id || m.modelId,

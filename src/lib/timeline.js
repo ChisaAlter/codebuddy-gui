@@ -1,9 +1,29 @@
+function getText(c) {
+  if (typeof c === 'string') return c;
+  if (c === null || c === undefined) return '';
+  // 处理 ContentBlock 数组: [{type:'text', text:'hello'}, ...]
+  if (Array.isArray(c)) {
+    return c.map((block) => {
+      if (typeof block === 'string') return block;
+      if (typeof block === 'object' && block !== null) {
+        return (block.type === 'text' ? (block.text || block.content || '') : (block.text || block.content || ''));
+      }
+      return String(block);
+    }).join('');
+  }
+  // 处理单个 ContentBlock: {type:'text', text:'hello'}
+  if (typeof c === 'object') {
+    return c.text || c.content || '';
+  }
+  return String(c);
+}
+
 export function createTimelineEntry(partial = {}) {
   return {
     id: partial.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: partial.type || 'message',
     role: partial.role || 'assistant',
-    content: partial.content || '',
+    content: getText(partial.content),
     streaming: Boolean(partial.streaming),
     createdAt: partial.createdAt || Date.now(),
     raw: partial.raw || null,
@@ -76,7 +96,7 @@ function mergeUserChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'user') {
-    target.content += payload?.content || '';
+    target.content += getText(payload?.content);
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
     return next;
   }
@@ -84,7 +104,7 @@ function mergeUserChunk(timeline, payload) {
     createTimelineEntry({
       type: 'message',
       role: 'user',
-      content: payload?.content || '',
+      content: getText(payload?.content),
       streaming: false,
       raw: payload,
       meta: payload,
@@ -99,7 +119,7 @@ function mergeAssistantChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
-    target.content += payload?.content || '';
+    target.content += getText(payload?.content);
     target.streaming = true;
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
     return next;
@@ -108,7 +128,7 @@ function mergeAssistantChunk(timeline, payload) {
     createTimelineEntry({
       type: 'message',
       role: 'assistant',
-      content: payload?.content || '',
+      content: getText(payload?.content),
       streaming: true,
       raw: payload,
       meta: payload,
@@ -123,7 +143,7 @@ function mergeThinkingChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
-    target.content += payload?.content || '';
+    target.content += getText(payload?.content);
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
     return next;
   }
@@ -131,7 +151,7 @@ function mergeThinkingChunk(timeline, payload) {
     createTimelineEntry({
       type: 'thinking',
       role: 'assistant',
-      content: payload?.content || payload?.message || '',
+      content: getText(payload?.content) || payload?.message || '',
       raw: payload,
       meta: payload,
       messageId,
@@ -167,7 +187,7 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
       status: payload?.status || (isUpdate ? 'update' : 'created'),
       title: payload?.title || null,
       kind: payload?.kind || null,
-      content: payload?.content || '',
+      content: getText(payload?.content),
       rawInput: payload?.rawInput || null,
       rawOutput: payload?.rawOutput || null,
       locations: payload?.locations || null,

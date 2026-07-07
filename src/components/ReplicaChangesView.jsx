@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  commit,
   createBranch,
   discardAll,
   discardFile,
@@ -123,12 +124,10 @@ export default function ReplicaChangesView() {
     if (!commitMessage.trim()) return;
     setCommitting(true);
     try {
-      const res = await window.electronAPI.runGit(['commit', '-m', commitMessage.trim()]);
-      setStatusText(res.ok ? '提交成功' : `提交失败: ${res.output}`);
-      if (res.ok) {
-        setCommitMessage('');
-        loadAll(true);
-      }
+      await commit(commitMessage.trim());
+      setStatusText('提交成功');
+      setCommitMessage('');
+      loadAll(true);
     } catch (err) {
       setStatusText(`提交失败: ${err.message}`);
     } finally {

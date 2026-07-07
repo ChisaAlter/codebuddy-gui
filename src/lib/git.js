@@ -1,5 +1,17 @@
-export async function runGit(commandArgs = []) {
-  const proc = await window.electronAPI?.runGit?.(commandArgs);
+import { useStore } from '../store';
+
+// Git cwd 跟随当前工作区：优先读 store.workspacePath，兜底 '.'
+// 注意：每次 runGit 调用都动态读取，切工作区后下一次 git 调用立即生效
+function getWorkspaceCwd() {
+  try {
+    const state = useStore.getState?.();
+    if (state && state.workspacePath) return state.workspacePath;
+  } catch (_) { /* store 未初始化时兜底 */ }
+  return '.';
+}
+
+export async function runGit(commandArgs = [], cwd = getWorkspaceCwd()) {
+  const proc = await window.electronAPI?.runGit?.({ args: commandArgs, cwd });
   if (!proc || !proc.ok) {
     throw new Error(proc?.error || 'git command failed');
   }

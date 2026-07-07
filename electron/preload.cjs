@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowClose: () => ipcRenderer.send('window:close'),
   windowReload: () => ipcRenderer.send('window:reload'),
   openDevTools: () => ipcRenderer.send('window:openDevTools'),
-  runGit: (args) => ipcRenderer.invoke('git:run', args),
+  runGit: (request) => ipcRenderer.invoke('git:run', request),
+  chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   getCodeBuddyPort: () => ipcRenderer.invoke('codebuddy:getPort'),
+  requestCodeBuddy: (request) => ipcRenderer.invoke('codebuddy:request', request),
 });
