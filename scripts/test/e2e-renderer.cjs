@@ -28,7 +28,21 @@ function rmStartupLog() {
   try { fs.rmSync(userDataLog); } catch (_) {}
 }
 const electronExe = path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
-const DEBUG_PORT = 9281;
+// 选空闲端口而非固定 9281：连续跑 / 上次 Electron 未干净释放 devtools 监听 socket 时
+// 固定端口会撞 LISTENING 残留，CDP 连不上 → 120s 超时。
+function pickFreePort() {
+  const net = require('net');
+  const srv = net.createServer();
+  srv.listen(0, '127.0.0.1');
+  return new Promise((resolve, reject) => {
+    srv.once('listening', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+    srv.once('error', reject);
+  });
+}
+let DEBUG_PORT = 0;
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -111,6 +125,9 @@ async function main() {
   check('out/dist 生产构建存在', fs.existsSync(path.join(projectRoot, 'out', 'dist', 'index.html')));
   if (!fs.existsSync(electronExe)) { check('electron.exe 存在', false); return finish(); }
   check('electron.exe 存在', true);
+
+  DEBUG_PORT = await pickFreePort();
+  if (!DEBUG_PORT) { check('选空闲 CDP 端口', false); return finish(); }
 
   rmStartupLog();
 
