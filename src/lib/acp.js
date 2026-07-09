@@ -110,7 +110,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
 }
 
 export function parseEventStreamMessages(text) {
-  const chunks = text.split(/\n\n+/).map((x) => x.trim()).filter(Boolean);
+  const chunks = text.split(/\r?\n\r?\n/).filter(Boolean);
   const messages = [];
 
   for (const chunk of chunks) {
@@ -240,10 +240,9 @@ export class AcpClient {
       }
       this.emit('connected', payload);
 
-      // 连接成功后自动启用心跳
+      // 连接成功后自动启用心跳 + GET SSE 通知流
       this.startHeartbeat();
-      // GET SSE 通知流暂禁：与 POST 内联 SSE 并行时偶���乱码，v0.1 先用单通道
-      // this.startNotificationStream();
+      this.startNotificationStream();
     } catch (err) {
       this._connecting = false;
       this.connected = false;

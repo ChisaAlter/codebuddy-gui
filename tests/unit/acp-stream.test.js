@@ -42,7 +42,7 @@ describe('AcpClient GET SSE notification stream', () => {
     ]);
   });
 
-  it.skip('connect 后可通过 Electron IPC stream 派发 session/update', async () => {
+  it('connect 后可通过 Electron IPC stream 派发 session/update', async () => {
     setApiBase('http://127.0.0.1:23456');
     const fetchMock = vi.fn(async (url, init = {}) => {
       const method = init.method || 'GET';
@@ -115,7 +115,7 @@ describe('AcpClient GET SSE notification stream', () => {
     await expect(client.request('session/prompt', { sessionId: 's1', prompt: [] })).resolves.toBeNull();
   });
 
-  it.skip('connect 后建立 GET /api/v1/acp 长连接并派发 session/update', async () => {
+  it('connect 后建立 GET /api/v1/acp 长连接并派发 session/update', async () => {
     setApiBase('http://127.0.0.1:12345');
     const fetchMock = vi.fn(async (url, init = {}) => {
       const method = init.method || 'GET';
