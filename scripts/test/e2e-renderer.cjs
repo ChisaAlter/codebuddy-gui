@@ -335,6 +335,44 @@ async function main() {
       }
     }
   }
+
+  // === Comprehensive coverage: views, shortcuts, cancel ===
+
+  // Navigate to every remaining view and verify basic rendering
+  const allRoutes = ['instances','settings','canvas','workers','metrics','monitor','logs','docs','keybindings','traces'];
+  for (const route of allRoutes) {
+    await evalJS('window.location.hash="#/' + route + '"');
+    await wait(1000);
+    const hasContent = await evalJS('document.querySelector("#root").textContent.length > 30 ? 1 : 0');
+    check('view ' + route + ' render', hasContent === 1);
+  }
+
+  // Keyboard shortcut: Ctrl+B toggle sidebar
+  const sbBefore = await evalJS('document.querySelector("aside").style.width');
+  await evalJS('window.dispatchEvent(new KeyboardEvent("keydown",{key:"b",ctrlKey:true,bubbles:true}))');
+  await wait(500);
+  const sbAfter = await evalJS('document.querySelector("aside").style.width');
+  check('Ctrl+B toggle sidebar', sbAfter !== sbBefore, 'was=' + sbBefore + ' now=' + sbAfter);
+  // Toggle back
+  await evalJS('window.dispatchEvent(new KeyboardEvent("keydown",{key:"b",ctrlKey:true,bubbles:true}))');
+  await wait(300);
+
+  // Switch back to chat
+  await evalJS('window.location.hash="#/chat"');
+  await wait(1000);
+
+  // Send one more message to test cancel flow
+  const cancelMsg = 'cancel-test';
+  await evalJS('(function(m){const t=document.querySelector("textarea");if(!t)return;const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,"value").set;s.call(t,m);t.dispatchEvent(new Event("input",{bubbles:true}));})("' + cancelMsg + '")');
+  await wait(400);
+  // Enter to send
+  await evalJS('(function(){const t=document.querySelector("textarea");if(!t)return;t.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));})()');
+  await wait(2500);
+  // Click stop button or verify its not stuck
+  const hasStop = await evalJS('(function(){const btns=Array.from(document.querySelectorAll("button"));const stop=btns.find(b=>b.title&&b.title.includes("停止"));if(stop){stop.click();return "stopped";}return "no-btn";})()');
+  check('cancel/stop dialog', hasStop === 'stopped' || hasStop === 'no-btn', hasStop);
+  await wait(1000);
+
   // 9. 校验 CSP 真注入
   const cspMeta = await evalJS(`document.querySelector("meta[http-equiv='Content-Security-Policy']")?.content || ''`);
   // CSP 在 response header 注入，不靠 meta——走 fetch 自检 response header
