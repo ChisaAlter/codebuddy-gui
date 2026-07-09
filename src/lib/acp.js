@@ -153,8 +153,11 @@ export class AcpClient {
     this._heartbeatInterval = 30000;
 
     // GET SSE 通知流：真实 Web UI 在 connect 后保持 /api/v1/acp 长连接，session/update 主要从这里推送
+    // GET SSE 通知流——通知流��� POST 响应内联 SSE ��推送同一事件，去重防止双写
+    this._seenEvents = new Set();
+    this._seenEventsMax = 300;
+    this._notificationStreamActive = false;
     this._sseAbortController = null;
-    this._sseReconnectTimer = null;
     this._sseRetryAttempt = 0;
     this._sseBuffer = '';
     this._sseIpcStream = null;
@@ -179,6 +182,13 @@ export class AcpClient {
 
   handleIncomingRpc(message) {
     if (!message || typeof message !== 'object') return;
+
+    // 事件指纹去重：通知流 + POST 内联 SSE ���通道会推送同一事件
+    // agent_message_chunk 的 content 每 chunk 不同，指纹自然区分
+    const fingerprint = message.method + '|' + JSON.stringify(message.params);
+    if (this._seenEvents.has(fingerprint)) return;
+    if (this._seenEvents.size >= this._seenEventsMax) this._seenEvents.clear();
+    this._seenEvents.add(fingerprint);
 
     if (message.method === 'session/update') {
       const params = message.params || {};
@@ -350,6 +360,7 @@ export class AcpClient {
   startNotificationStream() {
     this.stopNotificationStream();
     if (!this.connectionId) return;
+    this._notificationStreamActive = true;
     this._sseRetryAttempt = 0;
     this._sseAbortController = new AbortController();
 
@@ -374,6 +385,7 @@ export class AcpClient {
   }
 
   stopNotificationStream() {
+    this._notificationStreamActive = false;
     if (this._sseReconnectTimer) {
       clearTimeout(this._sseReconnectTimer);
       this._sseReconnectTimer = null;
@@ -496,6 +508,7 @@ export class AcpClient {
 
     this.stopHeartbeat();
     this.stopNotificationStream();
+    this._seenEvents.clear();
     if (previousConnectionId) await this.releaseConnection(previousConnectionId);
   }
 
@@ -567,7 +580,8 @@ export class AcpClient {
             throw new Error(message.error.message || `ACP rpc error: ${method}`);
           }
           matchedResult = message.result ?? null;
-        } else {
+        } else if (!this._notificationStreamActive) {
+          // 通知流活跃时事件由 GET SSE 单通道推送���POST 内联 SSE 只匹配响应 id
           this.handleIncomingRpc(message);
         }
       }
