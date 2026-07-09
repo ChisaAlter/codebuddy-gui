@@ -1,3 +1,16 @@
+// 消��级 content-hash 去重��SSE 通知流 + POST 内联 SSE ��通道推送同一 chunk
+const _seenContent = new Map();
+export function resetSeenContent() { _seenContent.clear(); }
+
+function isDuplicateChunk(messageId, content) {
+  if (!messageId) return false;
+  const hash = JSON.stringify(content);
+  const last = _seenContent.get(messageId);
+  if (last === hash) return true;
+  _seenContent.set(messageId, hash);
+  return false;
+}
+
 function getText(c) {
   if (typeof c === 'string') return c;
   if (c === null || c === undefined) return '';
@@ -96,6 +109,7 @@ function mergeUserChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'user') {
+    if (isDuplicateChunk(messageId, payload?.content)) return next;
     target.content += getText(payload?.content);
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
     return next;
@@ -119,6 +133,7 @@ function mergeAssistantChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
+    if (isDuplicateChunk(messageId, payload?.content)) return next;
     target.content += getText(payload?.content);
     target.streaming = true;
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
@@ -143,6 +158,7 @@ function mergeThinkingChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
+    if (isDuplicateChunk(messageId, payload?.content)) return next;
     target.content += getText(payload?.content);
     target.meta = { ...(target.meta || {}), ...(payload || {}) };
     return next;

@@ -8,6 +8,7 @@ import {
   closeAssistantStream,
   pushUserMessage,
   reduceAcpEvent,
+  resetSeenContent,
 } from './lib/timeline';
 
 const acp = new AcpClient();
@@ -201,6 +202,7 @@ export const useStore = create((set, get) => ({
   },
 
   async changeSession(sessionId) {
+    resetSeenContent();
     try {
       set({
         sessionId,

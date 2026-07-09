@@ -580,8 +580,7 @@ export class AcpClient {
             throw new Error(message.error.message || `ACP rpc error: ${method}`);
           }
           matchedResult = message.result ?? null;
-        } else if (!this._notificationStreamActive) {
-          // 通知流活跃时事件由 GET SSE 单通道推送���POST 内联 SSE 只匹配响应 id
+        } else {
           this.handleIncomingRpc(message);
         }
       }
