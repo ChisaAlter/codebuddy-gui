@@ -293,9 +293,30 @@ async function main() {
       // 校验 timeline 渲染出消息节点（user msg + assistant thinking/reply）
       const timelineMsgs = await evalJS(`document.querySelectorAll("[class*='message'],[class*='markdown'],[class*='timeline'],[class*='assistant'],[class*='user']").length`);
       check('发送后 timeline 渲染出消息节点', timelineMsgs > 0, `count=${timelineMsgs}`);
+
+      // === Second message --- verify consecutive messages do not deadlock
+      // Wait for streaming to finish (content stable for 5s)
+      let _last = "";
+      let _stab = 0;
+      for (let _p = 0; _p < 30; _p++) {
+        const _cur = await evalJS("(function(){const ta=document.querySelector(\"textarea\");if(!ta)return\"\";const p=ta.closest(\"div.flex-1.overflow-y-auto\");return p ? p.textContent.slice(-200) : \"\"})()");
+        if (_cur === _last) { _stab++; if (_stab >= 5) break; }
+        else { _last = _cur; _stab = 0; }
+        await wait(1500);
+      }
+      check("round1 stable", _stab >= 5);
+      // Fill textarea and send via Enter
+      const _msg2 = `2nd-${Date.now()}`;
+      await evalJS("(function(){const ta=document.querySelector(\"textarea\");if(!ta)return;const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,\"value\").set;s.call(ta,\"${_msg2}\");ta.dispatchEvent(new Event(\"input\",{bubbles:true}));})()".replace("${_msg2}", _msg2));
+      await wait(500);
+      const _enter = await evalJS("(function(){const ta=document.querySelector(\"textarea\");if(!ta)return 0;ta.dispatchEvent(new KeyboardEvent(\"keydown\",{key:\"Enter\",bubbles:true,cancelable:true}));return 1})()");
+      check("round2 Enter sent", _enter === 1);
+      if (_enter === 1) {
+        await wait(6000);
+        const _after = await evalJS('document.querySelectorAll("[class*=message],[class*=markdown],[class*=timeline],[class*=assistant],[class*=user]").length');
+      }
     }
   }
-
   // 9. 校验 CSP 真注入
   const cspMeta = await evalJS(`document.querySelector("meta[http-equiv='Content-Security-Policy']")?.content || ''`);
   // CSP 在 response header 注入，不靠 meta——走 fetch 自检 response header
