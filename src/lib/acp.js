@@ -22,6 +22,22 @@ export function getAcpSessionToken() {
   return _acpSessionToken;
 }
 
+// 鉴权 token：对照源 sessionStorage 持久化，所有请求带 Authorization: Bearer ${token}
+let _authToken = null;
+const AUTH_TOKEN_STORAGE_KEY = 'codebuddy-auth-token';
+export function setAuthToken(token) {
+  _authToken = token || null;
+  try {
+    if (token) sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch (_) { /* sessionStorage 不可达不阻塞 */ }
+}
+export function getAuthToken() {
+  if (_authToken) return _authToken;
+  try { return sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || null; } catch (_) { return null; }
+}
+export function clearAuthToken() { setAuthToken(null); }
+
 function makeHeaders(extra = {}) {
   const headers = {
     'X-CodeBuddy-Request': '1',
@@ -30,6 +46,8 @@ function makeHeaders(extra = {}) {
   if (_acpSessionToken) {
     headers['acp-session-token'] = _acpSessionToken;
   }
+  const bearer = getAuthToken();
+  if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
   return headers;
 }
 
@@ -91,7 +109,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
   }
 }
 
-function parseEventStreamMessages(text) {
+export function parseEventStreamMessages(text) {
   const chunks = text.split(/\n\n+/).map((x) => x.trim()).filter(Boolean);
   const messages = [];
 
@@ -470,6 +488,46 @@ export async function fetchJson(path, init = {}) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
   return response.json();
+}
+
+// ===== 鉴权 =====
+// 对照源：POST /api/v1/auth/login {password} -> {success, token?, error?}
+// 成功后 token 存 sessionStorage（setAuthToken），所有请求经 makeHeaders 注入 Bearer
+export async function authLogin(password) {
+  const response = await requestCodeBuddy('/api/v1/auth/login', {
+    method: 'POST',
+    headers: makeHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ password }),
+    timeoutMs: 15000,
+  });
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try { const err = await response.json(); if (err?.error) message = err.error; } catch (_) {}
+    return { success: false, error: message };
+  }
+  const payload = await response.json();
+  if (payload?.success) {
+    // 仅当后端真发 token 才持久化为 Bearer；无 token 字段时**不**把密码当 bearer 落 sessionStorage
+    // 安全：旧兜底"用 password 作 bearer"会让明文密码长期驻留 sessionStorage + 每请求 Authorization 头携带，
+    // 与 UI"密码由系统 keyring 加密保存"承诺冲突，且后端无 token 即意味着本会话无需 bearer 鉴权
+    if (payload.token) setAuthToken(payload.token);
+    return { success: true };
+  }
+  return { success: false, error: payload?.error || 'login.error.incorrect' };
+}
+
+export function authLogout() { clearAuthToken(); }
+
+// 查后端鉴权态：对照源 GET /api/v1/auth/status -> {authEnabled, authenticated}
+// 任一为否（或请求失败）都视为已通过（不阻断，对照源同此）
+export async function checkAuth() {
+  try {
+    const payload = await fetchJson('/api/v1/auth/status');
+    const data = payload?.data ?? payload ?? {};
+    return data.authEnabled && !data.authenticated ? 'login' : 'authenticated';
+  } catch (_) {
+    return 'authenticated'; // 兜底：鉴权查询失败不阻断
+  }
 }
 
 // API_BASE is now dynamic — use getApiBase() / setApiBase() instead

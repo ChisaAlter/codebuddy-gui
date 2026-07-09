@@ -1,11 +1,39 @@
-import { getApiBase } from './acp';
+import { getApiBase, getAuthToken } from './acp';
 
 function wsBase() {
   return getApiBase().replace(/^http/, 'ws');
 }
 
+/**
+ * 构造 PTY WebSocket url（对照源 bundle）
+ *   `${ws|wss}://${host}/api/v1/pty/${sessionId}/ws?token=${encodeURIComponent(authToken)}`
+ * - /ws 后缀：对照源真实 UI 路由形状，项目旧版无此后缀
+ * - ?token=：鉴权场景下 WS 握手需带 bearer token；无 token 则 query 为空
+ * @param {string} sessionId
+ * @returns {string}
+ */
 export function buildPtyWebSocketUrl(sessionId) {
-  return `${wsBase()}/api/v1/pty/${encodeURIComponent(sessionId)}`;
+  const base = `${wsBase()}/api/v1/pty/${encodeURIComponent(sessionId)}/ws`;
+  const token = getAuthToken();
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+}
+
+/**
+ * PTY HTTP 直送输入（对照源 bundle aD()：POST /api/v1/pty/{id}/input/send {data}）
+ * - 用途：WS 不可达时的 HTTP 兜底，或一次性输入无需建长连的场景
+ * - 非阻塞：对照源同此用 .catch(()=>{}) 吞错，调用方不感知
+ * @param {string} sessionId
+ * @param {string} data
+ */
+export async function ptySendInputHttp(sessionId, data) {
+  if (!sessionId) return;
+  const { requestCodeBuddy } = await import('./acp');
+  await requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/input/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+    timeoutMs: 10000,
+  }).catch(() => null);
 }
 
 export class PtySocket {

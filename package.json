@@ -10,7 +10,12 @@
     "dev:vite": "vite --port 5173",
     "dev:electron": "electron .",
     "build": "vite build && electron-builder --publish never",
-    "build:dir": "vite build && electron-builder --dir --publish never"
+    "build:dir": "vite build && electron-builder --dir --publish never",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint electron src --ext .js,.jsx,.cjs",
+    "lint:fix": "eslint electron src --ext .js,.jsx,.cjs --fix",
+    "format": "prettier --write \"electron/**/*.{js,cjs}\" \"src/**/*.{js,jsx}\" \"tests/**/*.{js,jsx}\""
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -31,9 +36,13 @@
     "concurrently": "^8.2.2",
     "electron": "^34.0.0",
     "electron-builder": "^24.13.3",
+    "eslint": "^9.39.4",
+    "jsdom": "^25.0.1",
     "postcss": "^8.4.38",
+    "prettier": "^3.9.4",
     "tailwindcss": "^3.4.4",
     "vite": "^5.3.1",
+    "vitest": "^4.1.10",
     "wait-on": "^7.2.0"
   },
   "build": {
@@ -44,7 +53,7 @@
     },
     "win": {
       "target": "nsis",
-      "icon": null,
+      "icon": "build/icon.png",
       "signAndEditExecutable": false
     },
     "nsis": {

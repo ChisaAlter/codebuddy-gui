@@ -9,10 +9,29 @@ const isDev = !app.isPackaged;
 
 // 生产构建本地 HTTP 服务器端口（动态分配）
 let prodServerPort = null;
+let staticServer = null; // express 静态服务器引用：before-quit 时显式 close 避免端口残留
 
 let mainWindow = null;
 let tray = null;
-const startupLog = path.join(__dirname, '..', 'electron-startup.log');
+// startup.log 放 userData：打包后 __dirname 在 asar 内（只读虚拟路径），相对路径写失败被静默吞
+const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
+
+// 窗口状态持久化文件（P0-3）
+const WINDOW_STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
+
+function readWindowState() {
+  try {
+    if (!fs.existsSync(WINDOW_STATE_FILE)) return null;
+    const s = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, 'utf8'));
+    // 简单合法性校验：宽高正数、屏幕内可见
+    if (typeof s.width !== 'number' || typeof s.height !== 'number' || s.width < 100 || s.height < 100) return null;
+    return s;
+  } catch (_) { return null; }
+}
+
+function writeWindowState(state) {
+  try { fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state)); } catch (_) { /* 写失败不阻塞 */ }
+}
 
 // CodeBuddy 后端端口由 CLI --port 默认 auto-assign 随机分配，从 stdout 解析
 let codebuddyProc = null;
@@ -53,8 +72,11 @@ function readSavedPassword() {
         return null;
       }
     }
-    if (canEncryptPassword()) savePassword(saved);
-    return saved;
+    // 明文（无 enc: 前缀）= 历史遗留或被外部明文写入，视为泄露：不回读使用，立即清除
+    // 安全理由：明文已落盘就无法保证未被其他进程读取过，回读继续使用会让明文价值延续到本轮会话
+    logStartup('Saved password is plaintext, removing as stale (not read back)');
+    try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
+    return null;
   } catch (error) {
     logStartup(`Saved password read failed: ${error.message}`);
     return null;
@@ -62,7 +84,13 @@ function readSavedPassword() {
 }
 
 function savePassword(password) {
-  if (!password || !canEncryptPassword()) return;
+  if (!password) return;
+  // 不支持加密（Linux 无 keyring / CI headless）时绝不写明文文件，仅内存使用本轮会话
+  // 下次启动靠重新 spawn codebuddy --serve 从 stdout 解析新密码，不跨会话残留
+  if (!canEncryptPassword()) {
+    logStartup('Password not persisted: safeStorage unavailable, in-memory only for this session');
+    return;
+  }
   try {
     const value = `enc:${safeStorage.encryptString(password).toString('base64')}`;
     fs.writeFileSync(PASSWORD_FILE, value, { encoding: 'utf8', mode: 0o600 });
@@ -73,7 +101,12 @@ function savePassword(password) {
 
 function redactSecrets(text) {
   return String(text || '')
-    .replace(/(Password\s+)[^\s]+/gi, '$1[redacted]')
+    // 后端 stdout 形态："Password    xxx" / "Password: xxx" / "Password:xxx"（大写开头，留冒号）
+    .replace(/(Password\s*:\s*)[^\s,}]+/g, '$1[redacted]')
+    .replace(/(Password\s+)[^\s,}]+/g, '$1[redacted]')
+    // JSON 形态："password":"xxx" / 'password':'xxx'（保留值的引号对）
+    .replace(/(["']password["']\s*:\s*)(["'])[^"']+\2/g, '$1$2[redacted]$2')
+    // URL query 形态：?password=xxx / &password=xxx
     .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]');
 }
 
@@ -271,15 +304,18 @@ async function createWindow() {
     }
   }
 
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
+  // 恢复上次窗口状态（P0-3）：bounds + isMaximized，最小化不存
+  const savedBounds = readWindowState();
+  const winOpts = {
+    width: savedBounds?.width || 1440,
+    height: savedBounds?.height || 920,
     minWidth: 1200,
     minHeight: 760,
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#000000',
     title: 'CodeBuddy GUI',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -287,10 +323,43 @@ async function createWindow() {
       webSecurity: true,
       devTools: true,
     },
-  });
+  };
+  if (savedBounds?.x != null && savedBounds?.y != null) {
+    winOpts.x = savedBounds.x;
+    winOpts.y = savedBounds.y;
+  }
+  mainWindow = new BrowserWindow(winOpts);
+  if (savedBounds?.isMaximized) {
+    mainWindow.maximize();
+  }
+
+  // 窗口状态持久化（P0-3）：关闭/最大化/移动/缩放时存，最小化不存
+  const saveWindowState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) return; // 最小化不存
+    const isMax = mainWindow.isMaximized();
+    const b = isMax ? (lastNormalBounds || mainWindow.getNormalBounds()) : mainWindow.getBounds();
+    if (!isMax) lastNormalBounds = b;
+    writeWindowState({ ...b, isMaximized: isMax });
+  };
+  let lastNormalBounds = null;
+  mainWindow.on('resize', saveWindowState);
+  mainWindow.on('move', saveWindowState);
+  mainWindow.on('maximize', () => { lastNormalBounds = mainWindow.getNormalBounds(); saveWindowState(); });
+  mainWindow.on('unmaximize', saveWindowState);
+  mainWindow.on('close', saveWindowState);
 
   mainWindow.loadURL(entry).catch((error) => {
     logStartup(`loadURL failed: ${error?.message || error}`);
+    // 生产模式无 did-fail-load 兜底，失败时给用户可见提示而非黑屏静默
+    if (!isDev && mainWindow && !mainWindow.isDestroyed()) {
+      try {
+        dialog.showErrorBox(
+          'CodeBuddy GUI 加载失败',
+          `无法加载应用界面：\n\n${error?.message || error}\n\n启动日志已写入 userData/electron-startup.log，重启应用前建议反馈给开发者。`,
+        );
+      } catch (_) {}
+    }
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -335,6 +404,30 @@ const GIT_ALLOWED_COMMANDS = new Set([
   'add', 'branch', 'checkout', 'commit', 'diff', 'fetch', 'init', 'log', 'pull', 'push', 'remote', 'reset', 'stash', 'status',
 ]);
 
+// 二级子命令白名单：只校验出现在主命令后第一位置的子动词（非选项，即不以 - 开头）
+// 缺省为 ['*'] 表示不约束（如 add/status/diff 等本身不再细分）
+// checkout 特殊：既能切分支又能 checkout 文件，分支名是任意字符串无法白名单，故只约束选项
+const GIT_ALLOWED_SUBCOMMANDS = {
+  branch: new Set(['--show-current', '--format=%(refname:short)']), // 只放 UI 在用的两条
+  checkout: new Set(['-b']), // -b 新建切换；其余选项拦截，裸 checkout 切分支名不约束
+  stash: new Set(['pop', 'list']), // 显式放 pop/list；不带子动词 = stash push（UI 不用但安全）
+  remote: new Set(['get-url']),
+  reset: new Set(['HEAD']), // reset HEAD -- path / reset HEAD -- . 是 UI 唯一形态
+};
+
+// git 选项黑名单：拦截可执行外部命令 / 改变传输行为的危险选项
+// 参考 git-receive-pack / git-upload-pack 可被恶意 server 触发执行任意 hook
+const GIT_BLOCKED_OPTIONS = new Set([
+  '--upload-pack',    // fetch/pull 可指定 upload-pack，传 shell 命令被远端执行
+  '--receive-pack',   // push 同理
+  '--config', '-c',   // 任意 config override，可覆盖 core.hooksPath / user 等
+  '--exec',           // git exec-path
+  '--shallow-exclude',// 改 shallow 边界，虽不直接 exec 但可放大攻击面
+  '--local-config',   // alias 链
+]);
+
+const GIT_PATH_OPTIONS = new Set(['--']); // '之后' 一律当 path，不再当选项解析
+
 function normalizeGitRequest(payload) {
   const request = Array.isArray(payload) ? { args: payload } : (payload || {});
   const args = Array.isArray(request.args) ? request.args.map(String) : [];
@@ -347,6 +440,35 @@ function validateGitArgs(args) {
   const command = args[0] === '-C' ? args[2] : args[0];
   if (!command || command.startsWith('-') || !GIT_ALLOWED_COMMANDS.has(command)) {
     return `git subcommand is not allowed: ${command || '<empty>'}`;
+  }
+  const cmdIndex = args[0] === '-C' ? 2 : 0;
+
+  // 二级子命令约束：主命令后第一项若是子动词或受限选项必须在白名单
+  // '--' 是路径段分隔符，遇之跳入路径豁免（如 checkout -- file 不算二级子命令）
+  // checkout 特例：只校验选项式（-b 等），非选项分支名/文件名不约束（任意字符串无法白名单）
+  const allowedSubs = GIT_ALLOWED_SUBCOMMANDS[command];
+  const next = args[cmdIndex + 1];
+  if (allowedSubs && next && next !== '--') {
+    const isOption = next.startsWith('-');
+    const skipSubverb = command === 'checkout' && !isOption; // checkout 分支名/文件名豁免
+    if (!isOption && !skipSubverb) {
+      if (!allowedSubs.has(next)) return `git ${command} subcommand is not allowed: ${next}`;
+    } else if (isOption && next.startsWith('--')) {
+      const branchFmtOk = command === 'branch' && next.startsWith('--format=');
+      if (!branchFmtOk && !allowedSubs.has(next)) return `git ${command} option is not allowed: ${next}`;
+    }
+  }
+
+  // 选项黑名单 + '--' 后路径段豁免
+  let inPath = false;
+  for (let i = cmdIndex + 1; i < args.length; i++) {
+    const a = args[i];
+    if (inPath) continue;
+    if (GIT_PATH_OPTIONS.has(a)) { inPath = true; continue; }
+    const key = a.split('=')[0];
+    if (GIT_BLOCKED_OPTIONS.has(key)) {
+      return `git option is blocked for security: ${key}`;
+    }
   }
   return null;
 }
@@ -402,12 +524,13 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
     // SSE 流式：net.fetch 的 AbortSignal 对流读取不一定生效，这里改成主动读流 + 超 timeout 强切
     const isSse = (response.headers.get('content-type') || '').includes('text/event-stream');
     let body = '';
+    let truncated = false; // SSE 超时截断标记：前端据此识别"流中断"而非"流自然结束"
     if (isSse && response.body) {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const tMax = Date.now() + timeoutMs;
       while (true) {
-        if (Date.now() > tMax) { try { reader.cancel(); } catch(_) {} break; }
+        if (Date.now() > tMax) { truncated = true; try { reader.cancel(); } catch(_) {} break; }
         const { done, value } = await reader.read();
         if (done) break;
         body += decoder.decode(value, { stream: true });
@@ -421,6 +544,7 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       status: response.status,
       statusText: response.statusText,
       body,
+      truncated, // SSE 流被 timeout 截断时为 true；前端 parseEventStreamMessages 据此判中断
       headers: Object.fromEntries(response.headers.entries()),
     };
   } catch (error) {
@@ -456,10 +580,46 @@ ipcMain.handle('workspace:choose', async () => {
 });
 ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' }); });
 
+// 未捕获异常处理（P0-4）：写 crash log 到 userData，dialog 提示用户
+function writeCrashLog(type, err) {
+  try {
+    const logPath = path.join(app.getPath('userData'), 'crash.log');
+    const ts = new Date().toISOString();
+    const stack = err?.stack || String(err);
+    fs.appendFileSync(logPath, `\n[${ts}] ${type}: ${stack}\n`);
+  } catch (_) { /* 写失败不阻塞 */ }
+}
+process.on('uncaughtException', (err) => {
+  writeCrashLog('uncaughtException', err);
+  try {
+    dialog.showErrorBox('CodeBuddy GUI 发生异常', `程序遇到未捕获异常:\n\n${err?.message || err}\n\n崩溃日志已写入 userData/crash.log，重启应用前建议反馈给开发者。`);
+  } catch (_) {}
+});
+process.on('unhandledRejection', (reason) => {
+  writeCrashLog('unhandledRejection', reason);
+});
+
+// 单实例锁（P0-2）：避免多开实例 spawn 多个 codebuddy --serve 抢端口/资源
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  dialog.showErrorBox('CodeBuddy GUI 已在运行', '另一个实例已在运行。请使用已有窗口，或先关闭它再启动。');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 新实例触发：focus/restore 已有窗口
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   // 注入 Content-Security-Policy：覆盖 dev/prod 双路，消除 Electron 安全告警
   // - 'wasm-unsafe-eval' 足 monaco-editor wasm，不开 'unsafe-eval'（Electron 告警源）
-  // - connect-src 放本地随机端口 + ws，供后端 / SSE / PTY WebSocket
+  // - connect-src：渲染层 REST/SSE 请求全部经 IPC（window.electronAPI.requestCodeBuddy → 主进程
+  //   net.fetch，不受 CSP 约束），故不再放 http://127.0.0.1:* 通配，收紧本机横向越权面
+  // - 仅保留 ws://127.0.0.1:* 供 PTY WebSocket（pty.js 渲染层直连，端口随 --serve 随机分配）
   // - style-src 'unsafe-inline' 足 React 内联样式；Google Fonts 域名放开
   const CSP = [
     "default-src 'self'",
@@ -468,7 +628,7 @@ app.whenReady().then(async () => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob:",
-    "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*",
+    "connect-src 'self' ws://127.0.0.1:*",
     "base-uri 'self'",
     "form-action 'self'",
     "object-src 'none'",
@@ -496,9 +656,10 @@ app.whenReady().then(async () => {
       }
     },
   }));
-  const staticServer = await new Promise((resolve) => {
+  const staticServerInstance = await new Promise((resolve) => {
     const s = staticApp.listen(0, '127.0.0.1', () => resolve(s));
   });
+  staticServer = staticServerInstance;
   prodServerPort = staticServer.address().port;
   logStartup(`Static server on http://127.0.0.1:${prodServerPort}`);
 
@@ -543,6 +704,11 @@ app.whenReady().then(async () => {
 // 不树杀会变孤儿进程占 stdout + 占端口，下次启动端口冲突（实测残留过 PID 42940/18192）
 app.on('before-quit', () => {
   reallyQuitting = true;
+  // 显式关闭 express 静态服务器：OS 虽会随进程退出回收端口，但显式 close 避免单实例锁失败场景的端口短暂残留
+  if (staticServer) {
+    try { staticServer.close(); } catch (_) {}
+    staticServer = null;
+  }
   if (codebuddyProc && !codebuddyProc.killed) {
     try {
       // Windows shell:true spawn 出来的 codebuddy 是 node.exe 包装，taskkill /T 树杀
@@ -553,6 +719,17 @@ app.on('before-quit', () => {
       // taskkill 失败兜底走 proc.kill
       try { codebuddyProc.kill('SIGKILL'); } catch (_) {}
       logStartup(`Tree-kill failed, fallback SIGKILL: ${e.message}`);
+      // 终兜底：cmd.exe 已退出时 PID 指向死进程，taskkill/proc.kill 都漏杀 node.exe
+      // 按 image name 树杀（/IM codebuddy.exe /IM node.exe /T），抓孤儿 node.exe 占端口的残留
+      // 实测残留过 PID 42940/18192；此处多杀范围可控（仅本机同名 image），代价远小于端口冲突
+      if (process.platform === 'win32') {
+        for (const imageName of ['codebuddy.exe', 'node.exe']) {
+          try {
+            execSync(`taskkill /T /F /IM ${imageName}`, { stdio: 'ignore' });
+            logStartup(`Killed orphan processes by image: ${imageName}`);
+          } catch (_) { /* 该 image 无进程 = 正常，吞 */ }
+        }
+      }
     }
     codebuddyProc = null;
   }
@@ -560,13 +737,15 @@ app.on('before-quit', () => {
 });
 
 // 关窗口不退出 = 最小化到托盘；只有 reallyQuitting（托盘退出 / Cmd+Q）才真 quit
+// 注意：tray 退出菜单调的是 app.quit()，会触发 before-quit → will-quit → quit 全链，
+// window-all-closed 在 quit 链里只是被动确认——reallyQuitting 已被 before-quit 设 true，
+// 非 darwin 走 app.quit() 是幂等（quit 已发起），darwin 不再 quit 留给 activate 兜底
 app.on('window-all-closed', () => {
   if (reallyQuitting) {
     if (process.platform !== 'darwin') app.quit();
     return;
   }
   // 普通关窗口：不 quit，保留托盘供用户重开
-  // darwin 上原生行为是关窗口留进程，其他平台走托盘逻辑
 });
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();

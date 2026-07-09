@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+build/
+*.log
+webui-css.css
+webui-js.js
+.playwright-cli/
+.trae/
+.codebuddy/

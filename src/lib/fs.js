@@ -27,6 +27,25 @@ export async function fsSearchContent({ query, cwd = '.', isRegex = false, caseS
   return payload.data?.results || payload.results || [];
 }
 
+/**
+ * 文件名快速搜索（对照源 GET /api/v1/fs/search?query&limit）
+ * - 用途：补全/打开文件面板的实时名匹配（不同于 fsSearchContent 的内容搜索）
+ * - 返回：{ items: [{ path, name, type, ... }] }，对照源 bundle ve.items
+ * @param {string} query - 文件名片段
+ * @param {object} [opts] - { limit=15 }
+ * @returns {Promise<Array>}
+ */
+export async function fsSearchFiles(query, opts = {}) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const params = new URLSearchParams();
+  params.set('query', q);
+  params.set('limit', String(opts.limit ?? 15));
+  const payload = await fetchJson(`/api/v1/fs/search?${params.toString()}`);
+  // 对照源 bundle：const ve=await ae.json(); C(ve.items||[])
+  return payload?.items || payload?.data?.items || [];
+}
+
 export async function createWatcher(path = '.', recursive = true) {
   const payload = await fetchJson('/api/v1/fs/watcher/create', {
     method: 'POST',

@@ -103,6 +103,42 @@ export default function ReplicaSidebar() {
     workspacePath,
   } = useStore();
 
+  // 会话项菜单态：renameingId=正在内联重命名的会话 id；pendingDelete=待确认删除的会话对象
+  const [renamingId, setRenamingId] = React.useState(null);
+  const [renameValue, setRenameValue] = React.useState('');
+  const [pendingDelete, setPendingDelete] = React.useState(null);
+  const [menuOpenId, setMenuOpenId] = React.useState(null);
+
+  const startRename = (session) => {
+    const id = session.id || session.sessionId;
+    setRenamingId(id);
+    setRenameValue(session.name || id || '');
+    setMenuOpenId(null);
+  };
+
+  const submitRename = async (id) => {
+    const ok = await useStore.getState().renameSession(id, renameValue);
+    if (ok) setRenamingId(null);
+    else setRenameValue(''); // 失败保留 renaming 态让用户改
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    const id = pendingDelete.id || pendingDelete.sessionId;
+    setPendingDelete(null);
+    await useStore.getState().deleteSession(id);
+  };
+
+  // 点击外部关菜单
+  React.useEffect(() => {
+    if (menuOpenId === null) return;
+    const onDoc = (e) => {
+      if (!e.target.closest?.('[data-session-menu]')) setMenuOpenId(null);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [menuOpenId]);
+
   return (
     <aside
       role="navigation" aria-label="Main navigation"
@@ -238,20 +274,106 @@ export default function ReplicaSidebar() {
               ) : (
                 sessions.slice(0, 10).map((session) => {
                   const sessionId = session.id || session.sessionId;
+                  const isRenaming = renamingId === sessionId;
+                  const isMenuOpen = menuOpenId === sessionId;
                   return (
-                    <button
-                      key={sessionId}
-                      className="block w-full rounded-md px-2 py-1 text-left transition-colors hover:bg-[var(--color-bg-hover)]"
-                      onClick={() => changeSession(sessionId)}
-                    >
-                      <div className="truncate text-xs text-[var(--color-text-primary)]">{session.name || sessionId}</div>
-                      {session.messageCount != null && (
-                        <div className="text-[10px] text-[var(--color-text-muted)]">{session.messageCount} 条消息</div>
+                    <div key={sessionId} className="relative flex items-center rounded-md transition-colors hover:bg-[var(--color-bg-hover)]">
+                      {isRenaming ? (
+                        <div className="flex w-full items-center gap-1 px-2 py-1">
+                          <input
+                            autoFocus
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') { e.preventDefault(); submitRename(sessionId); }
+                              else if (e.key === 'Escape') { setRenamingId(null); }
+                            }}
+                            onBlur={() => { if (renamingId === sessionId) submitRename(sessionId); }}
+                            className="w-full rounded border border-[var(--color-accent-brand)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none"
+                            aria-label="会话新名称"
+                          />
+                          <button
+                            onClick={() => submitRename(sessionId)}
+                            className="text-xs text-[var(--color-accent-green)] hover:text-[var(--color-text-primary)]"
+                            title="确认"
+                          >✓</button>
+                          <button
+                            onClick={() => setRenamingId(null)}
+                            className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                            title="取消"
+                          >×</button>
+                        </div>
+                      ) : (
+                        <>
+                          <button
+                            className="block flex-1 min-w-0 rounded-md px-2 py-1 text-left transition-colors"
+                            onClick={() => changeSession(sessionId)}
+                            title={sessionId}
+                          >
+                            <div className="truncate text-xs text-[var(--color-text-primary)]">{session.name || sessionId}</div>
+                            {session.messageCount != null && (
+                              <div className="text-[10px] text-[var(--color-text-muted)]">{session.messageCount} 条消息</div>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setMenuOpenId(isMenuOpen ? null : sessionId)}
+                            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                            title="会话操作"
+                            aria-label="会话操作菜单"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>
+                          </button>
+                          {isMenuOpen && (
+                            <div
+                              data-session-menu
+                              className="absolute right-0 top-7 z-30 w-28 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-lg"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                onClick={() => startRename(session)}
+                                className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                              >
+                                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M11 1l4 4-8 8H3v-4l8-8z" /></svg>
+                                重命名
+                              </button>
+                              <button
+                                onClick={() => { setMenuOpenId(null); setPendingDelete(session); }}
+                                className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
+                              >
+                                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4h10M5 4V2h6v2M4 4v9h8V4" /></svg>
+                                删除
+                              </button>
+                            </div>
+                          )}
+                        </>
                       )}
-                    </button>
+                    </div>
                   );
                 })
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 删除会话确认弹窗 */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-label="删除会话确认">
+          <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl w-80">
+            <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">删除会话？</div>
+            <div className="mb-4 text-xs text-[var(--color-text-secondary)]">
+              将永久删除会话「{pendingDelete.name || (pendingDelete.id || pendingDelete.sessionId)}」及其全部消息，不可恢复。
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPendingDelete(null)}
+                className="btn-ghost rounded-md px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+              >取消</button>
+              <button
+                onClick={confirmDelete}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-white"
+                style={{ background: 'var(--color-accent-red)' }}
+              >删除</button>
             </div>
           </div>
         </div>

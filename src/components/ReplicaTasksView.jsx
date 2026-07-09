@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaTasksView() {
-  const { scheduledTasks, sessionId, refreshTasks, createTask, error } = useStore();
+  const { scheduledTasks, sessionId, refreshTasks, createTask, error, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
   const [cron, setCron] = useState('0 9 * * *');
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');
   const [creating, setCreating] = useState(false);
   const [localError, setLocalError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshingTemplates, setRefreshingTemplates] = useState(false);
 
   useEffect(() => {
     setLoading(false);
@@ -26,7 +27,13 @@ export default function ReplicaTasksView() {
     }
   };
 
+  const handleRefreshTemplates = async () => {
+    setRefreshingTemplates(true);
+    try { await refreshTaskTemplatesNow(); } finally { setRefreshingTemplates(false); }
+  };
+
   const tasksList = Array.isArray(scheduledTasks) ? scheduledTasks : [];
+  const templatesList = Array.isArray(taskTemplates) ? taskTemplates : [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
@@ -102,6 +109,82 @@ export default function ReplicaTasksView() {
             ))}
           </div>
         )}
+
+        {/* 任务模板分区（对照源 GET/POST /api/v1/tasks/templates[/refresh]） */}
+        <div className="mt-8">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-[var(--color-text-primary)]">任务模板</h2>
+            <button
+              onClick={handleRefreshTemplates}
+              disabled={refreshingTemplates || taskTemplatesLoading}
+              className="btn-ghost text-xs"
+              title="从后端刷新模板缓存"
+            >
+              <svg
+                width="13" height="13" viewBox="0 0 16 16"
+                fill="none" stroke="currentColor" strokeWidth="1.5"
+                className={refreshingTemplates || taskTemplatesLoading ? 'animate-spin mr-1' : 'mr-1'}
+              >
+                <path d="M1 8a7 7 0 0113.29-4M15 8a7 7 0 01-13.29 4" />
+                <path d="M13 1v4h-4M3 15v-4h4" />
+              </svg>
+              {refreshingTemplates || taskTemplatesLoading ? '刷新中...' : '刷新模板'}
+            </button>
+          </div>
+
+          {taskTemplatesError && (
+            <div className="mb-3 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-3 py-2 text-xs text-[#f87171]">
+              {taskTemplatesError}
+              <button className="ml-2 underline" onClick={handleRefreshTemplates}>重试</button>
+            </div>
+          )}
+
+          {(taskTemplatesLoading || refreshingTemplates) && templatesList.length === 0 ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-3">
+                  <div className="skeleton h-4 rounded mb-2" style={{ width: `${45 + i * 10}%` }} />
+                  <div className="skeleton h-3 rounded" style={{ width: `${22 + i * 6}%` }} />
+                </div>
+              ))}
+            </div>
+          ) : templatesList.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-10 text-center">
+              <p className="text-sm text-[var(--color-text-muted)]">暂无任务模板</p>
+              <p className="mt-1 text-xs text-[var(--color-text-muted)]">点击右上"刷新模板"从后端拉取可用模板</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {templatesList.map((tpl, idx) => (
+                <div key={tpl.id || tpl.name || idx} className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-[var(--color-text-primary)] truncate">{tpl.name || tpl.title || `模板 ${idx + 1}`}</div>
+                      {tpl.description && (
+                        <div className="mt-0.5 truncate text-xs text-[var(--color-text-muted)]">{tpl.description}</div>
+                      )}
+                      {tpl.cron && (
+                        <div className="mt-0.5 text-xs text-[var(--color-text-muted)]">Cron: {tpl.cron}</div>
+                      )}
+                    </div>
+                    {tpl.prompt && (
+                      <button
+                        onClick={() => {
+                          setPrompt(tpl.prompt);
+                          if (tpl.cron) setCron(tpl.cron);
+                        }}
+                        className="btn-ghost ml-2 shrink-0 rounded-md px-2.5 py-1 text-xs text-[var(--color-accent-primary)]"
+                        title="载入到新建表单"
+                      >
+                        使用
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

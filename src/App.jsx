@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaSettingsView from './components/ReplicaSettingsView';
@@ -19,6 +19,84 @@ import ReplicaMonitorView from './components/ReplicaMonitorView';
 import ReplicaKeybindingsView from './components/ReplicaKeybindingsView';
 import ReplicaDocsView from './components/ReplicaDocsView';
 import ReplicaCanvasView from './components/ReplicaCanvasView';
+
+function LoginView() {
+  const authSubmitting = useStore((s) => s.authSubmitting);
+  const authError = useStore((s) => s.authError);
+  const login = useStore((s) => s.login);
+  const [password, setPassword] = React.useState('');
+  const [show, setShow] = React.useState(false);
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    if (!password.trim()) return;
+    await login(password);
+  };
+
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+      <div className="w-full max-w-sm rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
+        <div className="mb-5 flex items-center gap-2">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white"
+               style={{ background: 'linear-gradient(135deg, var(--color-accent-blue), var(--color-accent-purple))' }}>
+            CB
+          </div>
+          <div>
+            <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy</div>
+            <div className="text-xs text-[var(--color-text-muted)]">需要登录以继续</div>
+          </div>
+        </div>
+        <form onSubmit={onSubmit} className="space-y-3">
+          <label className="block">
+            <span className="text-xs text-[var(--color-text-muted)]">服务密码</span>
+            <div className="relative mt-1">
+              <input
+                type={show ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={authSubmitting}
+                autoFocus
+                placeholder="请输入 CodeBuddy 服务密码"
+                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent-brand)] focus:outline-none"
+                aria-label="服务密码"
+              />
+              <button
+                type="button"
+                onClick={() => setShow((s) => !s)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                tabIndex={-1}
+                aria-label={show ? '隐藏密码' : '显示密码'}
+              >
+                {show ? '隐藏' : '显示'}
+              </button>
+            </div>
+          </label>
+          {authError ? (
+            <div className="rounded-md border border-[var(--color-accent-red)]/30 bg-[var(--color-accent-red)]/10 px-3 py-2 text-xs text-[var(--color-accent-red)]" role="alert">
+              {authError === 'login.error.incorrect' ? '密码不正确' : authError === 'app.connectFailed' ? '无法连接到服务，请稍后重试' : authError}
+            </div>
+          ) : null}
+          <button
+            type="submit"
+            disabled={authSubmitting || !password.trim()}
+            className="btn-primary w-full justify-center rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            style={{ background: 'var(--color-accent-brand)' }}
+          >
+            {authSubmitting ? (
+              <span className="flex items-center gap-2">
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                登录中...
+              </span>
+            ) : '登录'}
+          </button>
+        </form>
+        <div className="mt-4 text-center text-[10px] text-[var(--color-text-muted)]">
+          密码由系统 keyring 加密保存，下次启动自动复用
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const ROUTE_TITLES = {
   chat: '对话',
@@ -141,6 +219,7 @@ function MainContent() {
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
   const settingsTheme = useStore((s) => s.settings?.theme);
+  const authViewState = useStore((s) => s.authViewState);
 
   useEffect(() => {
     bootstrap().catch((error) => console.error(error));
@@ -176,11 +255,15 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
-      <ReplicaSidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <StatusBar />
-        <MainContent />
-      </div>
+      {authViewState === 'login' ? <LoginView /> : (
+        <>
+          <ReplicaSidebar />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <StatusBar />
+            <MainContent />
+          </div>
+        </>
+      )}
     </div>
   );
 }

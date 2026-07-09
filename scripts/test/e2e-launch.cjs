@@ -14,7 +14,21 @@ const fs = require('fs');
 const http = require('http');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
+// startup.log dev 写项目根；打包后 main.cjs 改写 userData，兜底读两条
 const startupLogPath = path.join(projectRoot, 'electron-startup.log');
+const userDataLog = path.join(process.env.APPDATA || '', 'codebuddy-gui', 'electron-startup.log');
+function readStartupLog() {
+  try { return fs.readFileSync(startupLogPath, 'utf8'); } catch (_) {}
+  try { return fs.readFileSync(userDataLog, 'utf8'); } catch (_) {}
+  return '';
+}
+function startupLogExists() {
+  return fs.existsSync(startupLogPath) || fs.existsSync(userDataLog);
+}
+function rmStartupLog() {
+  try { fs.rmSync(startupLogPath); } catch (_) {}
+  try { fs.rmSync(userDataLog); } catch (_) {}
+}
 const electronExe = path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
 
 const results = [];
@@ -42,7 +56,7 @@ async function waitCodeBuddyPort(timeoutMs = 30000) {
   let buf = '';
   while (Date.now() - start < timeoutMs) {
     try {
-      const raw = fs.readFileSync(startupLogPath, 'utf8');
+      const raw = readStartupLog();
       buf = raw;
       const m = raw.match(/Parsed CodeBuddy port from stdout: (\d{4,5})\b/);
       if (m) return Number(m[1]);
@@ -89,8 +103,8 @@ async function main() {
   }
   check('electron.exe 存在', true);
 
-  // 清掉旧 startup.log 避免误读上次端口
-  try { fs.rmSync(startupLogPath); } catch (_) {}
+  // 清掉旧 startup.log 避免误读上次端口（dev 项目根 + 打包 userData 兜底）
+  rmStartupLog();
 
   // 1. 启动 Electron —— isDev = !app.isPackaged，不看 env；直接 spawn 永远走 dev 探测路径
   //    40 次 probe Vite 5173 不通才回退生产构建（约 20s）。不传 NODE_ENV（没用且误导）。
@@ -127,7 +141,7 @@ async function main() {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
-        const raw = fs.readFileSync(startupLogPath, 'utf8');
+        const raw = readStartupLog();
         if (/renderer ready=true/.test(raw) || /dev server unreachable, falling back to/.test(raw)) return true;
       } catch (_) {}
       await wait(500);
@@ -138,7 +152,7 @@ async function main() {
 
   // 2. startup.log 含渲染进程加载完成标志
   try {
-    const log = fs.readFileSync(startupLogPath, 'utf8');
+    const log = readStartupLog();
     check('startup.log 含 Static server', /Static server on http:\/\/127\.0\.0\.1:\d+/.test(log), '');
     check('startup.log 含 createWindow', /createWindow called/.test(log), '');
     const fellBack = /dev server unreachable, falling back to http:\/\/127\.0\.0\.1:\d+\/index\.html/.test(log);

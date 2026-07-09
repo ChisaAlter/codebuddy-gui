@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { fetchJson } from './acp';
 
 // Git cwd 跟随当前工作区：优先读 store.workspacePath，兜底 '.'
 // 注意：每次 runGit 调用都动态读取，切工作区后下一次 git 调用立即生效
@@ -16,6 +17,27 @@ export async function runGit(commandArgs = [], cwd = getWorkspaceCwd()) {
     throw new Error(proc?.error || 'git command failed');
   }
   return proc.output || '';
+}
+
+/**
+ * Git HTTP API 对照路径（对照源 bundle：POST /api/v1/git/{command}，body 拼 cwd）
+ * - 与本地 IPC runGit 并存，不替换主路径
+ * - 用途：后端有 git 但本机无 spawn 能力的环境兜底；亦供对照源真实 UI 路径回归比对
+ * - body 形状：{...args, cwd: workspacePath}，对照源 FO() 读 editor-store.rootPath
+ * - 返回：后端 git 结果（json 或 string），由调用方自行解析
+ * @param {string} command - git 子命令，如 'status'/'log'/'diff'/'commit'
+ * @param {object} [args] - 命令参数对象，如 { short: true, count: 20 }
+ * @returns {Promise<object|string>}
+ */
+export async function runGitRemote(command, args = {}) {
+  const cwd = getWorkspaceCwd();
+  const body = { ...args, cwd };
+  const payload = await fetchJson(`/api/v1/git/${encodeURIComponent(command)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return payload?.data ?? payload ?? null;
 }
 
 export async function getGitStatus() {

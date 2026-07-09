@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { fetchJson, requestCodeBuddy } from '../lib/acp';
+import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 
 async function postJson(path, method = 'POST') {
   const response = await requestCodeBuddy(path, {
@@ -27,17 +28,43 @@ function ChannelCard({ channel, onRefresh }) {
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
 
+  // 按状态选 action 名（对照源真实 UI 由调用方透传 action，非硬集）
+  // connected → stop 断开；其他 → start 连接；保留 disconnect/connect 作别名兜底
+  const pickToggleAction = (currentStatus) => currentStatus === 'connected' ? 'stop' : 'start';
+
   const handleToggle = async () => {
     if (!channel.instanceId) return;
     setBusy('toggle');
     setMessage('');
     try {
-      const action = status === 'connected' ? 'stop' : 'start';
-      await postJson(`/api/v1/channels/${type}/${channel.instanceId}/${action}`);
-      setMessage(action === 'start' ? '已发起连接' : '已断开');
+      const action = pickToggleAction(status);
+      const result = await channelAction(type, channel.instanceId, action);
+      // 对照源特例：unbind wechat 返回 needsQrScan=true → 触发 rebind 二维码流程
+      if (result?.needsQrScan && type === 'wechat') {
+        setMessage('需重新扫码，正在拉二维码...');
+        // 复用主组件的 wechat 二维码态：通过 onRefresh 回流让主组件轮询
+      } else {
+        setMessage(action === 'start' ? '已发起连接' : (result?.message || '已断开'));
+      }
       await onRefresh();
     } catch (err) {
       setMessage(err.message || '操作失败');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  // 通用 action 透传：对照源真实 UI 即此设计（action 由按钮语义决定，非硬集）
+  const handleAction = async (actionName, label) => {
+    if (!channel.instanceId || !actionName) return;
+    setBusy(actionName);
+    setMessage('');
+    try {
+      const result = await channelAction(type, channel.instanceId, actionName);
+      setMessage(result?.message || `${label}已发起`);
+      await onRefresh();
+    } catch (err) {
+      setMessage(err.message || `${label}失败`);
     } finally {
       setBusy('');
     }
@@ -48,7 +75,7 @@ function ChannelCard({ channel, onRefresh }) {
     setBusy('delete');
     setMessage('');
     try {
-      await postJson(`/api/v1/channels/${type}/${channel.instanceId}`, 'DELETE');
+      await deleteChannelInstance(type, channel.instanceId);
       setMessage('已删除');
       await onRefresh();
     } catch (err) {
@@ -73,8 +100,32 @@ function ChannelCard({ channel, onRefresh }) {
         <div>instanceId: {channel.instanceId || '-'}</div>
         <div>hidden: {String(!!channel.hidden)}</div>
       </div>
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex gap-2 flex-wrap">
         <button className="btn-ghost" disabled={!!busy} onClick={handleToggle}>{busy === 'toggle' ? '处理中...' : (status === 'connected' ? '断开' : '连接')}</button>
+        <button
+          className="btn-ghost"
+          disabled={!!busy}
+          onClick={() => handleAction('unbind', '解绑')}
+          title="解除绑定关系，wechat 会触发重新扫码"
+        >
+          {busy === 'unbind' ? '处理中...' : '解绑'}
+        </button>
+        <button
+          className="btn-ghost"
+          disabled={!!busy}
+          onClick={() => handleAction('rebind', '重绑')}
+          title="重新绑定，wechat 会拉新二维码"
+        >
+          {busy === 'rebind' ? '处理中...' : '重绑'}
+        </button>
+        <button
+          className="btn-ghost"
+          disabled={!!busy}
+          onClick={() => handleAction('sync', '同步')}
+          title="同步 channel 状态与后端"
+        >
+          {busy === 'sync' ? '处理中...' : '同步'}
+        </button>
         <button className="btn-ghost" disabled={!!busy} onClick={handleDelete}>{busy === 'delete' ? '处理中...' : '删除'}</button>
       </div>
       {message ? <div className="mt-2 text-xs text-[var(--color-text-secondary)]">{message}</div> : null}
@@ -87,6 +138,19 @@ export default function ReplicaRemoteControlView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+
+  // 微信创建 + 二维码态（对照源 POST /channels/wechat + GET /channels/wechat/{id}/qr）
+  const [wechatBusy, setWechatBusy] = useState(false);
+  const [wechatQr, setWechatQr] = useState(null); // {qrImage} 或 null
+  const [wechatQrLoading, setWechatQrLoading] = useState(false);
+  const [wechatQrError, setWechatQrError] = useState(null);
+  const qrPollRef = useRef(null);
+
+  // 企微创建表单
+  const [wecomBusy, setWecomBusy] = useState(false);
+  const [wecomBotId, setWecomBotId] = useState('');
+  const [wecomSecret, setWecomSecret] = useState('');
+  const [wecomError, setWecomError] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -105,7 +169,63 @@ export default function ReplicaRemoteControlView() {
 
   useEffect(() => {
     load();
+    return () => { if (qrPollRef.current) clearInterval(qrPollRef.current); };
   }, []);
+
+  // 微信：创建实例后轮询二维码（对照源 bundle 每 1s 拉，最长 180s）
+  const stopQrPoll = () => {
+    if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
+  };
+  const pollQr = (instanceId) => {
+    let elapsed = 0;
+    stopQrPoll();
+    qrPollRef.current = setInterval(async () => {
+      elapsed += 1;
+      if (elapsed > 180) { stopQrPoll(); setWechatQrError('二维码超时，请重新创建'); setWechatQrLoading(false); return; }
+      try {
+        const r = await fetchWechatQr(instanceId);
+        if (r.ok && r.qrImage) { setWechatQr({ qrImage: r.qrImage }); setWechatQrLoading(false); setWechatQrError(null); stopQrPoll(); }
+        else if (r.error && !r.error.includes('not ready') && !r.error.includes('404')) { /* 忽略未就绪/未扫码，继续轮询 */ }
+      } catch (_) { /* 忽略瞬时网络错，继续轮询 */ }
+    }, 1000);
+  };
+
+  const handleCreateWechat = async () => {
+    setWechatBusy(true);
+    setWechatQr(null);
+    setWechatQrError(null);
+    setWechatQrLoading(true);
+    try {
+      const result = await createWechatChannel();
+      const instanceId = result?.instanceId || result?.id || result?.instanceId;
+      if (!instanceId) throw new Error('后端未返回 instanceId');
+      setInfo(`微信实例已创建：${instanceId}`);
+      pollQr(instanceId);
+      await load();
+    } catch (err) {
+      setWechatQrError(err.message || '创建微信实例失败');
+      setWechatQrLoading(false);
+    } finally {
+      setWechatBusy(false);
+    }
+  };
+
+  const handleCreateWecom = async () => {
+    setWecomError(null);
+    if (!wecomBotId.trim() || !wecomSecret.trim()) { setWecomError('botId 与 secret 均不可为空'); return; }
+    setWecomBusy(true);
+    try {
+      await createWecomChannel({ botId: wecomBotId, secret: wecomSecret });
+      setWecomBotId('');
+      setWecomSecret('');
+      setInfo('企微实例已创建');
+      await load();
+    } catch (err) {
+      setWecomError(err.message || '创建企微实例失败');
+    } finally {
+      setWecomBusy(false);
+    }
+  };
 
   const wechat = channels.filter((item) => item.clientType === 'wechat');
   const wecom = channels.filter((item) => item.clientType === 'wecom');
@@ -122,9 +242,53 @@ export default function ReplicaRemoteControlView() {
           <div className="mt-1 text-sm text-[var(--color-text-secondary)]">管理渠道连接</div>
         </div>
 
+        {/* 微信创建 + 二维码展示 */}
+        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
+          <div className="text-sm font-medium text-white">添加微信机器人</div>
+          <div className="mt-1 text-xs text-[var(--color-text-muted)]">创建实例后用微信扫码登录</div>
+          <div className="mt-3 flex items-center gap-3">
+            <button className="btn-primary" disabled={wechatBusy || wechatQrLoading} onClick={handleCreateWechat}>
+              {wechatBusy ? '创建中...' : '创建并显示二维码'}
+            </button>
+            {wechatQrLoading && <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]"><div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-muted)] border-t-[var(--color-accent-brand)]" />等待二维码就绪...</div>}
+          </div>
+          {wechatQrError && <div className="mt-2 text-xs text-[var(--color-accent-red)]">{wechatQrError}</div>}
+          {wechatQr?.qrImage && (
+            <div className="mt-3 flex flex-col items-center gap-2 rounded-lg border border-[var(--color-border-muted)] bg-white p-3" style={{ width: 'fit-content' }}>
+              <img src={wechatQr.qrImage} alt="微信登录二维码" className="h-44 w-44" style={{ imageRendering: 'pixelated' }} />
+              <div className="text-xs text-[var(--color-text-muted)]">用微信扫码登录</div>
+            </div>
+          )}
+        </div>
+
+        {/* 企微创建表单 */}
+        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
+          <div className="text-sm font-medium text-white">添加企业微信机器人</div>
+          <div className="mt-1 text-xs text-[var(--color-text-muted)]">填写 botId 与 secret 后创建实例</div>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <input
+              value={wecomBotId}
+              onChange={(e) => setWecomBotId(e.target.value)}
+              placeholder="botId"
+              className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-brand)]"
+              aria-label="企微 botId"
+            />
+            <input
+              type="password"
+              value={wecomSecret}
+              onChange={(e) => setWecomSecret(e.target.value)}
+              placeholder="secret"
+              className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-brand)]"
+              aria-label="企微 secret"
+            />
+          </div>
+          {wecomError && <div className="mt-2 text-xs text-[var(--color-accent-red)]">{wecomError}</div>}
+          <button className="btn-primary mt-2" disabled={wecomBusy || !wecomBotId.trim() || !wecomSecret.trim()} onClick={handleCreateWecom}>
+            {wecomBusy ? '创建中...' : '创建企微机器人'}
+          </button>
+        </div>
+
         <div className="flex gap-3">
-          <button className="btn-primary" onClick={() => setInfo('微信机器人功能开发中')}>添加微信机器人</button>
-          <button className="btn-ghost" onClick={() => setInfo('企微机器人功能开发中')}>添加企微机器人</button>
           <button className="btn-ghost" onClick={load}>刷新</button>
         </div>
 

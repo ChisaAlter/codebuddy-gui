@@ -2,7 +2,7 @@ import React from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, error } = useStore();
+  const { plugins, refreshPlugins, error, marketplaces, pluginError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -10,10 +10,17 @@ export default function ReplicaPluginsView() {
   const [showInstallModal, setShowInstallModal] = React.useState(false);
   const [installId, setInstallId] = React.useState('');
   const [installMarketplace, setInstallMarketplace] = React.useState('codebuddy');
+  const [installing, setInstalling] = React.useState(false);
+  const [installMsg, setInstallMsg] = React.useState(null);
+  // 市场增删表单态
+  const [newMktId, setNewMktId] = React.useState('');
+  const [newMktUrl, setNewMktUrl] = React.useState('');
+  const [mktBusy, setMktBusy] = React.useState(false);
+  const [mktMsg, setMktMsg] = React.useState(null);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await refreshPlugins();
+    await Promise.all([refreshPlugins(), refreshMarketplaces?.()]);
     setRefreshing(false);
     setLoading(false);
   };
@@ -169,8 +176,12 @@ export default function ReplicaPluginsView() {
                       {enabled ? '已启用' : '已禁用'}
                     </span>
                     <div
-                      className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'}`}
-                      onClick={() => window.alert('功能开发中')}
+                      className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginBusy === `toggle:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
+                      onClick={async () => {
+                        const ok = await togglePluginByName(p.name, !enabled);
+                        if (!ok) window.alert(useStore.getState().pluginError || '操作失败');
+                      }}
+                      title={enabled ? '点击禁用' : '点击启用'}
                     >
                       <div className={`toggle-knob ${enabled ? 'toggle-knob-on' : ''}`} />
                     </div>
@@ -191,14 +202,14 @@ export default function ReplicaPluginsView() {
                   {/* Uninstall */}
                   <div className="mt-auto pt-2 border-t border-[var(--color-border-muted)]">
                     <button
-                      className="text-xs text-[var(--color-error)] hover:underline"
-                      onClick={() => {
-                        if (window.confirm(`确定要卸载插件 "${p.name}" 吗？`)) {
-                          window.alert('功能开发中');
-                        }
+                      className={`text-xs text-[var(--color-error)] hover:underline ${pluginBusy === `uninstall:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
+                      onClick={async () => {
+                        if (!window.confirm(`确定要卸载插件 "${p.name}" 吗？`)) return;
+                        const ok = await uninstallPluginByName(p.name);
+                        if (!ok) window.alert(useStore.getState().pluginError || '卸载失败');
                       }}
                     >
-                      卸载
+                      {pluginBusy === `uninstall:${p.name}` ? '卸载中...' : '卸载'}
                     </button>
                   </div>
                 </div>
@@ -251,19 +262,112 @@ export default function ReplicaPluginsView() {
                 <button className="btn-ghost text-xs" onClick={() => setShowInstallModal(false)}>取消</button>
                 <button
                   className="btn-primary text-xs"
-                  onClick={() => {
+                  disabled={!installId.trim() || installing}
+                  onClick={async () => {
                     if (!installId.trim()) return;
-                    window.alert('功能开发中');
-                    setShowInstallModal(false);
+                    setInstalling(true);
+                    setInstallMsg(null);
+                    const ok = await installPluginByName(installId.trim(), installMarketplace);
+                    setInstalling(false);
+                    if (ok) {
+                      setShowInstallModal(false);
+                      setInstallId('');
+                    } else {
+                      setInstallMsg(useStore.getState().pluginError || '安装失败');
+                    }
                   }}
-                  disabled={!installId.trim()}
                 >
-                  安装
+                  {installing ? '安装中...' : '安装'}
                 </button>
               </div>
+              {installMsg && <div className="px-5 pb-3 text-xs text-[var(--color-error)]">{installMsg}</div>}
             </div>
           </div>
         )}
+
+        {/* Plugin Marketplaces 增删（对照源 POST/DELETE /api/v1/plugins/marketplaces/{id}）*/}
+        <div className="mt-8 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">插件市场</h2>
+            <button
+              onClick={() => { refreshMarketplaces?.(); }}
+              disabled={mktBusy}
+              className="btn-ghost text-xs"
+              title="刷新市场列表"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className={mktBusy ? 'animate-spin inline-block mr-1' : 'inline-block mr-1'}>
+                <path d="M1 8a7 7 0 0113.29-4M15 8a7 7 0 01-13.29 4" />
+                <path d="M13 1v4h-4M3 15v-4h4" />
+              </svg>
+              刷新
+            </button>
+          </div>
+
+          {/* 新增市场表单 */}
+          <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_2fr_auto]">
+            <input
+              value={newMktId}
+              onChange={(e) => setNewMktId(e.target.value)}
+              placeholder="市场 ID（如 my-mkt）"
+              className="input-field"
+              aria-label="市场 ID"
+            />
+            <input
+              value={newMktUrl}
+              onChange={(e) => setNewMktUrl(e.target.value)}
+              placeholder="市场 URL（https://...）"
+              className="input-field"
+              aria-label="市场 URL"
+            />
+            <button
+              className="btn-primary text-xs"
+              disabled={mktBusy || !newMktId.trim()}
+              onClick={async () => {
+                setMktBusy(true); setMktMsg(null);
+                const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});
+                setMktBusy(false);
+                if (ok) { setNewMktId(''); setNewMktUrl(''); }
+                else setMktMsg(useStore.getState().pluginError || '新增市场失败');
+              }}
+            >
+              {mktBusy && pluginBusy?.startsWith('addMkt:') ? '添加中...' : '添加市场'}
+            </button>
+          </div>
+          {mktMsg && <div className="mb-3 text-xs text-[var(--color-error)]">{mktMsg}</div>}
+          {pluginError && pluginBusy?.startsWith('rmMkt:') && <div className="mb-3 text-xs text-[var(--color-error)]">{pluginError}</div>}
+
+          {/* 市场列表 */}
+          {(marketplaces || []).length === 0 ? (
+            <div className="rounded-md border border-dashed border-[var(--color-border-muted)] py-6 text-center text-xs text-[var(--color-text-muted)]">
+              暂无市场，添加上方表单注册一个
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {(marketplaces || []).map((mkt, idx) => {
+                const id = mkt.id || mkt.marketplaceId || mkt.name || `mkt-${idx}`;
+                const busy = pluginBusy === `rmMkt:${id}`;
+                return (
+                  <div key={id} className="flex items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-3 py-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{mkt.name || id}</div>
+                      {mkt.url && <div className="truncate text-[11px] text-[var(--color-text-muted)]">{mkt.url}</div>}
+                    </div>
+                    <button
+                      disabled={busy}
+                      className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
+                      onClick={async () => {
+                        if (!window.confirm(`确定删除市场 "${id}" 吾？`)) return;
+                        await removeMarketplaceById(id);
+                      }}
+                    >
+                      {busy ? '删除中...' : '删除'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

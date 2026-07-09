@@ -1,9 +1,9 @@
 import { create } from 'zustand';
-import { AcpClient, getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken } from './lib/acp';
+import { AcpClient, getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
-import { fsList, fsSearchContent, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
+import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
-import { fetchSessionStats, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSetting } from './lib/ops';
+import { fetchSessionStats, fetchStats as fetchStatsApi, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSetting as updateSettingApi, updateSettingByKey as updateSettingByKeyApi, deleteSession as apiDeleteSession, renameSession as apiRenameSession, fetchTaskTemplates as apiFetchTaskTemplates, refreshTaskTemplates as apiRefreshTaskTemplates, uninstallPlugin as apiUninstallPlugin, enablePlugin as apiEnablePlugin, disablePlugin as apiDisablePlugin, installPlugin as apiInstallPlugin, addMarketplace as apiAddMarketplace, removeMarketplace as apiRemoveMarketplace, fetchMarketplaces as apiFetchMarketplaces } from './lib/ops';
 import {
   closeAssistantStream,
   pushUserMessage,
@@ -56,6 +56,10 @@ export const useStore = create((set, get) => ({
   apiBase: getApiBase(),
   route: typeof window === 'undefined' ? 'chat' : parseHashRoute(),
   connectionState: 'connecting',
+  // 鉴权态：对照源 viewState ∈ loading|login|authenticated
+  authViewState: 'loading',
+  authError: null,
+  authSubmitting: false,
   sessionId: null,
   sessionToken: null,
   currentModel: null,
@@ -72,6 +76,9 @@ export const useStore = create((set, get) => ({
   sessions: [],
   workers: [],
   plugins: [],
+  marketplaces: [],
+  pluginError: null,
+  pluginBusy: null, // 当前操作中的插件名/动作，避免 UI 重入
   timeline: [],
   // 发消息后等 agent 首 SSE 块期间：UI 需立即显"思考中"态（发送键变终止键）
   // 收到 agent_message_chunk/agent_thought_chunk/tool_call 等真内容事件时清
@@ -85,8 +92,14 @@ export const useStore = create((set, get) => ({
   activePaneId: null,
   traces: [],
   metrics: null,
-  stats: null,
+  stats: null,        // 全局 stats（对照源 GET /api/v1/stats）
+  sessionStats: null, // 当前会话 stats（对照源 GET /api/v1/stats/session?sessionId=）
+  statsError: null,
+  statsLoading: false,
   scheduledTasks: [],
+  taskTemplates: [],
+  taskTemplatesError: null,
+  taskTemplatesLoading: false,
   error: null,
   promptSuggestion: null,
   permissionRequests: [],
@@ -101,6 +114,10 @@ export const useStore = create((set, get) => ({
   fileSearchQuery: '',
   fileSearchResults: [],
   fileSearching: false,
+  // 文件名搜索（对照源 GET /api/v1/fs/search?query&limit，补全/打开文件面板）
+  fileNameQuery: '',
+  fileNameResults: [],
+  fileNameSearching: false,
   watcherId: null,
   selectedFile: null,
   filePreview: '',
@@ -368,6 +385,26 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  setFileNameQuery(value) {
+    set({ fileNameQuery: String(value || '') });
+    // 轻输入：清空即清结果，非空时由调用方决定何时触发（避免每键都打后端）
+    if (!String(value || '').trim()) set({ fileNameResults: [], fileNameSearching: false });
+  },
+
+  // 文件名搜索（对照源 GET /api/v1/fs/search?query&limit=15）
+  // 用途：打开文件面板的实时名匹配补全；不同于 runFileSearch 的内容搜索
+  async runFileNameSearch() {
+    const query = get().fileNameQuery.trim();
+    if (!query) { set({ fileNameResults: [], fileNameSearching: false }); return; }
+    set({ fileNameSearching: true });
+    try {
+      const items = await fsSearchFiles(query, { limit: 15 });
+      set({ fileNameResults: items, fileNameSearching: false });
+    } catch (error) {
+      set({ fileNameResults: [], fileNameSearching: false, error: error.message });
+    }
+  },
+
   async startWatcher(path = null) {
     const target = path || get().fileCwd || '.';
     try {
@@ -538,6 +575,15 @@ export const useStore = create((set, get) => ({
     // 2. 从 localStorage 恢复设置（主题等需要尽早生效）
     get().loadSettingsFromStorage();
 
+    // 2.5. 鉴权态：对照源在连接前先 checkAuth，决定 viewState ∈ login|authenticated
+    //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
+    const authState = await apiCheckAuth();
+    set({ authViewState: authState });
+    if (authState === 'login') {
+      // 等登录成功后再继续；App 登录页会调 store.login() 并重触发 bootstrap
+      return;
+    }
+
     acp.on('connected', () => {
       set({ connectionState: 'connected', sessionToken: acp.sessionToken, error: null });
       setAcpSessionToken(acp.sessionToken);
@@ -679,12 +725,22 @@ export const useStore = create((set, get) => ({
     } catch (_) {}
   },
 
-  updateSetting(key, value) {
+  // 改为异步：前端即时更新 + 后端单项回写（对照源 PUT /settings/{key}?scope=user）
+  // 保留同步行为签名，但调方都 await 才能拿到后端结果；非 await 调用仍只更新前端
+  async updateSetting(key, value) {
+    // 1. 前端即时更新 + localStorage 持久化（保持原同步语义）
     set((state) => {
       const next = { ...(state.settings || {}), [key]: value };
       try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
       return { settings: next, settingsLoaded: true };
     });
+    // 2. 后端单项回写（对照源真实路径，失败不阻塞前端已更新态）
+    try {
+      await updateSettingByKeyApi(key, value, 'user');
+    } catch (err) {
+      // 兜底：单项路径失败时退回整体 PUT /settings（旧路径），避免后端无单项端点时静默丢写
+      try { await updateSettingApi(key, value); } catch (_) {}
+    }
   },
 
   async refreshSessions() {
@@ -702,6 +758,81 @@ export const useStore = create((set, get) => ({
     set({ plugins: normalizePlugins(payload) });
   },
 
+  async refreshMarketplaces() {
+    try {
+      const list = await apiFetchMarketplaces();
+      set({ marketplaces: Array.isArray(list) ? list : [] });
+    } catch (_) {
+      set({ marketplaces: [] });
+    }
+  },
+
+  async installPluginByName(pluginId, marketplace) {
+    set({ pluginBusy: `install:${pluginId}`, pluginError: null });
+    try {
+      await apiInstallPlugin(pluginId, marketplace);
+      await get().refreshPlugins();
+      set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      set({ pluginBusy: null, pluginError: err?.message || '安装插件失败' });
+      return false;
+    }
+  },
+
+  async uninstallPluginByName(pluginName) {
+    set({ pluginBusy: `uninstall:${pluginName}`, pluginError: null });
+    try {
+      await apiUninstallPlugin(pluginName);
+      await get().refreshPlugins();
+      set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      set({ pluginBusy: null, pluginError: err?.message || '卸载插件失败' });
+      return false;
+    }
+  },
+
+  async togglePluginByName(pluginName, enabled) {
+    set({ pluginBusy: `toggle:${pluginName}`, pluginError: null });
+    try {
+      if (enabled) await apiEnablePlugin(pluginName);
+      else await apiDisablePlugin(pluginName);
+      await get().refreshPlugins();
+      set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      set({ pluginBusy: null, pluginError: err?.message || (enabled ? '启用插件失败' : '禁用插件失败') });
+      return false;
+    }
+  },
+
+  async addMarketplaceById(id, config) {
+    set({ pluginBusy: `addMkt:${id}`, pluginError: null });
+    try {
+      await apiAddMarketplace(id, config || {});
+      await get().refreshMarketplaces();
+      set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      set({ pluginBusy: null, pluginError: err?.message || '新增市场失败' });
+      return false;
+    }
+  },
+
+  async removeMarketplaceById(id) {
+    set({ pluginBusy: `rmMkt:${id}`, pluginError: null });
+    try {
+      await apiRemoveMarketplace(id);
+      await get().refreshMarketplaces();
+      set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      set({ pluginBusy: null, pluginError: err?.message || '删除市场失败' });
+      return false;
+    }
+  },
+
   async refreshMetrics() {
     try {
       const payload = await fetchJson('/api/v1/metrics');
@@ -712,11 +843,23 @@ export const useStore = create((set, get) => ({
   },
 
   async refreshStats() {
+    set({ statsLoading: true, statsError: null });
     try {
-      const stats = await fetchSessionStats(get().sessionId);
-      set({ stats });
+      const stats = await fetchStatsApi();
+      set({ stats, statsLoading: false });
+    } catch (err) {
+      set({ stats: null, statsLoading: false, statsError: err?.message || '加载全局统计失败' });
+    }
+    // 同时刷新当前会话的会话级统计（失败不阻塞全局）
+    get().refreshSessionStats?.();
+  },
+
+  async refreshSessionStats() {
+    try {
+      const sessionStats = await fetchSessionStats(get().sessionId);
+      set({ sessionStats });
     } catch (_) {
-      set({ stats: null });
+      set({ sessionStats: null });
     }
   },
 
@@ -726,6 +869,38 @@ export const useStore = create((set, get) => ({
       set({ scheduledTasks: tasks });
     } catch (_) {
       set({ scheduledTasks: [] });
+    }
+    // 同时刷任务模板（失败不阻塞定时任务）
+    get().refreshTaskTemplates?.();
+  },
+
+  async refreshTaskTemplates() {
+    set({ taskTemplatesLoading: true, taskTemplatesError: null });
+    try {
+      const result = await apiFetchTaskTemplates(get().sessionId);
+      set({
+        taskTemplates: result.templates || [],
+        taskTemplatesError: result.error || null,
+        taskTemplatesLoading: false,
+      });
+    } catch (err) {
+      set({ taskTemplates: [], taskTemplatesLoading: false, taskTemplatesError: err?.message || '加载任务模板失败' });
+    }
+  },
+
+  async refreshTaskTemplatesNow() {
+    set({ taskTemplatesLoading: true, taskTemplatesError: null });
+    try {
+      const result = await apiRefreshTaskTemplates(get().sessionId);
+      set({
+        taskTemplates: result.templates || [],
+        taskTemplatesError: result.error || null,
+        taskTemplatesLoading: false,
+      });
+      return true;
+    } catch (err) {
+      set({ taskTemplatesLoading: false, taskTemplatesError: err?.message || '刷新任务模板失败' });
+      return false;
     }
   },
 
@@ -866,6 +1041,79 @@ export const useStore = create((set, get) => ({
       set({ isAwaitingResponse: false });
       get().appendTimelineEvent('error', { message: error.message, type: 'error' });
       get().closeAssistantStream();
+    }
+  },
+
+  // ===== 会话删除/重命名（对照源 DELETE /sessions/{id} + POST /sessions/{id}/rename）=====
+  async deleteSession(sessionId) {
+    if (!sessionId) return;
+    try {
+      await apiDeleteSession(sessionId);
+      // 本地即时剔除，避免等 refreshSessions 往返
+      set((state) => ({ sessions: state.sessions.filter((s) => (s.id || s.sessionId) !== sessionId) }));
+      // 若删的是当前会话，起新会话顶替
+      if (get().sessionId === sessionId) {
+        set({ sessionId: null, sessionTitle: null, timeline: [], permissionRequests: [], questions: [], usage: null });
+        get().newSession();
+      }
+      return true;
+    } catch (err) {
+      get().appendTimelineEvent('error', { message: err.message || '删除会话失败', type: 'error' });
+      return false;
+    }
+  },
+
+  async renameSession(sessionId, name) {
+    if (!sessionId) return false;
+    try {
+      await apiRenameSession(sessionId, name);
+      // 本地即时更新显示名
+      set((state) => ({
+        sessions: state.sessions.map((s) => {
+          if ((s.id || s.sessionId) === sessionId) return { ...s, name: String(name || '').trim() };
+          return s;
+        }),
+        sessionTitle: get().sessionId === sessionId ? String(name || '').trim() : state.sessionTitle,
+      }));
+      return true;
+    } catch (err) {
+      get().appendTimelineEvent('error', { message: err.message || '重命名会话失败', type: 'error' });
+      return false;
+    }
+  },
+
+  // ===== 鉴权 action（对照源 viewState/login/logout）=====
+  async login(password) {
+    set({ authSubmitting: true, authError: null });
+    try {
+      const result = await apiAuthLogin(String(password || ''));
+      if (result?.success) {
+        set({ authViewState: 'authenticated', authSubmitting: false, authError: null });
+        // 重触发 bootstrap 继续 AcpClient 连接与非关键数据加载
+        get().bootstrap().catch((e) => console.error('bootstrap after login failed:', e));
+        return true;
+      }
+      set({ authSubmitting: false, authError: result?.error || 'login.error.incorrect' });
+      return false;
+    } catch (err) {
+      set({ authSubmitting: false, authError: 'app.connectFailed' });
+      console.warn('[auth] Login request failed:', err);
+      return false;
+    }
+  },
+
+  async logout() {
+    apiAuthLogout();
+    set({ authViewState: 'login', authError: null, sessionId: null, sessionToken: null, timeline: [] });
+    try { await acp.disconnect(); } catch (_) {}
+  },
+
+  async refreshAuth() {
+    set({ authViewState: 'loading', authError: null });
+    const authState = await apiCheckAuth();
+    set({ authViewState: authState });
+    if (authState === 'authenticated') {
+      get().bootstrap().catch((e) => console.error('bootstrap after refreshAuth failed:', e));
     }
   },
 }));

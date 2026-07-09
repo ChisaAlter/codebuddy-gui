@@ -25,12 +25,12 @@ npm run build        # vite build -> out/dist/，electron-builder -> dist/CodeBu
 - `test-app.cjs` / `test-launch.cjs` —— 单步启动验证
 - `test_all.py` —— Python 入口的等价测试
 
-脱离真实后端独立调试前端时，可使用 mock 服务：
+脱离真实后端独立调试前端时，可使用 mock 服务（**历史遗留，已被 `scripts/test/e2e-launch.cjs` 取代，仅作离线对照参考**）：
 ```bash
 node mock-server.cjs     # 独立 mock API（端口 7890）
 node start-with-mock.cjs # 以 mock 数据驱动 Electron 启动
 ```
-mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/status`, `/metrics`, `/plugins`, `/scheduled-tasks`, `/traces` 等端点，CORS 已开启。`start-with-mock.cjs` 是历史遗留的独立启动脚本（加载 `localhost:8080`），不走 Vite 开发流程。
+mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/status`, `/metrics`, `/plugins`, `/scheduled-tasks`, `/traces` 等端点，CORS 已开启。`start-with-mock.cjs` 加载 `localhost:8080`，不走 Vite 开发流程。两者均未入版本控制（`.gitignore` 标废弃），保留在工作目录仅供对照源 bundle 离线比对协议形态，新贡献者应优先使用 `scripts/test/e2e-launch.cjs`。
 
 ## 架构概览
 
@@ -51,8 +51,7 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 
 | 通道 | 方向 | 用途 |
 |------|------|------|
-| `app:ping` (invoke) | 渲染→主 | 健康检查 |
-| `git:run` (invoke) | 渲染→主 | 执行 git 命令，`spawn('git', args, { cwd })` |
+| `git:run` (invoke) | 渲染→主 | 执行 git 命令，`spawn('git', args, { cwd })`，二级子命令 + 选项黑名单校验见 `validateGitArgs` |
 | `window:minimize` | 渲染→主 | 最小化 |
 | `window:maximize` | 渲染→主 | 最大化/还原 |
 | `window:close` | 渲染→主 | 关闭 |
@@ -155,3 +154,24 @@ mock-server.cjs 模拟了 `/api/v1/health`, `/sessions`, `/workers`, `/daemon/st
 | P1 | SSE 解析错误静默吞掉 (acp.js) | 已修复 |
 | P2 | Electron 31 → 34 升级 + express 4.19→4.21 安全补丁 | 已修复 |
 | P2 | .gitignore 添加对照文件和测试脚本 | 已修复 |
+
+### 2026-07-09 全面审查批
+
+| 优先级 | 项 | 状态 |
+|--------|------|------|
+| 高 | S1 密码持久化明文不回读使用 + UI 文案校准为真实行为 (main.cjs / App.jsx) | 已修复 |
+| 高 | S2 git 白名单扩展到二级子命令 + 拦截危险选项 (--upload-pack/--config/-c/--receive-pack) (main.cjs) | 已修复 |
+| 高 | E1 物理清理废弃遗留文件 (根目录 yaml/bat/log、废弃 scripts、playwright-cli) | 已修复 |
+| 中 | S3 CSP connect-src 收窄到 'self' + ws，渲染层 REST 经 IPC 不受 CSP 约束 (main.cjs) | 已修复 |
+| 中 | E2 协议层纯函数单测覆盖：parseEventStreamMessages / validateGitArgs / normalizeGitRequest / parseHashRoute (tests/unit/) | 已修复 |
+| 中 | B4 authLogin 无 token 时不把密码当 Bearer 落 sessionStorage (acp.js) | 已修复 |
+| 中 | E8 vitest environment 从 node 改 jsdom，补 jsdom devDep (vitest.config.js) | 已修复 |
+| 低 | E6 tailwind.config.js 清理未使用的 dark/accent 扩展配色 | 已修复 |
+| 低 | E7 引入 ESLint + Prettier 基线配置（不强整改存量） | 已修复 |
+| 低 | B5 loadURL 生产模式失败给用户提示而非黑屏静默 (main.cjs) | 已修复 |
+| 低 | B6 SSE 超时截断在返回体打标记让前端能识别中断 (main.cjs) | 已修复 |
+| 低 | R1 应用退出显式 close express 静态服务器 (main.cjs) | 已修复 |
+| 低 | R2 reallyQuitting + window-all-closed 逻辑注释修正 (main.cjs) | 已修复 |
+| 低 | R3 codebuddy shell:true spawn 孤儿进程兜底按名树杀 (main.cjs) | 已修复 |
+| 低 | S4 redactSecrets 正则补齐 Password:/password:"xxx"/JSON 形态 (main.cjs) | 已修复 |
+| 低 | E3 CODEBUDDY.md 删 app:ping 表行 + mock-server 矛盾表述校准（本表所在批次） | 已修复 |

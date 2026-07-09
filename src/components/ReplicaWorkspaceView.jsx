@@ -16,9 +16,68 @@ function SearchPanel() {
   const fileSearching = useStore((s) => s.fileSearching);
   const openFile = useStore((s) => s.openFile);
 
+  // 文件名搜索（对照源 GET /api/v1/fs/search?query&limit=15）
+  const fileNameQuery = useStore((s) => s.fileNameQuery);
+  const setFileNameQuery = useStore((s) => s.setFileNameQuery);
+  const runFileNameSearch = useStore((s) => s.runFileNameSearch);
+  const fileNameResults = useStore((s) => s.fileNameResults);
+  const fileNameSearching = useStore((s) => s.fileNameSearching);
+  // 轻输入防抖：对照源 bundle 用 150ms setTimeout，键停后自动搜
+  const debounceRef = React.useRef(null);
+  const onNameChange = (val) => {
+    setFileNameQuery(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!String(val || '').trim()) return;
+    debounceRef.current = setTimeout(() => {
+      runFileNameSearch();
+      debounceRef.current = null;
+    }, 200);
+  };
+  React.useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
+
   return (
     <div className="border-b border-[var(--color-border-default)] p-3">
-      <div className="mb-2 text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">搜索内容</div>
+      {/* 文件名快速搜索（补全/打开文件） */}
+      <div className="mb-2 text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">搜索文件名</div>
+      <div className="relative">
+        <input
+          value={fileNameQuery}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="输入文件名片段实时搜索..."
+          className="input-field w-full"
+          aria-label="搜索文件名"
+        />
+        {fileNameSearching && (
+          <div className="absolute right-2 top-1/2 -translate-y-1/2">
+            <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-muted)] border-t-[var(--color-accent-brand)]" />
+          </div>
+        )}
+      </div>
+      {fileNameResults.length > 0 && (
+        <div className="mt-2 max-h-44 overflow-y-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-primary)]">
+          {fileNameResults.slice(0, 15).map((item, idx) => {
+            const p = item.path || item.file || item.name || '';
+            const name = item.name || (p.split('/').pop() || p);
+            return (
+              <button
+                key={`${p}-${idx}`}
+                className="block w-full border-b border-[var(--color-border-muted)] px-3 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-bg-hover)]"
+                onClick={() => { openFile(p); setFileNameQuery(''); }}
+                title={p}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs">{item.type === 'directory' || p.endsWith('/') ? '📁' : '📄'}</span>
+                  <span className="truncate text-xs text-[var(--color-text-primary)]">{name}</span>
+                </div>
+                <div className="truncate text-[11px] text-[var(--color-text-muted)]">{p}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 内容搜索（原 fsSearchContent） */}
+      <div className="mt-3 mb-2 text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">搜索内容</div>
       <div className="flex gap-2">
         <input
           value={fileSearchQuery}

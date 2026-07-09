@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../store';
 
 function formatNumber(num) {
@@ -35,41 +35,31 @@ function StatCard({ title, value, subtitle }) {
 export default function ReplicaStatsView() {
   const sessionId = useStore((s) => s.sessionId);
   const stats = useStore((s) => s.stats);
+  const sessionStats = useStore((s) => s.sessionStats);
+  const statsLoading = useStore((s) => s.statsLoading);
+  const statsError = useStore((s) => s.statsError);
   const refreshStats = useStore((s) => s.refreshStats);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (silent) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      await refreshStats();
-    } catch (e) {
-      setError(e?.message || '加载失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [refreshStats]);
-
+  // 首次挂载若 store 尚未拉过全局 stats，主动拉一次
   useEffect(() => {
-    if (sessionId) load(false);
-    else setLoading(false);
-  }, [sessionId, load]);
+    if (stats === null && !statsLoading && !statsError) {
+      refreshStats();
+    }
+  }, [stats, statsLoading, statsError, refreshStats]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await refreshStats();
-      setError(null);
-    } catch (e) {
-      setError(e?.message || '刷新失败');
     } finally {
       setRefreshing(false);
     }
   };
 
-  const tokenUsage = stats?.tokenUsageByModel;
+  // 全局 stats 缺字段时回退到会话级 sessionStats，保证两源都能渲染
+  const source = stats || sessionStats || null;
+  const tokenUsage = source?.tokenUsageByModel;
   const tokenByModel = tokenUsage
     ? Object.entries(tokenUsage).map(([name, v]) => ({
         name,
@@ -79,47 +69,54 @@ export default function ReplicaStatsView() {
       }))
     : [];
 
+  const label = stats ? '全局统计' : (sessionStats ? '当前会话统计' : '');
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
       <div className="flex h-12 items-center justify-between border-b border-[var(--color-border-default)] px-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">Stats</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">Stats</h2>
+          {label && (
+            <span className="rounded-full border border-[var(--color-border-muted)] px-2 py-0.5 text-[10px] text-[var(--color-text-muted)]">{label}</span>
+          )}
+        </div>
         <button
           onClick={handleRefresh}
-          disabled={refreshing || !sessionId}
+          disabled={refreshing || statsLoading}
           className="btn-ghost text-xs"
         >
           <svg
             width="14" height="14" viewBox="0 0 16 16"
             fill="none" stroke="currentColor" strokeWidth="1.5"
-            className={refreshing ? 'animate-spin' : ''}
+            className={refreshing || statsLoading ? 'animate-spin' : ''}
           >
             <path d="M1 8a7 7 0 0113.29-4M15 8a7 7 0 01-13.29 4" />
             <path d="M13 1v4h-4M3 15v-4h4" />
           </svg>
-          {refreshing ? '刷新中...' : '刷新'}
+          {refreshing || statsLoading ? '刷新中...' : '刷新'}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
-        {error && (
+        {statsError && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[var(--color-error-bg)] px-4 py-2.5 text-sm text-[var(--color-error)]">
-            {error}
+            {statsError}
             <button className="ml-3 underline text-xs" onClick={handleRefresh}>重试</button>
           </div>
         )}
 
-        {loading && !stats ? (
+        {(statsLoading || refreshing) && !source ? (
           <div className="grid grid-cols-2 gap-4">
             {Array.from({ length: 6 }).map((_, i) => (
               <SkeletonCard key={i} />
             ))}
           </div>
-        ) : !stats ? (
+        ) : !source ? (
           <div className="rounded-lg border border-dashed border-[var(--color-border-muted)] py-16 text-center">
             <p className="text-sm text-[var(--color-text-muted)]">
-              {error ? '加载统计数据失败' : '暂无统计数据'}
+              {statsError ? '加载统计数据失败' : '暂无统计数据'}
             </p>
-            {error && (
+            {statsError && (
               <button className="mt-2 text-xs text-[var(--color-accent-primary)] hover:underline" onClick={handleRefresh}>
                 点击重试
               </button>
@@ -128,16 +125,16 @@ export default function ReplicaStatsView() {
         ) : (
           <>
             <div className="grid grid-cols-2 gap-4 mb-8">
-              <StatCard title="API Duration" value={stats.apiDuration} subtitle="ms" />
-              <StatCard title="Running Time" value={stats.runningTime} subtitle="ms" />
+              <StatCard title="API Duration" value={source.apiDuration} subtitle="ms" />
+              <StatCard title="Running Time" value={source.runningTime} subtitle="ms" />
               <StatCard
                 title="Added Lines"
-                value={stats.fileChangeStats?.totalAddedLines}
+                value={source.fileChangeStats?.totalAddedLines}
                 subtitle="File changes"
               />
               <StatCard
                 title="Deleted Lines"
-                value={stats.fileChangeStats?.totalDeletedLines}
+                value={source.fileChangeStats?.totalDeletedLines}
                 subtitle="File changes"
               />
               <StatCard

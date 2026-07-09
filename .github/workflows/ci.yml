@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (vite build 作为静态检查)
+        run: npx vite build
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: E2E launch test
+        run: node scripts/test/e2e-launch.cjs
+        timeout-minutes: 10
+
+      - name: Upload startup log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-log
+          path: |
+            electron-startup.log
+            crash.log
+          if-no-files-found: ignore

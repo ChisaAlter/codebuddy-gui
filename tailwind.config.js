@@ -2,13 +2,7 @@
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   darkMode: 'class',
-  theme: {
-    extend: {
-      colors: {
-        dark: { 100: '#1a1a2e', 200: '#16213e', 300: '#0f3460', 400: '#1a1a2e', 500: '#0d1b2a' },
-        accent: { DEFAULT: '#00d4ff', dim: '#0099cc' }
-      }
-    }
-  },
+  // theme.extend.colors：dark/accent 扩展已删——组件统一用 var(--color-*) CSS 变量（见 src/index.css :root）
+  // 若将来要引 Tailwind 颜色类，应映射到 var(--color-*) 而非硬编码 #hex
   plugins: []
 }

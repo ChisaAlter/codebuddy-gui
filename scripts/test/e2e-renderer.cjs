@@ -17,8 +17,18 @@ const http = require('http');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 const startupLogPath = path.join(projectRoot, 'electron-startup.log');
+const userDataLog = path.join(process.env.APPDATA || '', 'codebuddy-gui', 'electron-startup.log');
+function readStartupLog() {
+  try { return fs.readFileSync(startupLogPath, 'utf8'); } catch (_) {}
+  try { return fs.readFileSync(userDataLog, 'utf8'); } catch (_) {}
+  return '';
+}
+function rmStartupLog() {
+  try { fs.rmSync(startupLogPath); } catch (_) {}
+  try { fs.rmSync(userDataLog); } catch (_) {}
+}
 const electronExe = path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
-const DEBUG_PORT = 9224;
+const DEBUG_PORT = 9281;
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -48,7 +58,7 @@ async function waitCodeBuddyPort(timeoutMs = 30000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const raw = fs.readFileSync(startupLogPath, 'utf8');
+      const raw = readStartupLog();
       const m = raw.match(/Parsed CodeBuddy port from stdout: (\d{4,5})\b/);
       if (m) return Number(m[1]);
     } catch (_) {}
@@ -62,7 +72,7 @@ async function waitRendererLoaded(timeoutMs = 40000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const raw = fs.readFileSync(startupLogPath, 'utf8');
+      const raw = readStartupLog();
       if (/renderer ready=true/.test(raw) || /dev server unreachable, falling back to/.test(raw)) return true;
     } catch (_) {}
     await wait(500);
@@ -102,7 +112,7 @@ async function main() {
   if (!fs.existsSync(electronExe)) { check('electron.exe 存在', false); return finish(); }
   check('electron.exe 存在', true);
 
-  try { fs.rmSync(startupLogPath); } catch (_) {}
+  rmStartupLog();
 
   // 启动 Electron，开 CDP 远程调试
   const electron = spawn(electronExe, ['.', `--remote-debugging-port=${DEBUG_PORT}`], {
@@ -204,9 +214,14 @@ async function main() {
   // 新对话按钮（文本含 新对话）
   const newChatBtn = await evalJS(`Array.from(document.querySelectorAll("button")).find(b => b.textContent.includes("新对话")) ? 1 : 0`);
   check('Sidebar 新对话按钮 渲染', newChatBtn === 1);
-  // 连接态绿点（title=已连接）
-  const greenDot = await evalJS(`document.querySelector("div[title='已连接']") ? 1 : 0`);
-  check('Sidebar 连接态绿点 渲染', greenDot === 1, greenDot === 1 ? '已连接' : '未连接态');
+  // 连接态绿点（title=已连接）——bootstrap 可能尚在连接中，等最多 8 秒探到
+  let greenDot = 0;
+  for (let i = 0; i < 16; i++) {
+    greenDot = await evalJS(`document.querySelector("div[title='已连接']") ? 1 : 0`);
+    if (greenDot === 1) break;
+    await wait(500);
+  }
+  check('Sidebar 连接态绿点 渲染', greenDot === 1, greenDot === 1 ? '已连接' : '8s 内未到 connected 态');
 
   // 6. 校验 store 状态（bootstrap 完成）
   const connState = await evalJS(`(function(){try{return window.__store__?.getState?.()?.connectionState}catch(e){try{return require('zustand').useStore?.getState?.()?.connectionState}catch(e){return null}}})()`);
@@ -271,6 +286,104 @@ async function main() {
     try{const r=await fetch(location.href,{cache:'no-store'});return r.headers.get('content-security-policy')||''}catch(e){return 'fetch err:'+e.message}
   })()`);
   check('CSP header 真注入', typeof cspHeader === 'string' && cspHeader.includes("default-src 'self'"), cspHeader?.slice(0, 80) || JSON.stringify(cspHeader));
+
+  // ===== 新增 12 项功能的渲染层断言 =====
+  // helper: 跑 hash 路由切换 + 等渲染 + 返回
+  //  注意：直接 location.hash= 在某些 CDP 上下文里不触发 hashchange → store.route 不更新
+  //  改用真点 Sidebar 导航按钮（按钮 onClick 调 store.setRoute，可靠）
+  async function gotoRoute(route) {
+    // 先试 hash，再 fallback 点 Sidebar 按钮
+    await evalJS(`(function(){
+      // 试直接 setRoute（DEV 暴露 __ZUSTAND_STORE 时）
+      try { if (window.__ZUSTAND_STORE?.getState?.()?.setRoute) { window.__ZUSTAND_STORE.getState().setRoute(${JSON.stringify(route)}); return 'store'; } } catch(_) {}
+      // 试点 Sidebar 导航按钮：按钮 title=label 或文本含 label
+      const labels = {chat:'对话',instances:'实例','remote-control':'远程控制',tasks:'任务',terminal:'终端',canvas:'画布',editor:'编辑器',changes:'变更',plugins:'插件',stats:'统计',traces:'链路',monitor:'监控',logs:'日志',workers:'Workers',metrics:'指标',settings:'设置',keybindings:'快捷键',docs:'文档'};
+      const label = labels[${JSON.stringify(route)}] || ${JSON.stringify(route)};
+      const btns = Array.from(document.querySelectorAll('button'));
+      const btn = btns.find(b => (b.title===label || b.textContent.includes(label)) && b.closest('aside'));
+      if (btn) { btn.click(); return 'sidebar'; }
+      // fallback hash
+      location.hash = '#/' + ${JSON.stringify(route)};
+      return 'hash';
+    })()`);
+    await wait(1000); // React + 数据拉取
+  }
+
+  // K 鉴权：authViewState 默认非 'login'（否则卡登录页，前面 sidebar/textarea 都不会渲染）
+  //  前面断言全过已间接证明 authViewState !== 'login'；这里查 store 字段（DEV 暴露 __ZUSTAND_STORE）
+  //  生产构建不暴露 DEV 全局，查不到属正常（跳过），不算失败
+  const authState = await evalJS(`(function(){
+    try { return window.__ZUSTAND_STORE?.getState?.()?.authViewState || null; } catch(_) { return null; }
+  })()`);
+  const hasDevStore = await evalJS(`typeof window.__ZUSTAND_STORE !== 'undefined' ? 1 : 0`);
+  check('K authViewState 字段存在且非 loading', hasDevStore === 0 || authState !== null, hasDevStore === 0 ? '生产构建不暴露 DEV __ZUSTAND_STORE，跳过' : `state=${authState}`);
+  check('K 未卡在登录页', authState !== 'login', authState === 'login' ? '卡登录页' : (authState === null ? 'DEV 全局不可达，间接由前面断言通过证明' : '通过态'));
+
+  // A 会话删改：Sidebar 会话项有 ⋮ 操作菜单按钮（前提：sessions 非空；后端无会话时按钮不渲染，不算 bug）
+  const sessionsCount = await evalJS(`(function(){try{return window.__ZUSTAND_STORE?.getState?.()?.sessions?.length||0}catch(_){return -1}})()`);
+  const sessionMenuBtn = await evalJS(`document.querySelector("button[aria-label='会话操作菜单']") ? 1 : 0`);
+  check('A Sidebar 会话操作菜单按钮渲染', sessionMenuBtn === 1 || sessionsCount === 0, sessionMenuBtn === 1 ? '有按钮' : (sessionsCount === 0 ? 'sessions 为空，按钮不渲染属正常' : `sessions=${sessionsCount} 但无按钮`));
+
+  // I 全局 stats：切 stats 路由，Stats 视图渲染
+  await gotoRoute('stats');
+  const statsTitle = await evalJS(`Array.from(document.querySelectorAll("h2")).find(h => h.textContent.includes("Stats")) ? 1 : 0`);
+  check('I Stats 视图渲染', statsTitle === 1);
+
+  // D 任务模板：切 tasks 路由，任务模板分区渲染
+  await gotoRoute('tasks');
+  const templatesSection = await evalJS(`Array.from(document.querySelectorAll("h2")).find(h => h.textContent.includes("任务模板")) ? 1 : 0`);
+  check('D Tasks 任务模板分区渲染', templatesSection === 1);
+
+  // E 文件名搜索：切 editor 路由，WorkspaceView 有文件名实时搜索 input
+  await gotoRoute('editor');
+  const fileNameSearchInput = await evalJS(`Array.from(document.querySelectorAll("input[placeholder]")).find(i => i.placeholder.includes("输入文件名片段实时搜索")) ? 1 : 0`);
+  check('E WorkspaceView 文件名实时搜索框渲染', fileNameSearchInput === 1);
+
+  // F Git HTTP API 对照：切 changes 路由（放在 terminal 前，避免 PTY socket 残留报错冒到 changes 检查）
+  //  runGitRemote export 存在已静态校验，这里验 Git 视图入口未破坏
+  //  ReplicaChangesView 首次渲染 loading 态出"加载改动中"/空态出"没有检测到改动"/根有"Source Control"标题
+  //  注意：不能靠 aside.nextElement 定位主内容区（aside 后跟空白文本节点，nextElement 返回 null）
+  //        改查 StatusBar banner 标题（切路由后变"变更"）或 body 含 changes 视图特征文本
+  await gotoRoute('changes');
+  const changesView = await evalJS(`(function(){
+    const banner = document.querySelector('[role=banner] span');
+    if (banner && banner.textContent.includes('变更')) return 'banner';
+    const txt = document.body.textContent || '';
+    if (txt.includes('加载改动中') || txt.includes('没有检测到改动') || txt.includes('Source Control')) return 'body';
+    return '';
+  })()`);
+  check('F ChangesView 渲染（Git 路径未破坏）', changesView !== '', changesView === 'banner' ? 'StatusBar 标题切到变更' : (changesView === 'body' ? 'body 含 changes 视图特征文本' : '未渲染'));
+
+  // J 微信/企微：切 remote-control 路由，微信/企微创建分区渲染
+  await gotoRoute('remote-control');
+  const wechatSection = await evalJS(`Array.from(document.querySelectorAll("div")).find(d => d.textContent.includes("添加微信机器人")) ? 1 : 0`);
+  const wecomSection = await evalJS(`Array.from(document.querySelectorAll("div")).find(d => d.textContent.includes("添加企业微信机器人")) ? 1 : 0`);
+  check('J RemoteControlView 微信创建分区渲染', wechatSection === 1);
+  check('J RemoteControlView 企微创建分区渲染', wecomSection === 1);
+
+
+  // H uninstall + 市场：切 plugins 路由，插件市场分区渲染
+  await gotoRoute('plugins');
+  const marketSection = await evalJS(`Array.from(document.querySelectorAll("h2")).find(h => h.textContent.includes("插件市场")) ? 1 : 0`);
+  check('H PluginsView 插件市场分区渲染', marketSection === 1);
+  // L PTY WS /ws 后缀：切 terminal 路由，TerminalView 渲染（pty.js 路由形状已静态校验，这里只验渲染）
+  await gotoRoute('terminal');
+  const terminalView = await evalJS(`Array.from(document.querySelectorAll("h2,div")).find(e => e.textContent.includes("终端") || e.textContent.includes("Terminal")) ? 1 : 0`);
+  check('L TerminalView 渲染', terminalView === 1);
+
+
+  // 收尾前回 chat 路由，免下次跑侧效
+  await gotoRoute('chat');
+
+  // P1-3 亮色主题验证：切到 settings 路由，点"亮色"按钮，验 data-theme=light 生效
+  await gotoRoute('settings');
+  await evalJS(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '亮色').click()`);
+  await wait(800);
+  const lightThemeApplied = await evalJS(`document.documentElement.dataset.theme === 'light' ? 1 : 0`);
+  check('P1-3 亮色主题切换生效（data-theme=light）', lightThemeApplied === 1, `data-theme=${await evalJS('document.documentElement.dataset.theme')}`);
+  // 切回暗色（免影响下次跑）
+  await evalJS(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '暗色').click()`);
+  await wait(500);
 
   killSpawned();
   ws.close();

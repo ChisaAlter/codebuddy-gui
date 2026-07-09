@@ -1,0 +1,55 @@
+// ESLint v9 flat config（2026-07-09 引入）
+// 目标：不强整改存量，仅立配置 + npm script，新增/修改代码逐步 lint
+// 后续可逐步收紧 rules 至 stricter，或引入 eslint-config-prettier 协同风格
+
+import js from '@eslint/js';
+import globals from 'globals';
+
+export default [
+  js.configs.recommended,
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        // Electron 渲染层暴露的全局
+        electronAPI: 'readonly',
+        // 浏览器遗留全局（部分组件用）
+        globalThis: 'readonly',
+      },
+    },
+    files: ['electron/**/*.{js,cjs}', 'src/**/*.{js,jsx}', 'tests/**/*.{js,jsx}'],
+    rules: {
+      // 只抓明显 bug 与未使用导入，不强风格
+      'no-unused-vars': 'warn',
+      'no-empty': 'warn',
+      'no-dupe-keys': 'error',
+      'no-dupe-args': 'error',
+      'no-redeclare': 'error',
+      'no-unreachable': 'error',
+      'no-irregular-whitespace': 'warn',
+      // CJS/ESM 全局定义多，no-依赖 env 已覆盖，显式关
+      'no-undef': 'off',
+    },
+  },
+  {
+    files: ['src/**/*.jsx', 'tests/**/*.jsx'],
+    languageOptions: {
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+  },
+  {
+    // electron 主进程 CJS 文件：放行 require/module 等 CJS 全局
+    files: ['electron/**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { ...globals.node, require: 'readonly', module: 'readonly' },
+    },
+  },
+  {
+    // 忽略目录（构建产物、依赖、对照源）
+    ignores: ['node_modules/', 'dist/', 'out/', 'build/', 'webui-css.css', 'webui-js.js', '.playwright-cli/', '.trae/', '.codebuddy/'],
+  },
+];
