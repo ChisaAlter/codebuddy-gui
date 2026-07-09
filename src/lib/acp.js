@@ -240,9 +240,10 @@ export class AcpClient {
       }
       this.emit('connected', payload);
 
-      // 连接成功后自动启用心跳 + GET SSE 通知流
+      // 连接成功后自动启用心跳
       this.startHeartbeat();
-      this.startNotificationStream();
+      // GET SSE 通知流暂禁：与 POST 内联 SSE 并行时偶���乱码，v0.1 先用单通道
+      // this.startNotificationStream();
     } catch (err) {
       this._connecting = false;
       this.connected = false;
