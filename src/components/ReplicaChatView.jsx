@@ -238,7 +238,7 @@ function TimelineItem({ item }) {
   if (item.role === 'user') {
     return (
       <div className="flex justify-end my-3">
-        <div className="max-w-[75%] rounded-2xl rounded-br-md bg-[var(--color-bg-user)] px-4 py-2.5 text-sm leading-relaxed text-[var(--color-text-primary)]">
+        <div className="max-w-[75%] rounded-2xl rounded-br-md bg-[var(--color-bg-user)] px-4 py-2.5 text-sm leading-relaxed text-white">
           {item.content}
         </div>
       </div>
