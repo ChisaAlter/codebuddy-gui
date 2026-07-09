@@ -1039,6 +1039,7 @@ export const useStore = create((set, get) => ({
         sessionId: get().sessionId,
         prompt: [{ type: 'text', text: content }],
       });
+      get().closeAssistantStream();
     } catch (error) {
       set({ isAwaitingResponse: false });
       get().appendTimelineEvent('error', { message: error.message, type: 'error' });
