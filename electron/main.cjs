@@ -474,6 +474,7 @@ function validateGitArgs(args) {
 }
 
 const CODEBUDDY_REQUEST_TIMEOUT_MS = 30000;
+const codebuddyStreams = new Map();
 
 function createTimeoutSignal(timeoutMs) {
   const controller = new AbortController();
@@ -503,6 +504,97 @@ ipcMain.handle('git:run', async (_event, payload = {}) => {
       else resolve({ ok: false, error: stderr.trim() || stdout.trim() || `git exited ${code}` });
     });
   });
+});
+
+function parseSseMessagesFromBuffer(buffer) {
+  const parts = buffer.split(/\r?\n\r?\n/);
+  const rest = parts.pop() || '';
+  const messages = [];
+  for (const part of parts) {
+    const data = part
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('');
+    if (!data) continue;
+    try {
+      messages.push(JSON.parse(data));
+    } catch (error) {
+      logStartup(`codebuddy stream JSON parse failed: ${error.message}`);
+    }
+  }
+  return { messages, rest };
+}
+
+ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
+  const streamId = String(request.streamId || '');
+  const url = String(request.url || '');
+  if (!streamId) return { ok: false, error: 'missing streamId' };
+  if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
+    return { ok: false, error: 'Only localhost CodeBuddy streams are allowed' };
+  }
+
+  const controller = new AbortController();
+  codebuddyStreams.set(streamId, controller);
+  try {
+    const response = await net.fetch(url, {
+      method: 'GET',
+      headers: request.headers || {},
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      codebuddyStreams.delete(streamId);
+      event.sender.send('codebuddy:streamError', { streamId, error: `ACP stream failed: ${response.status}` });
+      return { ok: false, status: response.status };
+    }
+    const reader = response.body?.getReader?.();
+    if (!reader) {
+      codebuddyStreams.delete(streamId);
+      event.sender.send('codebuddy:streamError', { streamId, error: 'ACP stream body unavailable' });
+      return { ok: false, error: 'stream body unavailable' };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const sender = event.sender;
+    (async () => {
+      try {
+        while (!controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseMessagesFromBuffer(buffer);
+          buffer = parsed.rest;
+          for (const message of parsed.messages) {
+            if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && !sender.isDestroyed()) {
+          sender.send('codebuddy:streamError', { streamId, error: error.message });
+        }
+      } finally {
+        try { reader.releaseLock?.(); } catch (_) {}
+        codebuddyStreams.delete(streamId);
+        if (!controller.signal.aborted && !sender.isDestroyed()) {
+          sender.send('codebuddy:streamError', { streamId, error: 'ACP stream closed' });
+        }
+      }
+    })();
+    return { ok: true };
+  } catch (error) {
+    codebuddyStreams.delete(streamId);
+    event.sender.send('codebuddy:streamError', { streamId, error: error.message });
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
+  const controller = codebuddyStreams.get(String(streamId || ''));
+  if (controller) {
+    controller.abort();
+    codebuddyStreams.delete(String(streamId || ''));
+  }
 });
 
 ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
@@ -709,6 +801,10 @@ app.on('before-quit', () => {
     try { staticServer.close(); } catch (_) {}
     staticServer = null;
   }
+  for (const controller of codebuddyStreams.values()) {
+    try { controller.abort(); } catch (_) {}
+  }
+  codebuddyStreams.clear();
   if (codebuddyProc && !codebuddyProc.killed) {
     try {
       // Windows shell:true spawn 出来的 codebuddy 是 node.exe 包装，taskkill /T 树杀

@@ -1,5 +1,7 @@
 # CodeBuddy GUI
 
+> 详细开发指南见 [`CODEBUDDY.md`](./CODEBUDDY.md)（架构、IPC、协议、约束、对照参考文件等）。本 README 仅作快速入口。
+
 目标：在 Electron 桌面端内本地 1:1 复刻 CodeBuddy Web UI，而不是套壳加载真实网页。
 
 当前状态：

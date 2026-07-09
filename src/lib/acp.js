@@ -151,6 +151,13 @@ export class AcpClient {
     this._heartbeatFailures = 0;
     this._maxHeartbeatFailures = 3;
     this._heartbeatInterval = 30000;
+
+    // GET SSE 通知流：真实 Web UI 在 connect 后保持 /api/v1/acp 长连接，session/update 主要从这里推送
+    this._sseAbortController = null;
+    this._sseReconnectTimer = null;
+    this._sseRetryAttempt = 0;
+    this._sseBuffer = '';
+    this._sseIpcStream = null;
   }
 
   get connectionState() {
@@ -233,8 +240,9 @@ export class AcpClient {
       }
       this.emit('connected', payload);
 
-      // 连接成功后自动启用心跳
+      // 连接成功后自动启用心跳 + GET SSE 通知流
       this.startHeartbeat();
+      this.startNotificationStream();
     } catch (err) {
       this._connecting = false;
       this.connected = false;
@@ -301,6 +309,7 @@ export class AcpClient {
     this.initialized = false;
     this.reconnectAttempts = 0;
     this.stopHeartbeat();
+    this.stopNotificationStream();
 
     try {
       await this.connect();
@@ -336,6 +345,109 @@ export class AcpClient {
       this._heartbeatTimer = null;
     }
     this._heartbeatFailures = 0;
+  }
+
+  startNotificationStream() {
+    this.stopNotificationStream();
+    if (!this.connectionId) return;
+    this._sseRetryAttempt = 0;
+    this._sseAbortController = new AbortController();
+
+    const onMessage = (message) => this.handleIncomingRpc(message);
+    const onError = () => this._scheduleNotificationReconnect();
+
+    if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
+      this._sseIpcStream = window.electronAPI.openCodeBuddyStream({
+        url: `${_apiBase}/api/v1/acp`,
+        headers: makeHeaders({
+          Accept: 'text/event-stream',
+          'acp-connection-id': this.connectionId,
+          ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+        }),
+      }, { onMessage, onError });
+      return;
+    }
+
+    this._openFetchNotificationStream(onMessage, onError).catch((err) => {
+      if (err?.name !== 'AbortError') onError(err);
+    });
+  }
+
+  stopNotificationStream() {
+    if (this._sseReconnectTimer) {
+      clearTimeout(this._sseReconnectTimer);
+      this._sseReconnectTimer = null;
+    }
+    if (this._sseIpcStream) {
+      try { this._sseIpcStream.close?.(); } catch (_) {}
+      this._sseIpcStream = null;
+    }
+    if (this._sseAbortController) {
+      this._sseAbortController.abort();
+      this._sseAbortController = null;
+    }
+    this._sseBuffer = '';
+  }
+
+  _scheduleNotificationReconnect() {
+    if (!this.connected || this.reconnecting || this._sseReconnectTimer) return;
+    const delay = Math.min(2000 * (2 ** this._sseRetryAttempt), 60000);
+    this._sseRetryAttempt = Math.min(this._sseRetryAttempt + 1, 10);
+    this._sseReconnectTimer = setTimeout(() => {
+      this._sseReconnectTimer = null;
+      if (this.connected && !this.reconnecting) this.startNotificationStream();
+    }, delay);
+  }
+
+  async _openFetchNotificationStream(onMessage, onError) {
+    const response = await fetch(`${_apiBase}/api/v1/acp`, {
+      headers: makeHeaders({
+        Accept: 'text/event-stream',
+        'acp-connection-id': this.connectionId,
+        ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+      }),
+      signal: this._sseAbortController?.signal,
+    });
+    if (!response.ok) {
+      onError(new Error(`ACP notification stream failed: ${response.status}`));
+      return;
+    }
+    await this.readSseStream(response, onMessage);
+    onError(new Error('ACP notification stream closed'));
+  }
+
+  _consumeSseText(chunk, onMessage) {
+    this._sseBuffer += chunk;
+    const parts = this._sseBuffer.split(/\r?\n\r?\n/);
+    this._sseBuffer = parts.pop() || '';
+    for (const part of parts) {
+      const data = part
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .join('');
+      if (!data) continue;
+      try {
+        onMessage(JSON.parse(data));
+      } catch (_) { console.warn('ACP notification SSE JSON parse failed:', _); }
+    }
+  }
+
+  async readSseStream(response, onMessage = (message) => this.handleIncomingRpc(message)) {
+    const reader = response.body?.getReader?.();
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        this._consumeSseText(decoder.decode(value, { stream: true }), onMessage);
+      }
+      const tail = decoder.decode();
+      if (tail) this._consumeSseText(tail, onMessage);
+    } finally {
+      reader.releaseLock?.();
+    }
   }
 
   async initialize() {
@@ -383,6 +495,7 @@ export class AcpClient {
     }
 
     this.stopHeartbeat();
+    this.stopNotificationStream();
     if (previousConnectionId) await this.releaseConnection(previousConnectionId);
   }
 
