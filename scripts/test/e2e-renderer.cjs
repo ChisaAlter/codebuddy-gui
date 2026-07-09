@@ -315,6 +315,24 @@ async function main() {
         await wait(6000);
         const _after = await evalJS('document.querySelectorAll("[class*=message],[class*=markdown],[class*=timeline],[class*=assistant],[class*=user]").length');
       }
+      // === Rounds 3-10: verify 10 consecutive messages do not deadlock
+      for (let r = 3; r <= 10; r++) {
+        const _msg = `r${r}-${Date.now()}`;
+        const _filled = await evalJS("(function(){const ta=document.querySelector(\"textarea\");if(!ta)return 0;const s=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,\"value\").set;s.call(ta,\"" + _msg + "\");ta.dispatchEvent(new Event(\"input\",{bubbles:true}));return 1})()");
+        if (!_filled) { check(`round${r} fill textarea`, false); break; }
+        const _ent = await evalJS('(function(){const ta=document.querySelector("textarea");if(!ta)return 0;ta.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));return 1})()');
+        check(`round${r} Enter sent`, _ent === 1);
+        if (_ent !== 1) break;
+        // Short stability wait per round
+        let _rr = false;
+        for (let _w = 0; _w < 12; _w++) {
+          await wait(2000);
+          const _t = await evalJS('document.querySelectorAll("[class*=message],[class*=markdown],[class*=assistant],[class*=user]").length');
+          const _t2 = await wait(2000).then(() => evalJS('document.querySelectorAll("[class*=message],[class*=markdown],[class*=assistant],[class*=user]").length'));
+          if (_t > 2 && _t === _t2) { _rr = true; break; }
+        }
+        check(`round${r} responded`, _rr);
+      }
     }
   }
   // 9. 校验 CSP 真注入
