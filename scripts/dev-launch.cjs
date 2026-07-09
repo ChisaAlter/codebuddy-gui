@@ -10,7 +10,7 @@ const fs = require('fs');
 
 const projectRoot = path.resolve(__dirname, '..');
 const VITE_PORT = 5173;
-const VITE_URL = `http://127.0.0.1:${VITE_PORT}/`;
+const VITE_URL = `http://localhost:${VITE_PORT}/`;
 
 function log(msg) { console.log(`[dev-launch] ${msg}`); }
 
