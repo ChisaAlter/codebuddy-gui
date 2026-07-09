@@ -20,15 +20,18 @@ npm run build        # vite build -> out/dist/，electron-builder -> dist/CodeBu
 ```
 
 测试与冒烟脚本（均通过真实 CodeBuddy 后端驱动，无需 mock）：
-- `node scripts/test/e2e-launch.cjs` —— 端到端启动测试：Electron 启动 → spawn `codebuddy --serve` → stdout 解析随机端口 → 渲染进程加载 → IPC 通路校验。
-- `node scripts/test/e2e-packaged.cjs` —— 对打包产物（`dist/`）做等效验证。
-- `node scripts/test/e2e-renderer.cjs` —— 实机渲染测试：开 Electron `--remote-debugging-port` → CDP 连渲染页 → 校验 Sidebar DOM、点「新对话」重置 sessionId、发消息后 timeline 出现 user message。
-- 单元测试（vitest，jsdom 环境）：`tests/unit/` 下 `git-validate.test.js` / `parse-sse.test.js` / `routes.test.js` / `timeline.test.js`，运行 `npm run test`。跑单文件/单用例：
+- 单元测试（vitest 3.x，jsdom 环境）：`tests/unit/` 下 `git-validate.test.js` / `parse-sse.test.js` / `routes.test.js` / `timeline.test.js` / `acp-stream.test.js`，运行 `npm run test`。跑单文件/单用例：
   ```bash
   npx vitest run tests/unit/git-validate.test.js   # 单文件
   npx vitest run -t "validateGitArgs"               # 按用例名过滤
   npx vitest                                       # watch 模式（等同 npm run test:watch）
   ```
+  > vitest 4.x 在 Node 24 下 `describe()` 即崩，本项目锁 `^3.2.7`，勿升级。
+- 端到端 / 打包冒烟（npm 脚本快捷方式）：
+  - `npm run test:e2e` —— `vite build` + `e2e-launch.cjs`（启动/端口/IPC 通路）+ `e2e-renderer.cjs`（CDP 实机渲染：Sidebar DOM、新对话重置 sessionId、发消息出 timeline、CSP 注入、AI 回复）。
+  - `npm run test:packaged` —— `build:dir` 产出 `dist/win-unpacked/` + `e2e-packaged.cjs`（isPackaged=true 分支：CSP 严模式无 'unsafe-inline'、生产路径不探 Vite）。
+  - `npm run test:release` —— **发布前全量门禁**：单测 → e2e → packaged，对应发布序列步骤 4-9。
+  - `prepublishOnly` —— npm publish 时自动跑 `npm run test`（单测门禁；本项目当前 `electron-builder --publish never` 不走 npm 发布，故 `test:release` 是实际发布前手动 gate）。
 - 静态检查：`npm run lint`（eslint，可加 `:fix` 自动修）、`npm run format`（prettier）。
 - 打包调试：`npm run build:dir` —— 仅出 unpacked 目录、不打 NSIS 安装包，用于本地验证打包产物。
 
