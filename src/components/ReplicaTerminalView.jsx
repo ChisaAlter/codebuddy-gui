@@ -89,6 +89,7 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
 
     socket.on('message', (payload) => {
       if (currentSessionIdRef.current !== pane.sessionId) return;
+      if (!terminalRef.current) return; // 卸载竞态：socket.close() 异步，dispose 后仍可能触发
       if (typeof payload === 'string') {
         terminalRef.current.write(payload);
         appendPaneOutput(pane.id, payload);

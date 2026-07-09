@@ -93,6 +93,7 @@ function CanvasTerminalPane({ pane, scale, onClose, onDuplicate, onToggleMinimiz
     });
 
     socket.on('message', (payload) => {
+      if (!terminalRef.current) return; // 卸载竞态：socket.close() 异步，dispose 后仍可能触发
       if (typeof payload === 'string') {
         terminalRef.current.write(payload);
         return;
