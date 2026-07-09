@@ -347,7 +347,9 @@ export function reduceAcpEvent(timeline, eventType, payload) {
     ];
   }
 
-  if (eventType === 'status_change' || eventType === 'model_update' || eventType === 'mode_update' || eventType === 'current_mode_update' || eventType === 'initialized') {
+  if (eventType === 'initialized') return timeline; // 系统内部事件，不渲染到对话
+
+  if (eventType === 'status_change' || eventType === 'model_update' || eventType === 'mode_update' || eventType === 'current_mode_update') {
     return pushSystemEvent(timeline, eventType, payload);
   }
 
