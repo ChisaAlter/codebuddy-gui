@@ -35,3 +35,7 @@ scripts/test/test-app.cjs
 scripts/test/test-full.ps1
 scripts/test/test-launch.cjs
 scripts/test/test_all.py
+
+# IDE/工具本地数据
+.workbuddy/
+docs/
