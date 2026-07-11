@@ -1,229 +1,517 @@
 #!/usr/bin/env node
-// 端到端启动测试：覆盖三件被打断的事 ——
-//   1. Electron 启动 → spawn codebuddy --serve → stdout 吐随机端口
-//   2. 渲染进程加载（startup.log 含 Static server + createWindow + 回退生产标志）
-//   3. IPC 通路校验：preload 暴露 ↔ main handler 字符串一致性 ↔ store 调用链
-//
-// 不依赖 ws/undici/playwright；不弹真 dialog（避免 headless 卡住）。
-// 用法：node scripts/test/e2e-launch.cjs
-// 退出码 0 = 全过；非 0 = 有失败项。
+'use strict';
 
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const http = require('http');
+const fs = require('node:fs');
+const http = require('node:http');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const {
+  captureScreenshot,
+  cleanupOwned,
+  cleanupRuntimeDir,
+  connectCdp,
+  createOverallWatchdog,
+  createOwnershipCleanupEvidence,
+  createRuntimeLayout,
+  createSingleFinalizer,
+  finalizeHarnessRun,
+  finalizeUnsafeHarnessFailure,
+  driveByRole,
+  findRendererTarget,
+  findStartupLog,
+  inspectProcesses,
+  launchDesktop,
+  requireUsableCodeBuddyStartup,
+  throwIfAborted,
+  waitForRendererValue,
+  waitForVisibleSettingValue,
+} = require('./e2e-driver.cjs');
+const { createTaskRunLayout, safeSegment, sanitizeText, writeTaskEvidence } = require('./evidence-writer.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-// startup.log dev 写项目根；打包后 main.cjs 改写 userData，兜底读两条
-const startupLogPath = path.join(projectRoot, 'electron-startup.log');
-const userDataLog = path.join(process.env.APPDATA || '', 'codebuddy-gui', 'electron-startup.log');
-function readStartupLog() {
-  try { return fs.readFileSync(startupLogPath, 'utf8'); } catch (_) {}
-  try { return fs.readFileSync(userDataLog, 'utf8'); } catch (_) {}
-  return '';
-}
-function startupLogExists() {
-  return fs.existsSync(startupLogPath) || fs.existsSync(userDataLog);
-}
-function rmStartupLog() {
-  try { fs.rmSync(startupLogPath); } catch (_) {}
-  try { fs.rmSync(userDataLog); } catch (_) {}
-}
 const electronExe = path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
-
-const results = [];
-function check(name, ok, detail = '') {
-  results.push({ name, ok, detail });
-  console.log(`${ok ? '✅' : '❌'} ${name}${detail ? ' — ' + detail : ''}`);
-}
-
-function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// 总超时兜底：90s 后强制 finish，避免任一 wait 卡死整轮
-let finished = false;
-const overallTimer = setTimeout(() => {
-  if (finished) return;
-  console.error('[timeout] 90s 总超时，强制收尾');
-  try { killSpawnedProcesses(); } catch (_) {}
-  finish();
-}, 90000);
-
-// 等 startup.log 里出现 main.cjs 写的完整端口行（30s 内）
-// 只认 "Parsed CodeBuddy port from stdout: <数字>" —— 这条是 main.cjs 解析完整后再 append 的，
-// 不会读到半行；避开直接扫 stdout URL 的截断风险
-async function waitCodeBuddyPort(timeoutMs = 30000) {
-  const start = Date.now();
-  let buf = '';
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const raw = readStartupLog();
-      buf = raw;
-      const m = raw.match(/Parsed CodeBuddy port from stdout: (\d{4,5})\b/);
-      if (m) return Number(m[1]);
-    } catch (_) {}
-    await wait(500);
-  }
-  console.log('[debug] startup.log tail:\n' + buf.slice(-800));
-  return null;
-}
-
-// HTTP GET 探测后端端口是否真能响应（收紧：< 400 且 body 非空）
-function probeHttp(port) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const done = (v) => { if (!resolved) { resolved = true; resolve(v); } };
-    const req = http.get(`http://127.0.0.1:${port}/`, { timeout: 2000 }, (res) => {
-      let len = 0;
-      res.on('data', c => { len += c.length; });
-      res.on('end', () => done(res.statusCode >= 200 && res.statusCode < 400 && len > 0));
-      res.resume();
-    });
-    req.on('error', () => done(false));
-    req.on('timeout', () => { req.destroy(); done(false); });
-  });
-}
-
-// spawned PIDs 粒射式清理 —— 只杀自己 spawn 出来的，不误杀用户其他 Electron 实例
-let spawnedPids = [];
-function killSpawnedProcesses() {
-  for (const pid of spawnedPids) {
-    try { process.kill(pid, 'SIGKILL'); } catch (_) {}
-  }
-  spawnedPids = [];
-}
-
-async function main() {
-  console.log('=== E2E 启动测试 ===');
-
-  // 0. 前置
-  check('out/dist 生产构建存在', fs.existsSync(path.join(projectRoot, 'out', 'dist', 'index.html')));
-  if (!fs.existsSync(electronExe)) {
-    check('electron.exe 存在', false, electronExe);
-    return finish();
-  }
-  check('electron.exe 存在', true);
-
-  // 清掉旧 startup.log 避免误读上次端口（dev 项目根 + 打包 userData 兜底）
-  rmStartupLog();
-
-  // 1. 启动 Electron —— isDev = !app.isPackaged，不看 env；直接 spawn 永远走 dev 探测路径
-  //    40 次 probe Vite 5173 不通才回退生产构建（约 20s）。不传 NODE_ENV（没用且误导）。
-  const electron = spawn(electronExe, ['.'], {
-    cwd: projectRoot,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false,
-    windowsHide: false,
-    detached: false,
-    env: Object.assign({}, process.env, { ELECTRON_ENABLE_LOGGING: '1' }),
-  });
-  spawnedPids.push(electron.pid);
-  electron.stdout.on('data', d => console.log('[electron]', d.toString().trim()));
-  electron.stderr.on('data', d => console.log('[electron:err]', d.toString().trim()));
-  electron.on('error', err => check('Electron spawn', false, err.message));
-  electron.on('exit', (code, signal) => {
-    console.log(`[electron] exited code=${code} signal=${signal}`);
-    spawnedPids = spawnedPids.filter(p => p !== electron.pid);
-  });
-
-  // 等 codebuddy stdout 吐端口
-  console.log('等待 codebuddy stdout 吐端口...');
-  const cbPort = await waitCodeBuddyPort(30000);
-  check('codebuddy --serve stdout 吐随机端口', !!cbPort, cbPort ? `port=${cbPort}` : '30s 内未解析到');
-
-  if (cbPort) {
-    await wait(2000);
-    const reachable = await probeHttp(cbPort);
-    check('后端端口 HTTP 可响应', reachable, reachable ? 'GET / ok' : '探不通');
-  }
-
-  // 等渲染进程加载完成（回退生产 "dev server unreachable" 或 ready=true），35s 内
-  async function waitRendererLoaded(timeoutMs = 35000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      try {
-        const raw = readStartupLog();
-        if (/renderer ready=true/.test(raw) || /dev server unreachable, falling back to/.test(raw)) return true;
-      } catch (_) {}
-      await wait(500);
-    }
-    return false;
-  }
-  const rendererLoaded = await waitRendererLoaded(35000);
-
-  // 2. startup.log 含渲染进程加载完成标志
-  try {
-    const log = readStartupLog();
-    check('startup.log 含 Static server', /Static server on http:\/\/127\.0\.0\.1:\d+/.test(log), '');
-    check('startup.log 含 createWindow', /createWindow called/.test(log), '');
-    const fellBack = /dev server unreachable, falling back to http:\/\/127\.0\.0\.1:\d+\/index\.html/.test(log);
-    const readyTrue = /renderer ready=true/.test(log);
-    check('startup.log renderer 加载完成（回退生产或 ready=true）', rendererLoaded && (fellBack || readyTrue), rendererLoaded ? (fellBack ? '走回退路径' : (readyTrue ? 'ready=true' : '标志未出现')) : '35s 内未出现');
-  } catch (err) {
-    check('startup.log 可读', false, err.message);
-  }
-
-  killSpawnedProcesses();
-
-  // 3. IPC 通路校验 —— preload 暴露 ↔ main handler 字符串一致性 ↔ store/sidebar 调用链
-  const preload = fs.readFileSync(path.join(projectRoot, 'electron', 'preload.cjs'), 'utf8');
-  const main = fs.readFileSync(path.join(projectRoot, 'electron', 'main.cjs'), 'utf8');
-  const store = fs.readFileSync(path.join(projectRoot, 'src', 'store.js'), 'utf8');
-  const sidebar = fs.readFileSync(path.join(projectRoot, 'src', 'components', 'ReplicaSidebar.jsx'), 'utf8');
-
-  // 3a. workspace:choose 全链路
-  check('preload 暴露 chooseWorkspace IPC', /chooseWorkspace:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('workspace:choose'\)/.test(preload), '');
-  check('main 注册 workspace:choose handler', /ipcMain\.handle\('workspace:choose'/.test(main), '');
-  const handlerSlice = main.substring(main.indexOf('workspace:choose'));
-  check('main handler 返回 filePaths[0] 或 null', /result\.filePaths\[0\]/.test(handlerSlice) && /return null/.test(handlerSlice), '');
-  check('store chooseWorkspace action 调 IPC', /async chooseWorkspace\(\)/.test(store) && /window\.electronAPI\?\.chooseWorkspace/.test(store), '');
-  check('store setWorkspace 起新 cwd 会话 + 持久化', /async setWorkspace\(path\)/.test(store) && /localStorage\.setItem\('codebuddy-gui-workspace'/.test(store), '');
-  check('Sidebar 渲染 切换 按钮 onClick chooseWorkspace', /onClick=\{\(\)\s*=>\s*useStore\.getState\(\)\.chooseWorkspace\(\)\}/.test(sidebar), '');
-
-  // 3b. preload 暴露的所有 invoke channel 必须在 main 有对应 handle（一致性硬校验）
-  //     能抓出 preload 写 app:pingg 但 main 注册成 app:ping 这类真拼写 bug
-  const channelsInPreload = [...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'\)/g)].map(m => m[1]);
-  const channelsInMain = [...main.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(m => m[1]);
-  const missingHandlers = channelsInPreload.filter(c => !channelsInMain.includes(c));
-  check('preload 所有 invoke channel 在 main 有对应 handle', missingHandlers.length === 0, missingHandlers.length ? `缺: ${missingHandlers.join(', ')}` : `${channelsInPreload.length} 个 channel 全对齐`);
-
-  // 4. 端口绑定架构校验：spawn 不传 --port（CLI auto-assign 随机）
-  // 校验"传了 --serve 且数组里没有 --port"——数组形如 ['--serve'] 或 ['--serve', 其他非 --port]
-  const spawnOk = /spawn\('codebuddy'\s*,\s*\[([^\]]*)\]/.test(main);
-  let spawnArgs = '';
-  if (spawnOk) {
-    const m = main.match(/spawn\('codebuddy'\s*,\s*\[([^\]]*)\]/);
-    spawnArgs = m[1];
-  }
-  const hasServe = spawnArgs.includes("'--serve'");
-  const hasPortFlag = /\['--port'|\['--port",|'--port'\s*,\s*'[^']+'/;
-  const noPortFlag = !hasPortFlag.test(spawnArgs);
-  check('main spawn codebuddy 传 --serve 不传 --port（CLI auto-assign）', spawnOk && hasServe && noPortFlag, `args=[${spawnArgs}]`);
-  check('main 从 stdout 解析 http://127.0.0.1:<port>', /http:\/\/127\.0\.0\.1:(\d+)/.test(main), '');
-  check('main 注册 codebuddy:getPort IPC', /ipcMain\.handle\('codebuddy:getPort'/.test(main), '');
-  check('store bootstrap 调 getCodeBuddyPort + setApiBase', /window\.electronAPI\?\.getCodeBuddyPort/.test(store) && /setApiBase\(base\)/.test(store), '');
-
-  // 5. 会话多开架构校验（三件事之一，之前漏测）
-  check('store 有 sessions[] 字段', /sessions:\s*\[\]/.test(store), '');
-  check('store changeSession(sessionId) action', /async changeSession\(sessionId\)/.test(store), '');
-  check('store newSession() action', /async newSession\(\)/.test(store), '');
-  check('store refreshSessions() 拉会话列表', /async refreshSessions\(\)/.test(store), '');
-
-  finish();
-}
-
-function finish() {
-  if (finished) return;
-  finished = true;
-  clearTimeout(overallTimer);
-  console.log('\n=== 汇总 ===');
-  const pass = results.filter(r => r.ok).length;
-  const fail = results.length - pass;
-  console.log(`通过 ${pass} / ${results.length}，失败 ${fail}`);
-  process.exit(fail > 0 ? 1 : 0);
-}
-
-main().catch(err => {
-  console.error('E2E 测试异常:', err);
-  try { killSpawnedProcesses(); } catch (_) {}
-  finish();
+const runStamp = safeSegment(process.env.CODEBUDDY_E2E_RUN_ID || new Date().toISOString(), 'run');
+const evidenceRoot = path.join(projectRoot, '.omo', 'evidence', 'task-1-runs');
+const screenshotRoot = path.join(projectRoot, '.omo', 'evidence', 'task-1-screenshots');
+const runLayout = createTaskRunLayout({
+  evidenceRoot,
+  screenshotRoot,
+  taskId: 'task-1',
+  runLabel: 'unpackaged-launch',
+  requestedId: runStamp,
 });
+const { runtimeRoot, runtimeDir, userDataDir } = createRuntimeLayout({
+  projectRoot,
+  runStamp: runLayout.runName,
+  label: 'launch',
+});
+const screenshotPath = path.join(runLayout.screenshotDir, 'startup.png');
+const runnerProfile =
+  'dedicated authenticated test profile; CodeBuddy backend session state may persist between runs';
+const results = [];
+const startedAtMs = Date.now();
+let launched = null;
+let ownershipController = null;
+let client = null;
+let startup = null;
+let target = null;
+let evidencePaths = null;
+let activeSignal = null;
+
+function check(name, ok, detail = '') {
+  throwIfAborted(activeSignal, 'unpackaged launch result mutation aborted');
+  const result = { name, ok: Boolean(ok), detail: sanitizeText(detail) };
+  results.push(result);
+  console.log(`${result.ok ? 'PASS' : 'FAIL'} ${name}${result.detail ? ` — ${result.detail}` : ''}`);
+  return result.ok;
+}
+
+function wait(ms, signal) {
+  throwIfAborted(signal, `unpackaged launch wait ${ms}ms aborted`);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      try {
+        throwIfAborted(signal, `unpackaged launch wait ${ms}ms aborted`);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
+}
+
+function startupOptions() {
+  return {
+    projectRoot,
+    userDataDir,
+    appDataDir: process.env.APPDATA,
+    appName: 'codebuddy-gui',
+    packaged: false,
+    strictUserDataOnly: true,
+  };
+}
+
+async function waitForStartup(pattern, timeoutMs, description, signal) {
+  throwIfAborted(signal, `${description} aborted`);
+  const deadline = Date.now() + timeoutMs;
+  let last = findStartupLog(startupOptions());
+  do {
+    throwIfAborted(signal, `${description} aborted`);
+    last = findStartupLog(startupOptions());
+    const fresh = last.path && fs.statSync(last.path).mtimeMs >= startedAtMs - 1000;
+    if (fresh && pattern.test(last.text)) return last;
+    pattern.lastIndex = 0;
+    if (Date.now() < deadline) await wait(250, signal);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `${description} did not appear in a fresh startup log within ${timeoutMs}ms; candidates=${last.candidates.join(', ')}`,
+  );
+}
+
+function probeHttp(port, timeoutMs = 3000, signal) {
+  throwIfAborted(signal, 'CodeBuddy HTTP probe aborted');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request = null;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener?.('abort', onAbort);
+      callback(value);
+    };
+    const onAbort = () => {
+      request?.destroy?.();
+      try {
+        throwIfAborted(signal, 'CodeBuddy HTTP probe aborted');
+      } catch (error) {
+        finish(reject, error);
+      }
+    };
+    request = http.get(`http://127.0.0.1:${port}/`, { timeout: timeoutMs }, (response) => {
+      let bytes = 0;
+      response.on('data', (chunk) => {
+        bytes += chunk.length;
+      });
+      response.on('end', () => finish(resolve, response.statusCode >= 200 && response.statusCode < 400 && bytes > 0));
+      response.resume();
+    });
+    request.on('timeout', () => {
+      request.destroy();
+      finish(resolve, false);
+    });
+    request.on('error', () => finish(resolve, false));
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
+}
+
+function cliVersion() {
+  const run =
+    process.platform === 'win32'
+      ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'codebuddy --version'], {
+        encoding: 'utf8',
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      })
+      : spawnSync('codebuddy', ['--version'], {
+          encoding: 'utf8',
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+          windowsHide: true,
+        });
+  return (run.stdout || run.stderr || '').trim() || `unavailable(exit=${run.status})`;
+}
+
+function requestedDebugPort() {
+  if (!process.env.CODEBUDDY_E2E_DEBUG_PORT) return undefined;
+  const value = Number(process.env.CODEBUDDY_E2E_DEBUG_PORT);
+  if (!Number.isInteger(value))
+    throw new Error(`CODEBUDDY_E2E_DEBUG_PORT must be an integer, received ${process.env.CODEBUDDY_E2E_DEBUG_PORT}`);
+  return value;
+}
+
+async function main(signal) {
+  throwIfAborted(signal, 'unpackaged launch main aborted');
+  console.log('=== unpackaged Electron launch behavior test ===');
+  check('production renderer build exists', fs.existsSync(path.join(projectRoot, 'out', 'dist', 'index.html')));
+  check('Electron executable exists', fs.existsSync(electronExe), electronExe);
+  if (results.some((result) => !result.ok)) return;
+
+  throwIfAborted(signal, 'unpackaged launch profile creation aborted');
+  fs.mkdirSync(userDataDir, { recursive: true });
+  launched = await launchDesktop({
+    executable: electronExe,
+    appArgs: ['.'],
+    projectRoot,
+    userDataDir,
+    runtimeRoot,
+    runtimeDir,
+    debugPort: requestedDebugPort(),
+    signal,
+    onOwnershipController(controller) {
+      ownershipController = controller;
+    },
+  });
+  launched.process.stdout?.on('data', (chunk) => console.log(`[electron] ${sanitizeText(String(chunk).trim())}`));
+  launched.process.stderr?.on('data', (chunk) =>
+    console.log(`[electron:err] ${sanitizeText(String(chunk).trim())}`),
+  );
+  console.log(`[context] rootPid=${launched.rootPid} debugPort=${launched.debugPort}`);
+
+  startup = await waitForStartup(/Parsed CodeBuddy port from stdout: \d+\b/, 45000, 'CodeBuddy random port', signal);
+  const portMatch = startup.text.match(/Parsed CodeBuddy port from stdout: (\d+)\b/);
+  const codebuddyPort = Number(portMatch?.[1]);
+  check(
+    'fresh startup log resolved from app.getPath(userData)',
+    startup.source === 'userData',
+    startup.path ? 'isolated userData/electron-startup.log' : 'not found',
+  );
+  check('CodeBuddy announced a dynamic port', Number.isInteger(codebuddyPort), `port=${codebuddyPort || '<missing>'}`);
+  startup = await waitForStartup(
+    /CodeBuddy port ready: \d+\b|CodeBuddy start timeout \(no port parsed from stdout\)|CodeBuddy start failed:/,
+    35000,
+    'usable CodeBuddy startup outcome',
+    signal,
+  );
+  const startupContract = requireUsableCodeBuddyStartup(startup.text);
+  check(
+    'CodeBuddy startup produced a usable port/password pair',
+    startupContract.state === 'ready' && startupContract.port === codebuddyPort,
+    `port=${startupContract.port}`,
+  );
+  check('CodeBuddy HTTP endpoint responds', await probeHttp(codebuddyPort, 3000, signal), `GET 127.0.0.1:${codebuddyPort}`);
+
+  startup = await waitForStartup(
+    /renderer ready=true|dev server unreachable, falling back to/,
+    50000,
+    'renderer load marker',
+    signal,
+  );
+  check('startup log records static server', /Static server on http:\/\/127\.0\.0\.1:\d+/.test(startup.text));
+  check('startup log records createWindow', /createWindow called/.test(startup.text));
+  check(
+    'startup log records renderer load',
+    /renderer ready=true|dev server unreachable, falling back to/.test(startup.text),
+  );
+
+  target = await findRendererTarget({
+    port: launched.debugPort,
+    expectedUrl: (url) =>
+      /^http:\/\/(?:localhost:5173|127\.0\.0\.1:\d+\/index\.html)$/.test(String(url || '').replace(/\/$/, '')),
+    timeoutMs: 30000,
+    signal,
+  });
+  check('CDP selected the CodeBuddy renderer target', true, `${target.title || '<untitled>'} ${target.url}`);
+  client = await connectCdp(target, { signal });
+
+  const identity = await waitForRendererValue(
+    client,
+    `(() => ({
+    href: location.href,
+    rootChildren: document.querySelectorAll('#root > *').length,
+    userAgent: navigator.userAgent
+  }))()`,
+    {
+      timeoutMs: 20000,
+      describe: 'React renderer identity',
+      accept: (value) => value?.rootChildren > 0 && /Electron\//.test(value.userAgent || ''),
+      signal,
+    },
+  );
+  check('connected target is an Electron renderer with React content', identity.rootChildren > 0, identity.href);
+
+  await driveByRole(client, { role: 'navigation', name: 'Main navigation', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '切换工作区目录', timeoutMs: 15000, signal });
+  await driveByRole(client, {
+    role: 'button',
+    name: '设置',
+    action: 'click',
+    root: 'aside[role="navigation"]',
+    timeoutMs: 15000,
+    signal,
+  });
+  const initialSessionId = await waitForVisibleSettingValue(client, '会话 ID', { timeoutMs: 60000, signal });
+  check('initial session readiness is visible before New chat', Boolean(initialSessionId), initialSessionId);
+  await driveByRole(client, { role: 'button', name: '新对话', action: 'click', timeoutMs: 15000, signal });
+  await driveByRole(client, {
+    role: 'button',
+    name: '设置',
+    action: 'click',
+    root: 'aside[role="navigation"]',
+    timeoutMs: 15000,
+    signal,
+  });
+  const replacementSessionId = await waitForVisibleSettingValue(client, '会话 ID', {
+    timeoutMs: 60000,
+    accept: (value) => Boolean(value) && value !== initialSessionId,
+    signal,
+  });
+  check(
+    'New chat exposes a distinct ready session ID',
+    replacementSessionId !== initialSessionId,
+    `${initialSessionId} -> ${replacementSessionId}`,
+  );
+  await driveByRole(client, {
+    role: 'button',
+    name: '对话',
+    action: 'click',
+    root: 'aside[role="navigation"]',
+    timeoutMs: 15000,
+    signal,
+  });
+  const chatState = await waitForRendererValue(
+    client,
+    `(() => ({
+    hash: location.hash,
+    hasComposer: Array.from(document.querySelectorAll('textarea')).some((item) => item.placeholder === '从一个想法开始...')
+  }))()`,
+    {
+      timeoutMs: 15000,
+      describe: 'new-chat visible route result',
+      accept: (value) => value?.hash === '#/chat' && value.hasComposer,
+      signal,
+    },
+  );
+  check('New chat click leaves a visible chat composer on #/chat', chatState.hash === '#/chat');
+  const screenshot = await captureScreenshot(client, screenshotPath, { signal });
+  check('startup screenshot captured', screenshot.bytes > 0, screenshot.path);
+
+  const owned = await inspectProcesses({ rootPid: launched.rootPid, signal });
+  check(
+    'owned process tree is inspectable',
+    owned.ownedPids.includes(launched.rootPid),
+    `owned=${owned.ownedPids.join(',')}`,
+  );
+}
+
+async function finish(error) {
+  if (error) {
+    console.error(sanitizeText(error.stack || error.message || error));
+    check('unpackaged launch harness completed without exception', false, error.message || String(error));
+  }
+  if (client) client.close();
+  let cleanup = null;
+  if (ownershipController) {
+    try {
+      cleanup = await ownershipController.close();
+      check(
+        'Windows Job cleanup verified zero active members',
+        cleanup.ownershipBoundary?.jobClosed === true &&
+          cleanup.remainingVerifiedProcesses?.verified === true &&
+          cleanup.remainingVerifiedProcesses?.count === 0,
+        `active=${cleanup.remainingVerifiedProcesses?.count ?? '<unverified>'}`,
+      );
+    } catch (cleanupError) {
+      cleanup = ownershipController.snapshot?.() || null;
+      if (cleanup) cleanup.errors = [{ error: sanitizeText(cleanupError.message || cleanupError) }];
+      check('Windows Job cleanup verified zero active members', false, cleanupError.message);
+    }
+  } else if (launched?.rootPid) {
+    let trackedProcesses = launched.rootIdentity ? [launched.rootIdentity] : [];
+    try {
+      trackedProcesses = await launched.processTracker.stop();
+    } catch (trackerError) {
+      check('owned process tracker stopped with a usable snapshot', false, trackerError.message);
+    }
+    try {
+      cleanup = await cleanupOwned({ rootPid: launched.rootPid, trackedProcesses });
+      check(
+        'cleanup stayed within the owned process tree',
+        cleanup.errors.length === 0,
+        cleanup.errors.map((entry) => `${entry.pid}:${entry.error}`).join('; '),
+      );
+    } catch (cleanupError) {
+      cleanup = { rootPid: launched.rootPid, errors: [{ pid: launched.rootPid, error: cleanupError.message }] };
+      check('cleanup stayed within the owned process tree', false, cleanupError.message);
+    }
+  }
+
+  const cleanupEvidence = createOwnershipCleanupEvidence({
+    error,
+    launched,
+    ownershipController,
+    cleanup,
+    sanitize(value) {
+      return sanitizeText(value, {
+        redactionMap: { [runtimeRoot]: '[runtime-root]', [projectRoot]: '[project-root]' },
+      });
+    },
+  });
+  cleanupEvidence.launchCleanupErrors = cleanupEvidence.launchCleanupErrors || [];
+  cleanupEvidence.ownershipBoundary = cleanupEvidence.ownershipBoundary || null;
+  cleanupEvidence.remainingVerifiedProcesses = cleanupEvidence.remainingVerifiedProcesses || null;
+
+  const startupText = startup?.text || findStartupLog(startupOptions()).text || '';
+  try {
+    await cleanupRuntimeDir({ runtimeRoot, runtimeDir });
+    check('isolated runtime profile removed after evidence capture', !fs.existsSync(runtimeDir));
+  } catch (runtimeError) {
+    check('isolated runtime profile removed after evidence capture', false, runtimeError.message);
+  }
+  const failCount = results.filter((result) => !result.ok).length;
+  const startupLogEvidence = startup?.path
+    ? 'isolated userData/electron-startup.log (removed after capture)'
+    : '<not found>';
+  evidencePaths = await writeTaskEvidence({
+    runDir: runLayout.runDir,
+    pathRoot: projectRoot,
+    redactionMap: { [runtimeRoot]: '[runtime-root]', [projectRoot]: '[project-root]' },
+    taskId: 'task-1',
+    runLabel: 'unpackaged-launch',
+    timestamp: runStamp,
+    status: failCount ? 'FAIL' : 'PASS',
+    context: {
+      node: process.version,
+      electron: require(path.join(projectRoot, 'node_modules', 'electron', 'package.json')).version,
+      codebuddyCli: cliVersion(),
+      platform: `${process.platform}/${process.arch}`,
+      runnerProfile,
+      nativeWebSocket: typeof globalThis.WebSocket === 'function',
+      debugPort: launched?.debugPort ?? '<not launched>',
+      targetUrl: target?.url || '<not connected>',
+      startupLog: startupLogEvidence,
+    },
+    commands: [{ command: 'node scripts/test/e2e-launch.cjs', exitCode: failCount ? 1 : 0 }],
+    assertions: results,
+    screenshots: fs.existsSync(screenshotPath)
+      ? [
+          {
+            name: 'unpackaged startup',
+            path: screenshotPath,
+            analysis: 'Electron renderer, sidebar, status bar, and chat composer are visible.',
+          },
+        ]
+      : [],
+    logs: [startupText.slice(-12000), ...(launched?.stderr || []).slice(-20)],
+    cleanup: cleanupEvidence,
+  });
+
+  console.log('\n=== summary ===');
+  console.log(`passed ${results.length - failCount}/${results.length}; failed ${failCount}`);
+  console.log(`[evidence] ${evidencePaths.reportPath}`);
+  process.exitCode = failCount ? 1 : 0;
+}
+
+const watchdog = createOverallWatchdog({
+  timeoutMs: Number(process.env.CODEBUDDY_E2E_WATCHDOG_MS || 6 * 60 * 1000),
+  label: 'unpackaged launch harness',
+});
+const finalize = createSingleFinalizer(finish);
+
+async function runHarness() {
+  let error = null;
+  try {
+    await watchdog.run(async (signal) => {
+      activeSignal = signal;
+      try {
+        await main(signal);
+      } finally {
+        activeSignal = null;
+      }
+    });
+  } catch (caught) {
+    error = caught;
+  } finally {
+    watchdog.stop();
+    const unsafeRedactionMap = Object.freeze({
+      [runtimeRoot]: '[runtime-root]',
+      [projectRoot]: '[project-root]',
+    });
+    const finalization = await finalizeHarnessRun({
+      error,
+      normalFinalizer: finalize,
+      unsafeFinalizer: () => finalizeUnsafeHarnessFailure({
+        error,
+        ownershipController,
+        runtimeRoot,
+        runtimeDir,
+        evidenceOptions: {
+          runDir: runLayout.runDir,
+          pathRoot: projectRoot,
+          redactionMap: unsafeRedactionMap,
+          taskId: 'task-1',
+          runLabel: 'unpackaged-launch',
+          timestamp: runStamp,
+          context: Object.freeze({ harness: 'unpackaged-launch' }),
+          command: 'node scripts/test/e2e-launch.cjs',
+        },
+        writeEvidence: writeTaskEvidence,
+        sanitize(value) {
+          return sanitizeText(value, { redactionMap: unsafeRedactionMap });
+        },
+      }),
+    });
+    if (finalization.branch === 'unsafe') {
+      console.error(sanitizeText(error.stack || error.message || error));
+      process.exitCode = 1;
+      if (finalization.finalizerError) {
+        console.error(
+          sanitizeText(
+            `unsafe finalization helper failed: ${finalization.finalizerError?.stack || finalization.finalizerError?.message || finalization.finalizerError}`,
+            { redactionMap: unsafeRedactionMap },
+          ),
+        );
+      }
+      for (const stderrFailure of finalization.result?.stderrFailures || []) {
+        console.error(sanitizeText(stderrFailure, { redactionMap: unsafeRedactionMap }));
+      }
+      setTimeout(() => process.exit(1), 1000);
+      return;
+    }
+    if (finalization.finalizerError) {
+      console.error(
+        sanitizeText(
+          finalization.finalizerError.stack || finalization.finalizerError.message || finalization.finalizerError,
+        ),
+      );
+      process.exitCode = 1;
+    }
+  }
+}
+
+void runHarness();
