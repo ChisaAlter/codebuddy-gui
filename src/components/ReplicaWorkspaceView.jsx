@@ -3,12 +3,24 @@ import Editor, { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import { useStore } from '../store';
 import { joinPath, normalizePathParts } from '../lib/fs';
+import ActionConfirmDialog from './ActionConfirmDialog';
 
 loader.config({ monaco });
 
 function EntryIcon({ type }) {
   if (type === 'directory') return <span>📁</span>;
   return <span>📄</span>;
+}
+
+function normalizeComparablePath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function pathContains(root, candidate) {
+  const normalizedRoot = normalizeComparablePath(root);
+  const normalizedCandidate = normalizeComparablePath(candidate);
+  if (!normalizedRoot || !normalizedCandidate) return false;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
 }
 
 function SearchPanel() {
@@ -272,11 +284,28 @@ export default function ReplicaWorkspaceView() {
   const [renameEntry, setRenameEntry] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState('');
+  const [renameDirtyConfirmOpen, setRenameDirtyConfirmOpen] = useState(false);
+  const [pendingDeleteEntry, setPendingDeleteEntry] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [workspaceError, setWorkspaceError] = useState(null);
 
   useEffect(() => {
     if (runtimePort) initializeWorkspace();
   }, [initializeWorkspace, runtimePort]);
+
+  useEffect(() => {
+    setContextMenu(null);
+    setRenameEntry(null);
+    setRenameError('');
+    setRenameDirtyConfirmOpen(false);
+    setPendingDeleteEntry(null);
+    setDeleteError('');
+    setRenameBusy(false);
+    setDeleteBusy(false);
+  }, [runtimePort]);
 
   useEffect(() => {
     if (!workspaceError) return;
@@ -331,38 +360,90 @@ export default function ReplicaWorkspaceView() {
   };
 
   const startRename = (entry) => {
+    setRenameError('');
+    setRenameDirtyConfirmOpen(false);
     setRenameEntry(entry);
     setRenameValue(entry?.name || '');
     setContextMenu(null);
   };
 
-  const submitRename = async () => {
+  const performRename = async (discardDirty = false) => {
     const nameError = validateEntryName(renameValue);
-    if (nameError) { setWorkspaceError(nameError); return; }
+    if (nameError) { setRenameError(nameError); return; }
     const source = pathForEntry(renameEntry);
     const destination = joinPath(fileCwd || '.', renameValue.trim());
     if (source === destination) { setRenameEntry(null); return; }
+
     const state = useStore.getState();
-    if (state.selectedFile === source && state.fileDirty
-      && !window.confirm(`“${source}”有未保存修改。重命名将丢失这些修改，确定吗？`)) return;
-    const moved = await moveEntry(source, destination);
-    if (!moved) { setWorkspaceError('重命名失败'); return; }
-    if (state.selectedFile === source) {
-      state.setSelectedFile(null);
-      await openFile(destination);
+    const selectedFile = state.selectedFile;
+    const affectsSelectedFile = pathContains(source, selectedFile);
+    if (affectsSelectedFile && state.fileDirty && !discardDirty) {
+      setRenameDirtyConfirmOpen(true);
+      setRenameError('');
+      return;
     }
-    setStatusMessage(`已重命名为 ${renameValue.trim()}`);
-    setRenameEntry(null);
+
+    setRenameBusy(true);
+    setRenameError('');
+    try {
+      const moved = await moveEntry(source, destination);
+      if (!moved) throw new Error('重命名失败');
+      if (affectsSelectedFile) {
+        const normalizedSource = normalizeComparablePath(source);
+        const normalizedSelected = normalizeComparablePath(selectedFile);
+        const selectedSuffix = normalizedSelected.slice(normalizedSource.length);
+        const nextSelectedFile = `${normalizeComparablePath(destination)}${selectedSuffix}`;
+        state.setSelectedFile(null);
+        const reopened = await openFile(nextSelectedFile);
+        if (!reopened) setWorkspaceError('重命名成功，但无法重新打开原文件');
+      }
+      setStatusMessage(`已重命名为 ${renameValue.trim()}`);
+      setRenameEntry(null);
+      setRenameDirtyConfirmOpen(false);
+    } catch (error) {
+      setRenameError(error.message || '重命名失败');
+    } finally {
+      setRenameBusy(false);
+    }
   };
 
-  const handleDelete = async (entry) => {
+  const submitRename = () => performRename(false);
+
+  const requestDelete = (entry) => {
     const path = pathForEntry(entry);
+    const state = useStore.getState();
+    const affectsSelectedFile = pathContains(path, state.selectedFile);
     setContextMenu(null);
-    if (!window.confirm(`确定删除“${entry?.name || path}”吗？此操作不可撤销。`)) return;
-    const removed = await removeEntry(path);
-    if (!removed) { setWorkspaceError('删除失败'); return; }
-    if (useStore.getState().selectedFile === path) setSelectedFile(null);
-    setStatusMessage(`已删除 ${entry?.name || path}`);
+    setPendingDeleteEntry({
+      entry,
+      path,
+      affectsSelectedFile,
+      discardsDirtyFile: affectsSelectedFile && state.fileDirty,
+    });
+    setDeleteError('');
+  };
+
+  const closeDeleteDialog = () => {
+    if (deleteBusy) return;
+    setPendingDeleteEntry(null);
+    setDeleteError('');
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteEntry?.path || deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError('');
+    try {
+      const removed = await removeEntry(pendingDeleteEntry.path);
+      if (!removed) throw new Error('删除失败');
+      if (pendingDeleteEntry.affectsSelectedFile) setSelectedFile(null);
+      setStatusMessage(`已删除 ${pendingDeleteEntry.entry?.name || pendingDeleteEntry.path}`);
+      setPendingDeleteEntry(null);
+    } catch (error) {
+      setDeleteError(error.message || '删除失败');
+    } finally {
+      setDeleteBusy(false);
+    }
   };
 
   const handleContextMenu = (e, entry) => {
@@ -484,7 +565,7 @@ export default function ReplicaWorkspaceView() {
               </button>
               <div className="h-px bg-[var(--color-border-muted)] my-1" />
               <button className="w-full text-left px-3 py-1.5 text-xs text-[#f87171] hover:bg-[var(--color-bg-hover)] transition-colors"
-                onClick={() => handleDelete(contextMenu.entry)}>
+                onClick={() => requestDelete(contextMenu.entry)}>
                 删除
               </button>
             </div>
@@ -498,21 +579,48 @@ export default function ReplicaWorkspaceView() {
             <input
               autoFocus
               value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
+              disabled={renameBusy}
+              onChange={(event) => {
+                setRenameValue(event.target.value);
+                setRenameError('');
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') submitRename();
-                if (event.key === 'Escape') setRenameEntry(null);
+                if (event.key === 'Escape' && !renameBusy) setRenameEntry(null);
               }}
               className="w-full rounded border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
             />
+            {renameError ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{renameError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
-              <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setRenameEntry(null)}>取消</button>
-              <button className="btn-primary px-3 py-1.5 text-xs" onClick={submitRename}>保存</button>
+              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={renameBusy} onClick={() => setRenameEntry(null)}>取消</button>
+              <button className="btn-primary px-3 py-1.5 text-xs" disabled={renameBusy || !renameValue.trim()} onClick={submitRename}>{renameBusy ? '保存中...' : '保存'}</button>
             </div>
           </div>
         </div>
       )}
       <EditorPane />
+      <ActionConfirmDialog
+        open={renameDirtyConfirmOpen}
+        title="重命名并丢失未保存修改？"
+        description={renameEntry ? `“${pathForEntry(renameEntry)}”包含当前正在编辑且尚未保存的文件。继续重命名会重新读取新路径，未保存内容将丢失。` : null}
+        confirmLabel="继续重命名"
+        busy={renameBusy}
+        error={renameError}
+        onCancel={() => { if (!renameBusy) setRenameDirtyConfirmOpen(false); }}
+        onConfirm={() => performRename(true)}
+      />
+      <ActionConfirmDialog
+        open={Boolean(pendingDeleteEntry)}
+        title={pendingDeleteEntry?.entry?.type === 'directory' || pendingDeleteEntry?.entry?.is_dir ? '删除目录？' : '删除文件？'}
+        description={pendingDeleteEntry ? (
+          <><div className="font-medium text-[var(--color-text-primary)]">{pendingDeleteEntry.entry?.name || pendingDeleteEntry.path}</div><div className="mt-1 break-words text-[var(--color-text-muted)]">{pendingDeleteEntry.path}</div>{pendingDeleteEntry.discardsDirtyFile ? <div className="mt-2 text-[var(--color-accent-red)]">其中包含当前未保存的编辑内容，删除后这些内容也会丢失。</div> : null}<div className="mt-2">此操作无法撤销。</div></>
+        ) : null}
+        confirmLabel={pendingDeleteEntry?.entry?.type === 'directory' || pendingDeleteEntry?.entry?.is_dir ? '删除目录' : '删除文件'}
+        busy={deleteBusy}
+        error={deleteError}
+        onCancel={closeDeleteDialog}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }
