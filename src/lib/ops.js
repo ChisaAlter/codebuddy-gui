@@ -49,9 +49,16 @@ export async function fetchTraceList() {
 export async function fetchWorkerLogs(workerPid, type = 'stdout', tail = 200) {
   if (!workerPid) return '';
   const payload = await fetchJson(`/api/v1/workers/${encodeURIComponent(workerPid)}/logs?type=${encodeURIComponent(type)}&tail=${encodeURIComponent(tail)}`);
-  if (typeof payload?.data === 'string') return payload.data;
-  if (typeof payload === 'string') return payload;
-  return JSON.stringify(payload?.data || payload, null, 2);
+  const data = payload?.data ?? payload;
+  if (typeof data === 'string') {
+    return { content: data, type, availableTypes: [type], logPath: '' };
+  }
+  return {
+    content: typeof data?.content === 'string' ? data.content : '',
+    type: data?.type || type,
+    availableTypes: Array.isArray(data?.availableTypes) && data.availableTypes.length ? data.availableTypes : [type],
+    logPath: data?.logPath || '',
+  };
 }
 
 // ===== Sessions 管理 =====

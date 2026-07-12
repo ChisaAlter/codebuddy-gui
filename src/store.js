@@ -1952,7 +1952,7 @@ export const useStore = create((set, get) => ({
       return await fetchWorkerLogsApi(workerPid, type, tail);
     } catch (error) {
       set({ error: error.message });
-      return '';
+      throw error;
     }
   },
 

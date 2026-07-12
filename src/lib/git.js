@@ -91,8 +91,16 @@ export async function unstageFile(path) {
   return await runGit(['reset', 'HEAD', '--', path]);
 }
 
-export async function discardFile(path) {
-  return await runGit(['checkout', '--', path]);
+export async function discardFile(item) {
+  const path = typeof item === 'string' ? item : item?.path;
+  if (!path) throw new Error('缺少要丢弃的文件路径');
+  const untracked = typeof item === 'object' && item?.indexStatus === '?' && item?.worktreeStatus === '?';
+  if (untracked) {
+    return await runGit(['clean', '-fd', '--', path]);
+  }
+  const paths = [path];
+  if (typeof item === 'object' && item?.originalPath) paths.push(item.originalPath);
+  return await runGit(['restore', '--source=HEAD', '--staged', '--worktree', '--', ...paths]);
 }
 
 export async function stageAll() {
@@ -104,7 +112,14 @@ export async function unstageAll() {
 }
 
 export async function discardAll() {
-  return await runGit(['checkout', '--', '.']);
+  try {
+    await runGit(['rev-parse', '--verify', 'HEAD']);
+  } catch (_) {
+    throw new Error('仓库尚无提交，无法安全丢弃全部修改');
+  }
+  await runGit(['reset', 'HEAD', '--', '.']);
+  await runGit(['checkout', '--', '.']);
+  return await runGit(['clean', '-fd']);
 }
 
 export async function switchBranch(name) {

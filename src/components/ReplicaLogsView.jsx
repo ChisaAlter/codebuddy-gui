@@ -21,6 +21,8 @@ export default function ReplicaLogsView() {
   const [workerPid, setWorkerPid] = useState('');
   const [logType, setLogType] = useState('stdout');
   const [logs, setLogs] = useState('');
+  const [availableLogTypes, setAvailableLogTypes] = useState(['stdout', 'stderr']);
+  const [logPath, setLogPath] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -49,13 +51,25 @@ export default function ReplicaLogsView() {
     }
   }, [workers, workerPid]);
 
+  useEffect(() => {
+    setLogs('');
+    setLogPath('');
+    setLogError(null);
+  }, [workerPid]);
+
   const loadLogs = useCallback(async () => {
     if (!workerPid) return;
     setLoading(true);
     setLogError(null);
     try {
-      const text = await loadWorkerLogs(workerPid, logType, 200);
-      setLogs(text || '');
+      const result = await loadWorkerLogs(workerPid, logType, 200);
+      const content = typeof result === 'string' ? result : result?.content;
+      const resolvedType = typeof result === 'object' ? result?.type : logType;
+      const types = typeof result === 'object' && Array.isArray(result?.availableTypes) ? result.availableTypes : [];
+      setLogs(content || '');
+      setLogPath(typeof result === 'object' ? result?.logPath || '' : '');
+      if (types.length) setAvailableLogTypes(types);
+      if (resolvedType && resolvedType !== logType) setLogType(resolvedType);
     } catch (err) {
       setLogError('日志加载失败: ' + (err?.message || '未知错误'));
       setLogs('');
@@ -137,8 +151,7 @@ export default function ReplicaLogsView() {
           value={logType}
           onChange={(e) => setLogType(e.target.value)}
         >
-          <option value="stdout">stdout</option>
-          <option value="stderr">stderr</option>
+          {availableLogTypes.map((type) => <option key={type} value={type}>{type}</option>)}
         </select>
 
         <button
@@ -172,6 +185,8 @@ export default function ReplicaLogsView() {
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
         />
+
+        {logPath ? <span className="max-w-[320px] truncate text-xs text-[var(--color-text-muted)]" title={logPath}>{logPath}</span> : null}
       </div>
 
       {logError && (

@@ -133,7 +133,7 @@ export default function ReplicaChangesView() {
   }
 
   const confirmDiscardAll = () => {
-    if (window.confirm('确定丢弃当前项目中的全部未提交修改吗？此操作无法撤销。')) {
+    if (window.confirm('确定丢弃当前项目中的全部未提交修改吗？暂存改动会被还原，未跟踪文件和文件夹会被删除，此操作无法撤销。')) {
       perform(() => discardAll());
     }
   };
@@ -145,7 +145,7 @@ export default function ReplicaChangesView() {
       await commit(commitMessage.trim());
       setStatusText('提交成功');
       setCommitMessage('');
-      loadAll(true);
+      await loadAll(true);
     } catch (err) {
       setStatusText(`提交失败: ${err.message}`);
     } finally {
@@ -233,7 +233,11 @@ export default function ReplicaChangesView() {
                       <button className="btn-ghost" disabled={busy} onClick={() => perform(() => stageFile(item.path))}>Stage</button>
                       <button className="btn-ghost" disabled={busy} onClick={() => perform(() => unstageFile(item.path))}>Unstage</button>
                       <button className="btn-ghost" disabled={busy} onClick={() => {
-                        if (window.confirm(`确定丢弃 ${item.path} 的未提交修改吗？`)) perform(() => discardFile(item.path));
+                        const untracked = item.indexStatus === '?' && item.worktreeStatus === '?';
+                        const message = untracked
+                          ? `确定删除未跟踪的 ${item.path} 吗？此操作无法撤销。`
+                          : `确定丢弃 ${item.path} 的全部暂存和未暂存修改吗？`;
+                        if (window.confirm(message)) perform(() => discardFile(item));
                       }}>Discard</button>
                     </div>
                   ) : null}
