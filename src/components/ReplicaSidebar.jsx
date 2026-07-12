@@ -1,6 +1,7 @@
 import React from 'react';
 import { useStore } from '../store';
 import { NAV_GROUPS } from '../lib/codebuddy-schema';
+import appIconUrl from '../../build/icon.svg';
 
 const ITEM_ICONS = {
   chat: (
@@ -172,12 +173,9 @@ export default function ReplicaSidebar() {
     >
       {/* Brand */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg text-white text-xs font-bold"
-             style={{ background: 'linear-gradient(135deg, var(--color-accent-blue), var(--color-accent-purple))' }}>
-          CB
-        </div>
+        <img src={appIconUrl} alt="" className="h-7 w-7 rounded-md" />
         {!sidebarCollapsed && (
-          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy</span>
+          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy GUI</span>
         )}
       </div>
 

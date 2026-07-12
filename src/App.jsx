@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect } from 'react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
+import appIconUrl from '../build/icon.svg';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
@@ -72,12 +73,9 @@ function LoginView() {
       </div>
       <div className="w-full max-w-sm rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
         <div className="mb-5 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white"
-               style={{ background: 'linear-gradient(135deg, var(--color-accent-blue), var(--color-accent-purple))' }}>
-            CB
-          </div>
+          <img src={appIconUrl} alt="CodeBuddy GUI" className="h-9 w-9 rounded-lg" />
           <div>
-            <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy</div>
+            <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy GUI</div>
             <div className="text-xs text-[var(--color-text-muted)]">需要登录以继续</div>
           </div>
         </div>
