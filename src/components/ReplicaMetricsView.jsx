@@ -15,7 +15,9 @@ function finiteNumber(value, fallback = 0) {
 }
 
 function formatUptime(seconds) {
-  if (!seconds || seconds < 0) return '--';
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '--';
+  seconds = value;
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -39,6 +41,13 @@ function formatGiB(gib) {
   const n = Number(gib);
   if (!Number.isFinite(n)) return '--';
   return `${n.toFixed(1)} GiB`;
+}
+
+function formatSampleTime(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return '--';
+  const date = new Date(timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp);
+  return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString('zh-CN');
 }
 
 // ── 内部子组件 ──
@@ -155,9 +164,58 @@ function SimpleBarChart({ data, title, color, formatValue }) {
 
 function SystemInfoRow({ label, value }) {
   return (
-    <div className="flex items-center justify-between py-2 border-b border-[var(--color-border-default)] last:border-b-0">
-      <span className="text-xs text-[var(--color-text-muted)]">{label}</span>
-      <span className="text-xs text-[var(--color-text-primary)] font-mono tabular-nums">{value ?? '--'}</span>
+    <div className="flex min-w-0 items-center justify-between gap-4 border-b border-[var(--color-border-default)] py-2 last:border-b-0">
+      <span className="shrink-0 text-xs text-[var(--color-text-muted)]">{label}</span>
+      <span className="max-w-[70%] truncate text-xs font-mono tabular-nums text-[var(--color-text-primary)]" title={String(value ?? '--')}>{value ?? '--'}</span>
+    </div>
+  );
+}
+
+function InstancesTable({ instances }) {
+  if (!instances.length) return null;
+  return (
+    <div className="card mb-6 overflow-hidden animate-fadeIn">
+      <div className="flex items-center justify-between border-b border-[var(--color-border-default)] px-5 py-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-muted)]">CodeBuddy 实例</div>
+        <div className="text-xs text-[var(--color-text-secondary)]">共 {instances.length} 个</div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[760px] w-full text-xs">
+          <thead className="bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)]">
+            <tr>
+              <th className="px-4 py-2.5 text-left font-medium">状态</th>
+              <th className="px-4 py-2.5 text-right font-medium">PID</th>
+              <th className="px-4 py-2.5 text-left font-medium">工作目录</th>
+              <th className="px-4 py-2.5 text-left font-medium">版本</th>
+              <th className="px-4 py-2.5 text-right font-medium">运行时长</th>
+              <th className="px-4 py-2.5 text-right font-medium">RSS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {instances.map((instance, index) => {
+              const unavailable = Boolean(instance.error);
+              const status = unavailable ? instance.error : (instance.isCurrent ? '当前实例' : '可响应');
+              return (
+                <tr key={instance.id || instance.pid || index} className="border-t border-[var(--color-border-muted)] text-[var(--color-text-secondary)]">
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={`inline-flex max-w-[150px] truncate rounded px-2 py-0.5 text-[10px] ${unavailable ? 'bg-[var(--color-error-bg)] text-[var(--color-error)]' : 'bg-[rgba(34,197,94,0.1)] text-[var(--color-success)]'}`}
+                      title={status}
+                    >
+                      {status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-[var(--color-text-primary)]">{instance.pid || '-'}</td>
+                  <td className="max-w-[320px] truncate px-4 py-2.5 text-[var(--color-text-primary)]" title={instance.cwd || ''}>{instance.cwd || '-'}</td>
+                  <td className="px-4 py-2.5">{instance.version || '-'}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{formatUptime(instance.uptimeSeconds)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{unavailable ? '--' : formatBytes(instance.rssMib)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -305,23 +363,37 @@ export default function ReplicaMetricsView() {
   const diskTotal = metrics?.diskTotalGiB != null
     ? finiteNumber(metrics.diskTotalGiB)
     : finiteNumber(metrics?.diskTotal) / 1024 / 1024 / 1024;
-  const loadAvg = Array.isArray(metrics?.loadAverage) ? metrics.loadAverage.map((value) => finiteNumber(value)) : [];
-  const loadDisplay = loadAvg.length > 0 ? loadAvg.map((v) => v.toFixed(2)).join(' / ') : '--';
+  const instances = Array.isArray(metrics?.instances)
+    ? [...metrics.instances].sort(
+        (left, right) =>
+          Number(Boolean(right.isCurrent)) - Number(Boolean(left.isCurrent)) ||
+          Number(Boolean(left.error)) - Number(Boolean(right.error)),
+      )
+    : [];
+  const healthyInstanceCount = instances.filter((instance) => !instance.error).length;
+  const currentInstance =
+    instances.find((instance) => instance.isCurrent) ||
+    instances.find((instance) => !instance.error) ||
+    instances[0] || null;
 
   const memPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
   const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+  const instancePercent = instances.length ? (healthyInstanceCount / instances.length) * 100 : 0;
+  const allInstancesHealthy = instances.length > 0 && healthyInstanceCount === instances.length;
 
   const hasData = metrics && Object.keys(metrics).length > 0;
 
   // 系统信息
   const sysInfo = [
-    { label: '操作系统', value: metrics?.os || metrics?.platform || metrics?.operatingSystem || '--' },
-    { label: '运行时间', value: formatUptime(metrics?.uptime ?? metrics?.upTime) },
-    { label: 'Go 版本', value: metrics?.goVersion || metrics?.go_version || metrics?.goversion || '--' },
-    { label: '主机名', value: metrics?.hostname || metrics?.hostName || '--' },
-    { label: 'CPU 核心数', value: metrics?.cpuCores ?? metrics?.numCpu ?? metrics?.numCPU ?? '--' },
-    { label: '进程数', value: metrics?.numProcesses ?? metrics?.numGoroutine ?? '--' },
-  ].filter((item) => item.value !== '--');
+    { label: '采样时间', value: formatSampleTime(metrics?.ts) },
+    { label: 'CPU 核心数', value: metrics?.cpuCount ?? metrics?.cpuCores ?? '--' },
+    { label: '操作系统', value: currentInstance ? `${currentInstance.os || '-'} / ${currentInstance.arch || '-'}` : '--' },
+    { label: '主机名', value: currentInstance?.hostname || '--' },
+    { label: '当前版本', value: currentInstance?.version || '--' },
+    { label: '运行模式', value: currentInstance?.mode || '--' },
+    { label: '当前运行时长', value: formatUptime(currentInstance?.uptimeSeconds) },
+    { label: '当前工作目录', value: currentInstance?.cwd || '--' },
+  ].filter((item) => item.value !== '--' && item.value != null);
 
   // ── 渲染 ──
 
@@ -359,11 +431,11 @@ export default function ReplicaMetricsView() {
             colorClass="bg-[var(--color-accent-green)]"
           />
           <StatCard
-            label="系统负载"
-            value={loadDisplay}
-            unit=""
-            percent={loadAvg[0] ? Math.min((loadAvg[0] / (metrics?.cpuCores || 4)) * 100, 100) : 0}
-            colorClass="bg-[var(--color-accent-yellow)]"
+            label="CodeBuddy 实例"
+            value={healthyInstanceCount}
+            unit={`/ ${instances.length} 可响应`}
+            percent={instancePercent}
+            colorClass={allInstancesHealthy ? 'bg-[var(--color-accent-green)]' : 'bg-[var(--color-accent-yellow)]'}
           />
         </div>
 
@@ -382,6 +454,8 @@ export default function ReplicaMetricsView() {
             formatValue={(v) => formatBytes(v)}
           />
         </div>
+
+        <InstancesTable instances={instances} />
 
         {/* 系统信息 */}
         <div className="card p-5 animate-fadeIn">
