@@ -102,7 +102,7 @@ function JsonObjectEditor({ value, onSave }) {
     setMessage('');
     const saved = await onSave(parsed);
     setSaving(false);
-    setMessage(saved === false ? '后端保存失败，本机值已保留' : '已保存');
+    setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
   };
 
   return (

@@ -32,6 +32,9 @@ let filePreviewRequestId = 0;
 let fileSearchRequestId = 0;
 let fileNameSearchRequestId = 0;
 const scopedRequestVersions = new Map();
+const settingWriteVersions = new Map();
+const settingWriteChains = new Map();
+const confirmedSettingValues = new Map();
 
 function beginScopedRequest(key, state, scope = 'project') {
   const version = (scopedRequestVersions.get(key) || 0) + 1;
@@ -1744,6 +1747,8 @@ export const useStore = create((set, get) => ({
     const payload = await fetchJson('/api/v1/settings');
     if (!isScopedRequestCurrent(request, get())) return false;
     const loaded = payload.data || payload;
+    confirmedSettingValues.clear();
+    for (const [key, value] of Object.entries(loaded || {})) confirmedSettingValues.set(key, value);
     try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(loaded)); } catch (_) {}
     set({ settings: loaded, settingsLoaded: true });
     return true;
@@ -1759,22 +1764,51 @@ export const useStore = create((set, get) => ({
     } catch (_) {}
   },
 
-  // 改为异步：前端即时更新 + 后端单项回写（对照源 PUT /settings/{key}?scope=user）
-  // 保留同步行为签名，但调方都 await 才能拿到后端结果；非 await 调用仍只更新前端
+  // 乐观更新 UI，后端失败时回滚到最后一次确认值。版本号避免迟到响应覆盖更新的操作。
   async updateSetting(key, value) {
-    // 1. 前端即时更新 + localStorage 持久化（保持原同步语义）
+    const version = (settingWriteVersions.get(key) || 0) + 1;
+    settingWriteVersions.set(key, version);
+    if (!confirmedSettingValues.has(key)) {
+      confirmedSettingValues.set(key, get().settings?.[key]);
+    }
+
     set((state) => {
       const next = { ...(state.settings || {}), [key]: value };
       try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
       return { settings: next, settingsLoaded: true };
     });
-    // 2. 后端单项回写（对照源真实路径，失败不阻塞前端已更新态）
+
+    const previousWrite = settingWriteChains.get(key) || Promise.resolve();
+    const operation = previousWrite.catch(() => {}).then(async () => {
+      try {
+        await updateSettingByKeyApi(key, value, 'user');
+        confirmedSettingValues.set(key, value);
+        return true;
+      } catch (err) {
+        if (settingWriteVersions.get(key) === version) {
+          const confirmedValue = confirmedSettingValues.get(key);
+          set((state) => {
+            const next = { ...(state.settings || {}) };
+            if (confirmedValue === undefined) delete next[key];
+            else next[key] = confirmedValue;
+            try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
+            return {
+              settings: next,
+              settingsLoaded: true,
+              error: `设置保存失败，已恢复原值: ${err.message}`,
+            };
+          });
+        }
+        return false;
+      }
+    });
+    settingWriteChains.set(key, operation);
+
     try {
-      await updateSettingByKeyApi(key, value, 'user');
-      return true;
-    } catch (err) {
-      set({ error: `设置已保存在本机，但 CodeBuddy 后端未保存: ${err.message}` });
-      return false;
+      return await operation;
+    } finally {
+      if (settingWriteChains.get(key) === operation) settingWriteChains.delete(key);
+      if (settingWriteVersions.get(key) === version) settingWriteVersions.delete(key);
     }
   },
 
