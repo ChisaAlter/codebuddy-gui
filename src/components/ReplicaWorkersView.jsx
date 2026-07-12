@@ -12,6 +12,7 @@ const STATUS_CONFIG = {
 
 export default function ReplicaWorkersView() {
   const { workers, refreshWorkers, workersError, setRoute } = useStore();
+  const activeProjectId = useStore((state) => state.activeProjectId);
   const [refreshing, setRefreshing] = React.useState(false);
   const [expandedPid, setExpandedPid] = React.useState(null);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -22,6 +23,7 @@ export default function ReplicaWorkersView() {
   const [actionError, setActionError] = React.useState('');
 
   const handleRefresh = React.useCallback(async () => {
+    const projectId = activeProjectId;
     setRefreshing(true);
     setActionError('');
     try {
@@ -33,17 +35,23 @@ export default function ReplicaWorkersView() {
         setActionError(workersResult.reason?.message || '加载 Worker 失败');
       }
       if (daemonResult.status === 'fulfilled') {
-        setDaemon(daemonResult.value);
+        if (useStore.getState().activeProjectId === projectId) setDaemon(daemonResult.value);
       } else {
-        setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
+        if (useStore.getState().activeProjectId === projectId) {
+          setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
+        }
       }
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (useStore.getState().activeProjectId === projectId) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
-  }, [refreshWorkers]);
+  }, [activeProjectId, refreshWorkers]);
 
   React.useEffect(() => {
+    setDaemon(null);
+    setLoading(true);
     handleRefresh();
   }, [handleRefresh]);
 

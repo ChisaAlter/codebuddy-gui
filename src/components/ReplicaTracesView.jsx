@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../store';
 import { fetchTraceList } from '../lib/ops';
 
@@ -34,6 +34,8 @@ const SortArrow = ({ direction }) => (
 
 export default function ReplicaTracesView() {
   const traces = useStore((s) => s.traces);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const loadRequestRef = useRef(0);
 
   // --- local UI state ---
   const [loading, setLoading] = useState(true);
@@ -46,18 +48,21 @@ export default function ReplicaTracesView() {
 
   // --- data loading ---
   const loadTraces = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    const projectId = activeProjectId;
     setLoading(true);
     setError(null);
     try {
       const data = await fetchTraceList();
+      if (requestId !== loadRequestRef.current || useStore.getState().activeProjectId !== projectId) return;
       useStore.setState({ traces: Array.isArray(data) ? data : [] });
     } catch (e) {
+      if (requestId !== loadRequestRef.current || useStore.getState().activeProjectId !== projectId) return;
       setError(e.message || '加载链路数据失败');
-      useStore.setState({ traces: [] });
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     loadTraces();

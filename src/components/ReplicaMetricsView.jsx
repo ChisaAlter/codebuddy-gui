@@ -217,6 +217,7 @@ function pruneHistory(history) {
 export default function ReplicaMetricsView() {
   const metrics = useStore((s) => s.metrics);
   const refreshMetrics = useStore((s) => s.refreshMetrics);
+  const activeProjectId = useStore((s) => s.activeProjectId);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -226,23 +227,38 @@ export default function ReplicaMetricsView() {
   const [cpuHistory, setCpuHistory] = useState([]);
   const [memHistory, setMemHistory] = useState([]);
   const sampleIndexRef = useRef(0);
+  const prevMetricsRef = useRef(null);
+
+  useEffect(() => {
+    setCpuHistory([]);
+    setMemHistory([]);
+    setError(null);
+    setLoading(true);
+    sampleIndexRef.current = 0;
+    prevMetricsRef.current = null;
+  }, [activeProjectId]);
 
   // 拉取数据
   const doRefresh = useCallback(async () => {
+    const projectId = activeProjectId;
     try {
       setRefreshing(true);
       setError(null);
       const ok = await refreshMetrics();
+      if (useStore.getState().activeProjectId !== projectId) return;
       if (ok === false) {
         setError(useStore.getState().metricsError || '请求失败');
       }
     } catch (e) {
+      if (useStore.getState().activeProjectId !== projectId) return;
       setError(e?.message || '请求失败');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (useStore.getState().activeProjectId === projectId) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [refreshMetrics]);
+  }, [activeProjectId, refreshMetrics]);
 
   // 首次加载
   useEffect(() => {
@@ -259,7 +275,6 @@ export default function ReplicaMetricsView() {
   }, [autoRefresh, doRefresh]);
 
   // 当 metrics 更新后记录历史
-  const prevMetricsRef = useRef(null);
   useEffect(() => {
     if (!metrics) return;
 

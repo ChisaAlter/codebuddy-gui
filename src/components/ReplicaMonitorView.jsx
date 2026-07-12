@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchJson } from '../lib/acp';
+import { useStore } from '../store';
 
 function StatCard({ title, value, subtitle }) {
   return (
@@ -47,6 +48,8 @@ function formatDiskUsage(metrics) {
 }
 
 export default function ReplicaMonitorView() {
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const loadRequestRef = useRef(0);
   const [auth, setAuth] = useState(null);
   const [info, setInfo] = useState(null);
   const [daemon, setDaemon] = useState(null);
@@ -56,7 +59,9 @@ export default function ReplicaMonitorView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  async function load() {
+  const load = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    const projectId = activeProjectId;
     setLoading(true);
     setError('');
     try {
@@ -68,6 +73,7 @@ export default function ReplicaMonitorView() {
         fetchJson('/api/v1/workers'),
         fetchJson('/api/v1/channels'),
       ]);
+      if (requestId !== loadRequestRef.current || useStore.getState().activeProjectId !== projectId) return;
       const failed = [];
       const read = (index, label, apply) => {
         const result = results[index];
@@ -89,15 +95,23 @@ export default function ReplicaMonitorView() {
       });
       if (failed.length) setError(`部分数据暂时不可用：${failed.join('、')}`);
     } catch (err) {
-      setError(err.message || '加载失败');
+      if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) {
+        setError(err.message || '加载失败');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
     }
-  }
+  }, [activeProjectId]);
 
   useEffect(() => {
+    setAuth(null);
+    setInfo(null);
+    setDaemon(null);
+    setMetrics(null);
+    setWorkers([]);
+    setChannels([]);
     load();
-  }, []);
+  }, [load]);
 
   const diskGiB = formatDiskUsage(metrics);
 

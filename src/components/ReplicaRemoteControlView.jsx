@@ -119,12 +119,13 @@ function ChannelCard({ channel, onRefresh }) {
 
 export default function ReplicaRemoteControlView() {
   const setRoute = useStore((state) => state.setRoute);
+  const activeProjectId = useStore((state) => state.activeProjectId);
   const [channels, setChannels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const mountedRef = useRef(true);
-  const loadInFlightRef = useRef(false);
+  const loadInFlightRef = useRef(null);
 
   // 微信创建 + 二维码态（对照源 POST /channels/wechat + GET /channels/wechat/{id}/qr）
   const [wechatBusy, setWechatBusy] = useState(false);
@@ -140,8 +141,9 @@ export default function ReplicaRemoteControlView() {
   const [wecomError, setWecomError] = useState(null);
 
   const load = useCallback(async ({ silent = false } = {}) => {
-    if (loadInFlightRef.current) return;
-    loadInFlightRef.current = true;
+    const projectId = activeProjectId;
+    if (loadInFlightRef.current === projectId) return;
+    loadInFlightRef.current = projectId;
     if (!silent) {
       setLoading(true);
       setError('');
@@ -149,20 +151,28 @@ export default function ReplicaRemoteControlView() {
     try {
       const payload = await fetchJson('/api/v1/channels');
       const clients = payload?.data?.clients || payload?.clients || payload?.data?.channels || payload?.channels || [];
-      if (mountedRef.current) {
+      if (mountedRef.current && useStore.getState().activeProjectId === projectId) {
         setChannels((Array.isArray(clients) ? clients : []).filter((item) => !item.hidden && !String(item.instanceId || '').startsWith('_pending')));
         setError('');
       }
     } catch (err) {
-      if (mountedRef.current) setError(err.message || '加载失败');
+      if (mountedRef.current && useStore.getState().activeProjectId === projectId) setError(err.message || '加载失败');
     } finally {
-      loadInFlightRef.current = false;
-      if (!silent && mountedRef.current) setLoading(false);
+      if (loadInFlightRef.current === projectId) loadInFlightRef.current = null;
+      if (!silent && mountedRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     mountedRef.current = true;
+    setChannels([]);
+    setLoading(true);
+    setError('');
+    setInfo('');
+    setWechatQr(null);
+    setWechatQrLoading(false);
+    setWechatQrError(null);
+    setWecomError(null);
     load();
     const refreshTimer = setInterval(() => load({ silent: true }), 5000);
     return () => {

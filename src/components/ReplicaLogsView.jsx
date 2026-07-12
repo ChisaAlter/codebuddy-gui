@@ -17,6 +17,7 @@ export default function ReplicaLogsView() {
   const workers = useStore((s) => s.workers);
   const refreshWorkers = useStore((s) => s.refreshWorkers);
   const workersError = useStore((s) => s.workersError);
+  const activeProjectId = useStore((s) => s.activeProjectId);
   const loadWorkerLogs = useStore((s) => s.loadWorkerLogs);
   const [workerPid, setWorkerPid] = useState('');
   const [logType, setLogType] = useState('stdout');
@@ -46,10 +47,17 @@ export default function ReplicaLogsView() {
   }, [refreshWorkers]);
 
   useEffect(() => {
-    if (!workerPid && workers.length) {
-      setWorkerPid(String(workers[0].pid));
-    }
+    const currentExists = workerPid && workers.some((worker) => String(worker.pid) === String(workerPid));
+    if (!currentExists) setWorkerPid(workers.length ? String(workers[0].pid) : '');
   }, [workers, workerPid]);
+
+  useEffect(() => {
+    setWorkerPid('');
+    setLogs('');
+    setLogPath('');
+    setAvailableLogTypes(['stdout', 'stderr']);
+    setAutoRefresh(false);
+  }, [activeProjectId]);
 
   useEffect(() => {
     setLogs('');
