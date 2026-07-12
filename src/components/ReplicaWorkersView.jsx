@@ -1,6 +1,7 @@
 import React from 'react';
 import { useStore } from '../store';
 import { fetchDaemonStatus, restartDaemon, startDaemon, stopDaemon, stopWorker } from '../lib/ops';
+import ActionConfirmDialog from './ActionConfirmDialog';
 
 const STATUS_CONFIG = {
   running: { klass: 'tag-green', label: '运行中' },
@@ -58,6 +59,8 @@ export default function ReplicaWorkersView() {
   const [daemonBusy, setDaemonBusy] = React.useState(false);
   const [workerBusyPid, setWorkerBusyPid] = React.useState(null);
   const [actionError, setActionError] = React.useState('');
+  const [pendingStopWorker, setPendingStopWorker] = React.useState(null);
+  const [workerActionError, setWorkerActionError] = React.useState('');
 
   const handleRefresh = React.useCallback(async () => {
     const projectId = activeProjectId;
@@ -89,6 +92,8 @@ export default function ReplicaWorkersView() {
   React.useEffect(() => {
     setDaemon(null);
     setLoading(true);
+    setPendingStopWorker(null);
+    setWorkerActionError('');
     handleRefresh();
   }, [handleRefresh]);
 
@@ -105,20 +110,33 @@ export default function ReplicaWorkersView() {
     }
   };
 
-  const handleStopWorker = async (worker) => {
+  const requestStopWorker = (worker) => {
     if (!worker?.pid) return;
     if (worker.isCurrent) {
       setActionError('当前 Worker 正在为此项目提供服务，请在“项目运行时”页面停止或重启。');
       return;
     }
-    if (!window.confirm(`确定终止 Worker PID ${worker.pid} 吗？正在执行的任务会中断。`)) return;
+    setPendingStopWorker(worker);
+    setWorkerActionError('');
+  };
+
+  const closeStopWorkerDialog = () => {
+    if (workerBusyPid) return;
+    setPendingStopWorker(null);
+    setWorkerActionError('');
+  };
+
+  const confirmStopWorker = async () => {
+    const worker = pendingStopWorker;
+    if (!worker?.pid || workerBusyPid) return;
     setWorkerBusyPid(worker.pid);
-    setActionError('');
+    setWorkerActionError('');
     try {
       await stopWorker(worker.pid);
       await refreshWorkers();
+      setPendingStopWorker(null);
     } catch (error) {
-      setActionError(error?.message || '终止 Worker 失败');
+      setWorkerActionError(error?.message || '终止 Worker 失败');
     } finally {
       setWorkerBusyPid(null);
     }
@@ -304,7 +322,7 @@ export default function ReplicaWorkersView() {
                       </button>
                       <button
                         className="btn-ghost text-xs text-[var(--color-error)]"
-                        onClick={(e) => { e.stopPropagation(); handleStopWorker(w); }}
+                        onClick={(e) => { e.stopPropagation(); requestStopWorker(w); }}
                         disabled={w.isCurrent || workerBusyPid === w.pid}
                         title={w.isCurrent ? '当前 Worker 请在项目运行时页面管理' : '终止这个 Worker'}
                       >
@@ -371,6 +389,18 @@ export default function ReplicaWorkersView() {
           </div>
         )}
       </div>
+      <ActionConfirmDialog
+        open={Boolean(pendingStopWorker)}
+        title="终止 Worker？"
+        description={pendingStopWorker ? (
+          <><div className="font-medium text-[var(--color-text-primary)]">PID {pendingStopWorker.pid} · {pendingStopWorker.kind || 'Worker'}</div><div className="mt-1 break-words">{pendingStopWorker.cwd || pendingStopWorker.endpoint || '-'}</div><div className="mt-2">正在执行的任务会立即中断，此操作无法撤销。</div></>
+        ) : null}
+        confirmLabel="终止 Worker"
+        busy={Boolean(workerBusyPid)}
+        error={workerActionError}
+        onCancel={closeStopWorkerDialog}
+        onConfirm={confirmStopWorker}
+      />
     </div>
   );
 }

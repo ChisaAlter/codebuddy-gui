@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import ActionConfirmDialog from './ActionConfirmDialog';
 import {
   fetchKeybindings,
   resetKeybindings,
@@ -102,6 +103,9 @@ export default function ReplicaKeybindingsView() {
   const [contextFilter, setContextFilter] = useState('all');
   const [editor, setEditor] = useState(null);
 
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetError, setResetError] = useState('');
+
   const load = useCallback(async ({ silent = false } = {}) => {
     const requestId = ++requestRef.current;
     const projectId = activeProjectId;
@@ -127,6 +131,8 @@ export default function ReplicaKeybindingsView() {
     setEditor(null);
     setNotice('');
     load();
+    setResetDialogOpen(false);
+    setResetError('');
   }, [load]);
 
   const contextDescriptions = useMemo(
@@ -217,17 +223,18 @@ export default function ReplicaKeybindingsView() {
   };
 
   const handleReset = async () => {
-    if (!window.confirm('确定恢复全部默认快捷键吗？所有用户覆盖都会被删除。')) return;
     setSaving(true);
     setError('');
     setNotice('');
+    setResetError('');
     try {
       await resetKeybindings();
       await load({ silent: true });
       setEditor(null);
       setNotice('已恢复默认快捷键');
-    } catch (resetError) {
-      setError(resetError?.message || '恢复默认快捷键失败');
+      setResetDialogOpen(false);
+    } catch (caughtError) {
+      setResetError(caughtError?.message || '恢复默认快捷键失败');
     } finally {
       setSaving(false);
     }
@@ -241,7 +248,7 @@ export default function ReplicaKeybindingsView() {
           <button className="btn-ghost text-xs" disabled={loading || saving} onClick={() => load()}>
             {loading ? '刷新中...' : '刷新'}
           </button>
-          <button className="btn-ghost text-xs text-[var(--color-error)]" disabled={loading || saving || customCount === 0} onClick={handleReset}>
+          <button className="btn-ghost text-xs text-[var(--color-error)]" disabled={loading || saving || customCount === 0} onClick={() => { setResetDialogOpen(true); setResetError(''); }}>
             恢复默认
           </button>
         </div>
@@ -375,6 +382,16 @@ export default function ReplicaKeybindingsView() {
           {config.filePath ? <div className="mt-4 truncate text-[11px] text-[var(--color-text-muted)]" title={config.filePath}>配置文件：{config.filePath}</div> : null}
         </div>
       </div>
+      <ActionConfirmDialog
+        open={resetDialogOpen}
+        title="恢复全部默认快捷键？"
+        description={`将删除 ${customCount} 项用户覆盖并恢复 CodeBuddy 默认绑定。此操作完成后仍可重新添加自定义绑定。`}
+        confirmLabel="恢复默认"
+        busy={saving}
+        error={resetError}
+        onCancel={() => { setResetDialogOpen(false); setResetError(''); }}
+        onConfirm={handleReset}
+      />
     </div>
   );
 }

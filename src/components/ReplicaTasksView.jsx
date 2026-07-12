@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
+import ActionConfirmDialog from './ActionConfirmDialog';
 
 export default function ReplicaTasksView() {
   const { scheduledTasks, scheduledTasksError, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
@@ -11,10 +12,14 @@ export default function ReplicaTasksView() {
   const [refreshingTemplates, setRefreshingTemplates] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState(null);
+  const [pendingDeleteTask, setPendingDeleteTask] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setPendingDeleteTask(null);
+    setDeleteError('');
     refreshTasks().finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [sessionId, refreshTasks]);
@@ -43,11 +48,25 @@ export default function ReplicaTasksView() {
     try { await refreshTasks(); } finally { setRefreshing(false); }
   };
 
-  const runTaskAction = async (taskId, action) => {
+  const closeDeleteDialog = () => {
+    if (busyTaskId) return;
+    setPendingDeleteTask(null);
+    setDeleteError('');
+  };
+
+  const confirmDeleteTask = async () => {
+    const taskId = pendingDeleteTask?.taskId;
+    if (!taskId || busyTaskId) return;
     setBusyTaskId(taskId);
-    setLocalError(null);
-    try { await action(); } catch (err) { setLocalError(err.message || '任务操作失败'); }
-    finally { setBusyTaskId(null); }
+    setDeleteError('');
+    try {
+      await deleteTask(taskId);
+      setPendingDeleteTask(null);
+    } catch (err) {
+      setDeleteError(err.message || '删除定时任务失败');
+    } finally {
+      setBusyTaskId(null);
+    }
   };
 
   const tasksList = Array.isArray(scheduledTasks) ? scheduledTasks : [];
@@ -134,7 +153,8 @@ export default function ReplicaTasksView() {
                           className="btn-ghost text-xs text-[var(--color-error)]"
                           disabled={busy}
                           onClick={() => {
-                            if (window.confirm('确定删除这个定时任务吗？')) runTaskAction(taskId, () => deleteTask(taskId));
+                            setPendingDeleteTask({ ...task, taskId });
+                            setDeleteError('');
                           }}
                         >{busy ? '删除中...' : '删除'}</button>
                       </div>
@@ -222,6 +242,18 @@ export default function ReplicaTasksView() {
           )}
         </div>
       </div>
+      <ActionConfirmDialog
+        open={Boolean(pendingDeleteTask)}
+        title="删除定时任务？"
+        description={pendingDeleteTask ? (
+          <><div className="font-medium text-[var(--color-text-primary)]">{pendingDeleteTask.prompt || pendingDeleteTask.name || '未命名任务'}</div><div className="mt-1">计划：{pendingDeleteTask.cron || pendingDeleteTask.schedule || '-'}</div><div className="mt-2">任务删除后不会再按计划执行，此操作无法撤销。</div></>
+        ) : null}
+        confirmLabel="删除任务"
+        busy={Boolean(busyTaskId)}
+        error={deleteError}
+        onCancel={closeDeleteDialog}
+        onConfirm={confirmDeleteTask}
+      />
     </div>
   );
 }
