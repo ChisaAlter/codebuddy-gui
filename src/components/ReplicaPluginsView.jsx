@@ -2,7 +2,8 @@ import React from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, marketplaces, pluginError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
+  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
+  const activeProjectId = useStore((state) => state.activeProjectId);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -20,27 +21,55 @@ export default function ReplicaPluginsView() {
   const [newMktUrl, setNewMktUrl] = React.useState('');
   const [mktBusy, setMktBusy] = React.useState(false);
   const [mktMsg, setMktMsg] = React.useState(null);
+  const projectGenerationRef = React.useRef(0);
+  const refreshRequestRef = React.useRef(0);
 
   const handleRefresh = React.useCallback(async () => {
+    const projectId = activeProjectId;
+    const requestId = ++refreshRequestRef.current;
     setRefreshing(true);
     setActionError(null);
-    useStore.setState({ pluginError: null });
+    useStore.setState({ pluginError: null, marketplaceError: null });
     try {
       const results = await Promise.all([refreshPlugins(), refreshMarketplaces?.()]);
+      if (requestId !== refreshRequestRef.current || useStore.getState().activeProjectId !== projectId) return false;
       if (results.some((ok) => ok === false)) {
-        setActionError(useStore.getState().pluginError || '部分插件数据加载失败');
+        const current = useStore.getState();
+        setActionError(current.pluginError || current.marketplaceError || '部分插件数据加载失败');
+        return false;
       }
+      return true;
     } catch (error) {
+      if (requestId !== refreshRequestRef.current || useStore.getState().activeProjectId !== projectId) return false;
       setActionError(error?.message || '插件数据加载失败');
+      return false;
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (requestId === refreshRequestRef.current && useStore.getState().activeProjectId === projectId) {
+        setRefreshing(false);
+        setLoading(false);
+      }
     }
-  }, [refreshMarketplaces, refreshPlugins]);
+  }, [activeProjectId, refreshMarketplaces, refreshPlugins]);
 
   React.useEffect(() => {
+    projectGenerationRef.current += 1;
+    refreshRequestRef.current += 1;
+    setLoading(true);
+    setRefreshing(false);
+    setShowInstallModal(false);
+    setInstallId('');
+    setInstallMarketplace('');
+    setInstalling(false);
+    setInstallMsg(null);
+    setActionError(null);
+    setActionDialog(null);
+    setActionDialogError('');
+    setNewMktId('');
+    setNewMktUrl('');
+    setMktBusy(false);
+    setMktMsg(null);
     handleRefresh();
-  }, [handleRefresh]);
+  }, [activeProjectId, handleRefresh]);
 
   const pluginsList = Array.isArray(plugins) ? plugins : [];
 
@@ -80,15 +109,20 @@ export default function ReplicaPluginsView() {
 
   const confirmActionDialog = async () => {
     if (!actionDialog || pluginOperationActive) return;
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
+    const action = actionDialog;
     setActionDialogError('');
     setActionError(null);
     setMktMsg(null);
-    const ok = actionDialog.type === 'uninstall'
-      ? await uninstallPluginByName(actionDialog.id)
-      : await removeMarketplaceById(actionDialog.id);
+    const ok = action.type === 'uninstall'
+      ? await uninstallPluginByName(action.id)
+      : await removeMarketplaceById(action.id);
+    if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
     if (!ok) {
-      const message = useStore.getState().pluginError
-        || (actionDialog.type === 'uninstall' ? '卸载插件失败' : '删除市场失败');
+      const current = useStore.getState();
+      const message = (action.type === 'uninstall' ? current.pluginError : current.marketplaceError)
+        || (action.type === 'uninstall' ? '卸载插件失败' : '删除市场失败');
       setActionDialogError(message);
       return;
     }
@@ -127,9 +161,9 @@ export default function ReplicaPluginsView() {
         </div>
 
         {/* Error banner */}
-        {(pluginError || actionError) && (
+        {(pluginError || marketplaceError || actionError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {actionError || pluginError}
+            {actionError || pluginError || marketplaceError}
             <button className="ml-3 underline text-xs" onClick={() => { setActionError(null); handleRefresh(); }}>重试</button>
           </div>
         )}
@@ -240,8 +274,11 @@ export default function ReplicaPluginsView() {
                       className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
                       disabled={pluginOperationActive}
                       onClick={async () => {
+                        const projectId = activeProjectId;
+                        const generation = projectGenerationRef.current;
                         setActionError(null);
                         const ok = await togglePluginByName(p.name, !enabled);
+                        if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
                         if (!ok) setActionError(useStore.getState().pluginError || '操作失败');
                       }}
                       title={enabled ? '点击禁用' : '点击启用'}
@@ -336,9 +373,12 @@ export default function ReplicaPluginsView() {
                   disabled={!installId.trim() || installing || pluginOperationActive}
                   onClick={async () => {
                     if (!installId.trim()) return;
+                    const projectId = activeProjectId;
+                    const generation = projectGenerationRef.current;
                     setInstalling(true);
                     setInstallMsg(null);
                     const ok = await installPluginByName(installId.trim(), installMarketplace);
+                    if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
                     setInstalling(false);
                     if (ok) {
                       setShowInstallModal(false);
@@ -401,16 +441,21 @@ export default function ReplicaPluginsView() {
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">插件市场</h2>
             <button
               onClick={async () => {
+                const projectId = activeProjectId;
+                const generation = projectGenerationRef.current;
                 setMktBusy(true);
                 setMktMsg(null);
-                useStore.setState({ pluginError: null });
+                useStore.setState({ marketplaceError: null });
                 try {
                   const ok = await refreshMarketplaces?.();
-                  if (ok === false) setMktMsg(useStore.getState().pluginError || '刷新市场失败');
+                  if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+                  if (ok === false) setMktMsg(useStore.getState().marketplaceError || '刷新市场失败');
                 } catch (error) {
-                  setMktMsg(error?.message || '刷新市场失败');
+                  if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+                    setMktMsg(error?.message || '刷新市场失败');
+                  }
                 } finally {
-                  setMktBusy(false);
+                  if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMktBusy(false);
                 }
               }}
               disabled={mktBusy || pluginOperationActive}
@@ -445,14 +490,17 @@ export default function ReplicaPluginsView() {
               className="btn-primary text-xs"
               disabled={mktBusy || pluginOperationActive || !newMktId.trim() || !newMktUrl.trim()}
               onClick={async () => {
+                const projectId = activeProjectId;
+                const generation = projectGenerationRef.current;
                 setMktBusy(true);
                 setMktMsg(null);
                 try {
                   const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});
+                  if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
                   if (ok) { setNewMktId(''); setNewMktUrl(''); }
-                  else setMktMsg(useStore.getState().pluginError || '新增市场失败');
+                  else setMktMsg(useStore.getState().marketplaceError || '新增市场失败');
                 } finally {
-                  setMktBusy(false);
+                  if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMktBusy(false);
                 }
               }}
             >
@@ -460,7 +508,7 @@ export default function ReplicaPluginsView() {
             </button>
           </div>
           {mktMsg && <div className="mb-3 text-xs text-[var(--color-error)]">{mktMsg}</div>}
-          {pluginError && pluginBusy?.startsWith('rmMkt:') && <div className="mb-3 text-xs text-[var(--color-error)]">{pluginError}</div>}
+          {marketplaceError && pluginBusy?.startsWith('rmMkt:') && <div className="mb-3 text-xs text-[var(--color-error)]">{marketplaceError}</div>}
 
           {/* 市场列表 */}
           {(marketplaces || []).length === 0 ? (

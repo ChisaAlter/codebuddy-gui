@@ -280,6 +280,7 @@ function resetProjectRuntimeViews() {
     plugins: [],
     marketplaces: [],
     pluginError: null,
+    marketplaceError: null,
     pluginBusy: null,
     metrics: null,
     metricsError: null,
@@ -326,6 +327,7 @@ export const useStore = create((set, get) => ({
   plugins: [],
   marketplaces: [],
   pluginError: null,
+  marketplaceError: null,
   pluginBusy: null, // 当前操作中的插件名/动作，避免 UI 重入
   timeline: [],
   // 发消息后等 agent 首 SSE 块期间：UI 需立即显"思考中"态（发送键变终止键）
@@ -2138,77 +2140,97 @@ export const useStore = create((set, get) => ({
     try {
       const list = await apiFetchMarketplaces();
       if (!isScopedRequestCurrent(request, get())) return false;
-      set({ marketplaces: Array.isArray(list) ? list : [] });
+      set({ marketplaces: Array.isArray(list) ? list : [], marketplaceError: null });
       return true;
     } catch (error) {
       if (!isScopedRequestCurrent(request, get())) return false;
-      set({ pluginError: error?.message || '加载插件市场失败' });
+      set({ marketplaceError: error?.message || '加载插件市场失败' });
       return false;
     }
   },
 
   async installPluginByName(pluginId, marketplace) {
-    set({ pluginBusy: `install:${pluginId}`, pluginError: null });
+    const projectId = get().activeProjectId;
+    const busyKey = `install:${pluginId}`;
+    set({ pluginBusy: busyKey, pluginError: null });
     try {
       await apiInstallPlugin(pluginId, marketplace);
-      await get().refreshPlugins();
-      set({ pluginBusy: null });
+      if (projectId === get().activeProjectId) await get().refreshPlugins();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
     } catch (err) {
-      set({ pluginBusy: null, pluginError: err?.message || '安装插件失败' });
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, pluginError: err?.message || '安装插件失败' });
+      }
       return false;
     }
   },
 
   async uninstallPluginByName(pluginName) {
-    set({ pluginBusy: `uninstall:${pluginName}`, pluginError: null });
+    const projectId = get().activeProjectId;
+    const busyKey = `uninstall:${pluginName}`;
+    set({ pluginBusy: busyKey, pluginError: null });
     try {
       await apiUninstallPlugin(pluginName);
-      await get().refreshPlugins();
-      set({ pluginBusy: null });
+      if (projectId === get().activeProjectId) await get().refreshPlugins();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
     } catch (err) {
-      set({ pluginBusy: null, pluginError: err?.message || '卸载插件失败' });
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, pluginError: err?.message || '卸载插件失败' });
+      }
       return false;
     }
   },
 
   async togglePluginByName(pluginName, enabled) {
-    set({ pluginBusy: `toggle:${pluginName}`, pluginError: null });
+    const projectId = get().activeProjectId;
+    const busyKey = `toggle:${pluginName}`;
+    set({ pluginBusy: busyKey, pluginError: null });
     try {
       if (enabled) await apiEnablePlugin(pluginName);
       else await apiDisablePlugin(pluginName);
-      await get().refreshPlugins();
-      set({ pluginBusy: null });
+      if (projectId === get().activeProjectId) await get().refreshPlugins();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
     } catch (err) {
-      set({ pluginBusy: null, pluginError: err?.message || (enabled ? '启用插件失败' : '禁用插件失败') });
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, pluginError: err?.message || (enabled ? '启用插件失败' : '禁用插件失败') });
+      }
       return false;
     }
   },
 
   async addMarketplaceById(id, config) {
-    set({ pluginBusy: `addMkt:${id}`, pluginError: null });
+    const projectId = get().activeProjectId;
+    const busyKey = `addMkt:${id}`;
+    set({ pluginBusy: busyKey, marketplaceError: null });
     try {
       await apiAddMarketplace(id, config || {});
-      await get().refreshMarketplaces();
-      set({ pluginBusy: null });
+      if (projectId === get().activeProjectId) await get().refreshMarketplaces();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
     } catch (err) {
-      set({ pluginBusy: null, pluginError: err?.message || '新增市场失败' });
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, marketplaceError: err?.message || '新增市场失败' });
+      }
       return false;
     }
   },
 
   async removeMarketplaceById(id) {
-    set({ pluginBusy: `rmMkt:${id}`, pluginError: null });
+    const projectId = get().activeProjectId;
+    const busyKey = `rmMkt:${id}`;
+    set({ pluginBusy: busyKey, marketplaceError: null });
     try {
       await apiRemoveMarketplace(id);
-      await get().refreshMarketplaces();
-      set({ pluginBusy: null });
+      if (projectId === get().activeProjectId) await get().refreshMarketplaces();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
     } catch (err) {
-      set({ pluginBusy: null, pluginError: err?.message || '删除市场失败' });
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, marketplaceError: err?.message || '删除市场失败' });
+      }
       return false;
     }
   },
@@ -2309,29 +2331,46 @@ export const useStore = create((set, get) => ({
   },
 
   async createTask(cron, prompt) {
-    if (!get().sessionId) throw new Error('当前会话尚未连接');
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!sessionId) throw new Error('当前会话尚未连接');
     if (!String(cron || '').trim()) throw new Error('Cron 表达式不能为空');
     if (!String(prompt || '').trim()) throw new Error('提示词不能为空');
     try {
       set({ error: null });
-      await createScheduledTask(get().sessionId, cron, prompt);
-      await get().refreshTasks();
+      await createScheduledTask(sessionId, cron, prompt);
+      if (projectId === get().activeProjectId && threadId === get().activeThreadId && sessionId === get().sessionId) {
+        await get().refreshTasks();
+      }
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && threadId === get().activeThreadId && sessionId === get().sessionId) {
+        set({ error: error.message });
+      }
       throw error;
     }
   },
 
   async deleteTask(taskId) {
     if (!taskId) throw new Error('任务 ID 缺失');
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!sessionId) throw new Error('当前会话尚未连接');
     try {
       set({ error: null });
-      await deleteScheduledTask(taskId, get().sessionId);
-      await get().refreshTasks();
+      await deleteScheduledTask(taskId, sessionId);
+      if (projectId === get().activeProjectId && threadId === get().activeThreadId && sessionId === get().sessionId) {
+        await get().refreshTasks();
+      }
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && threadId === get().activeThreadId && sessionId === get().sessionId) {
+        set({ error: error.message });
+      }
       throw error;
     }
   },

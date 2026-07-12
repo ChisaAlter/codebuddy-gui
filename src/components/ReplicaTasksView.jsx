@@ -4,6 +4,7 @@ import ActionConfirmDialog from './ActionConfirmDialog';
 
 export default function ReplicaTasksView() {
   const { scheduledTasks, scheduledTasksError, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
+  const activeThreadId = useStore((state) => state.activeThreadId);
   const [cron, setCron] = useState('0 9 * * *');
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');
   const [creating, setCreating] = useState(false);
@@ -14,38 +15,68 @@ export default function ReplicaTasksView() {
   const [busyTaskId, setBusyTaskId] = useState(null);
   const [pendingDeleteTask, setPendingDeleteTask] = useState(null);
   const [deleteError, setDeleteError] = useState('');
+  const sessionGenerationRef = React.useRef(0);
 
   useEffect(() => {
     let active = true;
+    const threadId = activeThreadId;
+    const generation = ++sessionGenerationRef.current;
     setLoading(true);
+    setCreating(false);
+    setLocalError(null);
+    setRefreshing(false);
+    setRefreshingTemplates(false);
+    setBusyTaskId(null);
     setPendingDeleteTask(null);
     setDeleteError('');
-    refreshTasks().finally(() => { if (active) setLoading(false); });
+    setCron('0 9 * * *');
+    setPrompt('每日汇总当前会话进度');
+    refreshTasks().finally(() => {
+      if (active && generation === sessionGenerationRef.current && useStore.getState().activeThreadId === threadId) setLoading(false);
+    });
     return () => { active = false; };
-  }, [sessionId, refreshTasks]);
+  }, [activeThreadId, sessionId, refreshTasks]);
 
   const handleCreate = async () => {
+    const threadId = activeThreadId;
+    const generation = sessionGenerationRef.current;
     setCreating(true);
     setLocalError(null);
     try {
       await createTask(cron.trim(), prompt.trim());
-      setPrompt('每日汇总当前会话进度');
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) {
+        setPrompt('每日汇总当前会话进度');
+      }
     } catch (err) {
-      setLocalError(err.message || '创建失败');
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) {
+        setLocalError(err.message || '创建失败');
+      }
     } finally {
-      setCreating(false);
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setCreating(false);
     }
   };
 
   const handleRefreshTemplates = async () => {
+    const threadId = activeThreadId;
+    const generation = sessionGenerationRef.current;
     setRefreshingTemplates(true);
-    try { await refreshTaskTemplatesNow(); } finally { setRefreshingTemplates(false); }
+    try {
+      await refreshTaskTemplatesNow();
+    } finally {
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshingTemplates(false);
+    }
   };
 
   const handleRefresh = async () => {
+    const threadId = activeThreadId;
+    const generation = sessionGenerationRef.current;
     setRefreshing(true);
     setLocalError(null);
-    try { await refreshTasks(); } finally { setRefreshing(false); }
+    try {
+      await refreshTasks();
+    } finally {
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshing(false);
+    }
   };
 
   const closeDeleteDialog = () => {
@@ -57,15 +88,19 @@ export default function ReplicaTasksView() {
   const confirmDeleteTask = async () => {
     const taskId = pendingDeleteTask?.taskId;
     if (!taskId || busyTaskId) return;
+    const threadId = activeThreadId;
+    const generation = sessionGenerationRef.current;
     setBusyTaskId(taskId);
     setDeleteError('');
     try {
       await deleteTask(taskId);
-      setPendingDeleteTask(null);
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setPendingDeleteTask(null);
     } catch (err) {
-      setDeleteError(err.message || '删除定时任务失败');
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) {
+        setDeleteError(err.message || '删除定时任务失败');
+      }
     } finally {
-      setBusyTaskId(null);
+      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setBusyTaskId(null);
     }
   };
 
