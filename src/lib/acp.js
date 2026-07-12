@@ -656,8 +656,9 @@ export async function fetchJson(path, init = {}) {
 // ===== 鉴权 =====
 // 对照源：POST /api/v1/auth/login {password} -> {success, token?, error?}
 // 成功后 token 存 sessionStorage（setAuthToken），所有请求经 makeHeaders 注入 Bearer
-export async function authLogin(password) {
-  const response = await requestCodeBuddy('/api/v1/auth/login', {
+export async function authLogin(password, options = {}) {
+  const baseUrl = String(options.baseUrl || '').replace(/\/$/, '');
+  const response = await requestCodeBuddy(`${baseUrl}/api/v1/auth/login`, {
     method: 'POST',
     headers: makeHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ password }),
@@ -673,8 +674,8 @@ export async function authLogin(password) {
     // 仅当后端真发 token 才持久化为 Bearer；无 token 字段时**不**把密码当 bearer 落 sessionStorage
     // 旧兜底“用 password 作 bearer”会让明文密码长期驻留 sessionStorage，并在每次请求中重复携带；
     // 后端不返回 token 时，当前会话不需要 Bearer 鉴权。
-    if (payload.token) setAuthToken(payload.token);
-    return { success: true };
+    if (payload.token && options.persistToken !== false) setAuthToken(payload.token);
+    return { success: true, token: payload.token || null };
   }
   return { success: false, error: payload?.error || 'login.error.incorrect' };
 }

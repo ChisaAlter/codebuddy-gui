@@ -38,6 +38,7 @@ const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
+const runtimeOperationChains = new Map();
 let dirtyFileConfirmationResolve = null;
 
 function beginScopedRequest(key, state, scope = 'project') {
@@ -59,8 +60,47 @@ function isScopedRequestCurrent(token, state) {
   if (token.scope === 'threadId' || token.scope === 'thread') {
     if (token.threadId !== state.activeThreadId) return false;
   }
+
   if (token.scope === 'thread' && token.sessionId !== state.sessionId) return false;
   return true;
+}
+
+function queueProjectRuntimeOperation(projectId, operation) {
+  if (!projectId) return Promise.resolve(null);
+  const previous = runtimeOperationChains.get(projectId) || Promise.resolve();
+  const next = previous.catch(() => null).then(operation);
+  const tracked = next.finally(() => {
+    if (runtimeOperationChains.get(projectId) === tracked) runtimeOperationChains.delete(projectId);
+  });
+  runtimeOperationChains.set(projectId, tracked);
+  return tracked;
+}
+
+async function connectActiveProjectRuntime(set, get, projectId, runtime) {
+  if (projectId !== get().activeProjectId) return false;
+  const nextBase = `http://127.0.0.1:${runtime.port}`;
+  setApiBase(nextBase);
+  set({ apiBase: nextBase });
+  setAuthToken(null);
+  if (!runtime.password) return true;
+
+  try {
+    await requestCodeBuddy(`${nextBase}/?password=${encodeURIComponent(runtime.password)}`, {
+      headers: { 'X-CodeBuddy-Request': '1' },
+      credentials: 'include',
+    });
+    const loginResult = await apiAuthLogin(runtime.password, {
+      baseUrl: nextBase,
+      persistToken: false,
+    });
+    if (projectId !== get().activeProjectId) return false;
+    if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
+    setAuthToken(loginResult.token || null);
+    return true;
+  } catch (error) {
+    if (projectId !== get().activeProjectId) return false;
+    throw error;
+  }
 }
 
 function emptyThreadRuntime() {
@@ -558,6 +598,7 @@ export const useStore = create((set, get) => ({
         runtimePort: null,
         runtimePid: null,
         runtimeError: null,
+        runtimeStartedAt: null,
       }];
     }));
     const restoredThreadRuntime = Object.fromEntries(Object.entries(loaded.threadsById).map(([id, item]) => [
@@ -1387,82 +1428,85 @@ export const useStore = create((set, get) => ({
   },
 
   async ensureProjectRuntime(projectId = get().activeProjectId) {
-    const project = get().projectsById[projectId];
-    if (!project || !window.electronAPI?.ensureProjectRuntime) return null;
-    get().applyProjectRuntimeStatus({ projectId, status: 'starting' });
-    try {
-      const runtime = await window.electronAPI.ensureProjectRuntime({
-        projectId,
-        cwd: project.workspacePath,
-      });
-      if (projectId === get().activeProjectId) {
-        const nextBase = `http://127.0.0.1:${runtime.port}`;
-        setApiBase(nextBase);
-        set({ apiBase: nextBase });
-        if (runtime.password) {
-          await requestCodeBuddy(`/?password=${encodeURIComponent(runtime.password)}`, {
-            headers: { 'X-CodeBuddy-Request': '1' },
-            credentials: 'include',
-          });
-          setAuthToken(null);
-          const loginResult = await apiAuthLogin(runtime.password);
-          if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
+    return queueProjectRuntimeOperation(projectId, async () => {
+      const project = get().projectsById[projectId];
+      if (!project || !window.electronAPI?.ensureProjectRuntime) return null;
+      get().applyProjectRuntimeStatus({ projectId, status: 'starting' });
+      try {
+        const runtime = await window.electronAPI.ensureProjectRuntime({
+          projectId,
+          cwd: project.workspacePath,
+        });
+        await connectActiveProjectRuntime(set, get, projectId, runtime);
+        get().applyProjectRuntimeStatus(runtime);
+        return runtime;
+      } catch (error) {
+        const stopped = get().projectsById[projectId]?.runtimeStatus === 'stopped';
+        if (/start cancelled/i.test(error.message || '') || stopped) return null;
+        get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
+        if (projectId === get().activeProjectId) {
+          set({ connectionState: 'error', error: `项目运行时启动失败: ${error.message}` });
         }
+        return null;
       }
-      get().applyProjectRuntimeStatus(runtime);
-      return runtime;
-    } catch (error) {
-      const stopped = get().projectsById[projectId]?.runtimeStatus === 'stopped';
-      if (/start cancelled/i.test(error.message || '') || stopped) return null;
-      get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
-      if (projectId === get().activeProjectId) {
-        set({ connectionState: 'error', error: `项目运行时启动失败: ${error.message}` });
-      }
-      return null;
-    }
+    });
   },
 
   async stopProjectRuntime(projectId = get().activeProjectId) {
-    if (!projectId || !window.electronAPI?.stopProjectRuntime) return false;
-    await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
-    if (projectId === get().activeProjectId) {
-      setAcpSessionToken(null);
-      set({ connectionState: 'disconnected' });
-    }
-    const runtime = await window.electronAPI.stopProjectRuntime(projectId);
-    get().applyProjectRuntimeStatus(runtime || { projectId, status: 'stopped' });
-    return true;
+    return queueProjectRuntimeOperation(projectId, async () => {
+      if (!projectId || !window.electronAPI?.stopProjectRuntime) return false;
+      await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+      if (projectId === get().activeProjectId) {
+        setAcpSessionToken(null);
+        setAuthToken(null);
+        set({ connectionState: 'disconnected' });
+      }
+      try {
+        const runtime = await window.electronAPI.stopProjectRuntime(projectId);
+        get().applyProjectRuntimeStatus(runtime || { projectId, status: 'stopped' });
+        return true;
+      } catch (error) {
+        set((state) => {
+          const project = state.projectsById[projectId];
+          if (!project) return {};
+          return {
+            projectsById: {
+              ...state.projectsById,
+              [projectId]: { ...project, runtimeError: error.message || '停止运行时失败' },
+            },
+          };
+        });
+        if (projectId === get().activeProjectId) {
+          set({ connectionState: 'error', error: `停止项目运行时失败: ${error.message}` });
+        }
+        return false;
+      }
+    });
   },
 
   async restartProjectRuntime(projectId = get().activeProjectId) {
-    const project = get().projectsById[projectId];
-    if (!project || !window.electronAPI?.restartProjectRuntime) return false;
-    await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
-    if (projectId === get().activeProjectId) setAcpSessionToken(null);
-    try {
-      const runtime = await window.electronAPI.restartProjectRuntime({ projectId, cwd: project.workspacePath });
-      get().applyProjectRuntimeStatus(runtime);
+    return queueProjectRuntimeOperation(projectId, async () => {
+      const project = get().projectsById[projectId];
+      if (!project || !window.electronAPI?.restartProjectRuntime) return false;
+      await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
       if (projectId === get().activeProjectId) {
-        const nextBase = `http://127.0.0.1:${runtime.port}`;
-        setApiBase(nextBase);
-        set({ apiBase: nextBase });
-        if (runtime.password) {
-          await requestCodeBuddy(`/?password=${encodeURIComponent(runtime.password)}`, {
-            headers: { 'X-CodeBuddy-Request': '1' },
-            credentials: 'include',
-          });
-          setAuthToken(null);
-          const loginResult = await apiAuthLogin(runtime.password);
-          if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
-        }
-        return get().initializeActiveThread(undefined);
+        setAcpSessionToken(null);
+        setAuthToken(null);
       }
-      return true;
-    } catch (error) {
-      get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
-      set({ error: `重启项目运行时失败: ${error.message}` });
-      return false;
-    }
+      try {
+        const runtime = await window.electronAPI.restartProjectRuntime({ projectId, cwd: project.workspacePath });
+        get().applyProjectRuntimeStatus(runtime);
+        const connected = await connectActiveProjectRuntime(set, get, projectId, runtime);
+        if (connected && projectId === get().activeProjectId) {
+          return get().initializeActiveThread(undefined);
+        }
+        return true;
+      } catch (error) {
+        get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
+        if (projectId === get().activeProjectId) set({ error: `重启项目运行时失败: ${error.message}` });
+        return false;
+      }
+    });
   },
 
   async initializeWorkspace() {
