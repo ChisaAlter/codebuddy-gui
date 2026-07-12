@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaTasksView() {
-  const { scheduledTasks, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
+  const { scheduledTasks, scheduledTasksError, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
   const [cron, setCron] = useState('0 9 * * *');
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');
   const [creating, setCreating] = useState(false);
@@ -62,9 +62,9 @@ export default function ReplicaTasksView() {
         </div>
 
         {/* Error banner */}
-        {localError && (
+        {(localError || scheduledTasksError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {localError}
+            {localError || scheduledTasksError}
             <button className="ml-3 underline text-xs" onClick={() => { setLocalError(null); refreshTasks(); }}>重试</button>
           </div>
         )}
@@ -89,7 +89,7 @@ export default function ReplicaTasksView() {
               />
             </div>
             <button
-              onClick={handleCreate} disabled={creating || !sessionId}
+              onClick={handleCreate} disabled={creating || !sessionId || !cron.trim() || !prompt.trim()}
               className="rounded-md bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:brightness-110 transition-all disabled:opacity-40"
             >
               {creating ? '创建中...' : '创建任务'}

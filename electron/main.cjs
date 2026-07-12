@@ -174,7 +174,16 @@ async function createWindow() {
   mainWindow.on('move', saveWindowState);
   mainWindow.on('maximize', () => { lastNormalBounds = mainWindow.getNormalBounds(); saveWindowState(); });
   mainWindow.on('unmaximize', saveWindowState);
-  mainWindow.on('close', saveWindowState);
+  mainWindow.on('close', (event) => {
+    saveWindowState();
+    if (!reallyQuitting && tray) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 
   mainWindow.loadURL(entry).catch((error) => {
     logStartup(`loadURL failed: ${error?.message || error}`);
@@ -327,7 +336,7 @@ ipcMain.handle('git:run', async (_event, payload = {}) => {
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
     proc.on('error', (error) => resolve({ ok: false, error: error.message }));
     proc.on('close', (code) => {
-      if (code === 0) resolve({ ok: true, output: stdout.trim() });
+      if (code === 0) resolve({ ok: true, output: stdout });
       else resolve({ ok: false, error: stderr.trim() || stdout.trim() || `git exited ${code}` });
     });
   });
@@ -586,13 +595,15 @@ process.on('unhandledRejection', (reason) => {
 // 单实例锁（P0-2）：避免多开实例 spawn 多个 codebuddy --serve 抢端口/资源
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  dialog.showErrorBox('CodeBuddy GUI 已在运行', '另一个实例已在运行。请使用已有窗口，或先关闭它再启动。');
   app.quit();
 } else {
   app.on('second-instance', () => {
     // 新实例触发：focus/restore 已有窗口
-    if (mainWindow) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow();
+    } else {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
     }
   });
@@ -650,10 +661,10 @@ app.whenReady().then(async () => {
   // 立即创建窗口；CodeBuddy 运行时由渲染进程按当前项目惰性启动。
   createWindow();
 
-  // Tray 图标：关窗口不退出，最小化到系统托盘，用户从托盘右键退出才真 quit
-  // 没有真图标资源时用空 Tray（Electron 允许），点托盘显窗口
+  // Tray 图标：关窗口不退出，最小化到系统托盘，用户从托盘菜单退出才真 quit
   try {
-    tray = new Tray('');
+    const trayIconPath = path.join(__dirname, '..', 'build', 'icon.png');
+    tray = new Tray(trayIconPath);
     tray.setToolTip('CodeBuddy GUI');
     tray.on('click', () => {
       if (!mainWindow || mainWindow.isDestroyed()) {
@@ -664,14 +675,12 @@ app.whenReady().then(async () => {
         mainWindow.focus();
       }
     });
-    tray.on('right-click', () => {
-      const menu = Menu.buildFromTemplate([
-        { label: '显示窗口', click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
-        { type: 'separator' },
-        { label: '退出', click: () => { reallyQuitting = true; app.quit(); } },
-      ]);
-      tray.popUpContextMenu(menu);
-    });
+    const menu = Menu.buildFromTemplate([
+      { label: '显示窗口', click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
+      { type: 'separator' },
+      { label: '退出', click: () => { reallyQuitting = true; app.quit(); } },
+    ]);
+    tray.setContextMenu(menu);
     logStartup('Tray icon created');
   } catch (err) {
     logStartup(`Tray creation failed: ${err.message}`);
@@ -704,11 +713,8 @@ app.on('before-quit', () => {
 // window-all-closed 在 quit 链里只是被动确认——reallyQuitting 已被 before-quit 设 true，
 // 非 darwin 走 app.quit() 是幂等（quit 已发起），darwin 不再 quit 留给 activate 兜底
 app.on('window-all-closed', () => {
-  if (reallyQuitting) {
-    if (process.platform !== 'darwin') app.quit();
-    return;
-  }
-  // 普通关窗口：不 quit，保留托盘供用户重开
+  if (!reallyQuitting && tray) return;
+  if (process.platform !== 'darwin') app.quit();
 });
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();

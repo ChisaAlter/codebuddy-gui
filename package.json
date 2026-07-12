@@ -2,6 +2,11 @@
   "name": "codebuddy-gui",
   "version": "0.1.0",
   "description": "Multi-project desktop client for CodeBuddy CLI",
+  "author": "ChisaAlter",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ChisaAlter/codebuddy-gui.git"
+  },
   "main": "electron/main.cjs",
   "license": "MIT",
   "type": "module",
@@ -73,6 +78,8 @@
     "files": [
       "out/**/*",
       "electron/**/*",
+      "build/icon.png",
+      "LICENSE",
       "package.json"
     ]
   }

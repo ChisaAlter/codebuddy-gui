@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useStore } from '../store';
 import { PtySocket } from '../lib/pty';
 
-function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
+function TerminalPane({ pane, active, canSplit, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -153,8 +153,8 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
           {pane.sessionId ? <span className="text-[10px] opacity-70">{pane.sessionId.slice(0, 8)}</span> : null}
         </div>
         <div className="flex items-center gap-1">
-          <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); onSplitRight(); }}>右分</button>
-          <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); onSplitDown(); }}>下分</button>
+          <button className="btn-ghost" disabled={!canSplit} onClick={(e) => { e.stopPropagation(); onSplitRight(); }}>右分</button>
+          <button className="btn-ghost" disabled={!canSplit} onClick={(e) => { e.stopPropagation(); onSplitDown(); }}>下分</button>
           <div className="relative group">
             <button className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 7.5h3V7h-3v.5zM5 9l.5 1h5l.5-1H5zM8 1a7 7 0 100 14A7 7 0 008 1zm0 12.5A5.5 5.5 0 1113.5 8 5.5 5.5 0 018 13.5z"/></svg>
@@ -213,10 +213,25 @@ export default function ReplicaTerminalView() {
         const active = panes.find(p => p.id === activePaneId);
         if (active) closePane(active.id);
       }
+      if (e.ctrlKey && e.shiftKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        splitPane(activePaneId, 'right');
+      }
+      if (e.ctrlKey && e.shiftKey && e.key === 'ArrowDown') {
+        e.preventDefault();
+        splitPane(activePaneId, 'down');
+      }
+      if (e.altKey && /^[1-3]$/.test(e.key)) {
+        const pane = panes[Number(e.key) - 1];
+        if (pane) {
+          e.preventDefault();
+          setActivePane(pane.id);
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [panes, activePaneId, splitPane, closePane]);
+  }, [panes, activePaneId, splitPane, closePane, setActivePane]);
 
   const reconnectPane = async (paneId) => {
     const pane = panes.find(p => p.id === paneId);
@@ -238,7 +253,10 @@ export default function ReplicaTerminalView() {
     }
   };
 
-  const gridClass = useMemo(() => panes.length > 1 ? 'grid-cols-2' : 'grid-cols-1', [panes.length]);
+  const gridClass = useMemo(() => {
+    if (panes.length <= 1) return 'grid-cols-1';
+    return panes[1]?.split === 'down' ? 'grid-cols-1 grid-rows-2' : 'grid-cols-2 grid-rows-1';
+  }, [panes]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-black text-white">
@@ -268,6 +286,7 @@ export default function ReplicaTerminalView() {
               key={pane.id}
               pane={pane}
               active={pane.id === activePaneId}
+              canSplit={panes.length < 2}
               onFocus={() => setActivePane(pane.id)}
               onSplitRight={() => splitPane(pane.id, 'right')}
               onSplitDown={() => splitPane(pane.id, 'down')}

@@ -222,7 +222,9 @@ export default function ReplicaChangesView() {
                     onClick={() => setSelected(item)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate">{item.path}</span>
+                      <span className="truncate" title={item.originalPath ? `${item.originalPath} → ${item.path}` : item.path}>
+                        {item.originalPath ? `${item.originalPath} → ${item.path}` : item.path}
+                      </span>
                       <span className="rounded bg-[var(--color-bg-card)] px-2 py-0.5 text-[10px]">{item.indexStatus}{item.worktreeStatus}</span>
                     </div>
                   </button>

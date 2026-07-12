@@ -17,6 +17,40 @@ import ReplicaRemoteControlView from './components/ReplicaRemoteControlView';
 import ReplicaInstancesView from './components/ReplicaInstancesView';
 import ReplicaMonitorView from './components/ReplicaMonitorView';
 
+function WindowControls({ height = 'h-12' }) {
+  return (
+    <div className={`titlebar-no-drag ml-1 flex ${height} items-stretch border-l border-[var(--color-border-default)]`}>
+      <button
+        type="button"
+        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        onClick={() => window.electronAPI?.windowMinimize?.()}
+        title="最小化"
+        aria-label="最小化窗口"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><path d="M2 8.5h8" /></svg>
+      </button>
+      <button
+        type="button"
+        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        onClick={() => window.electronAPI?.windowMaximize?.()}
+        title="最大化或还原"
+        aria-label="最大化或还原窗口"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><rect x="2.25" y="2.25" width="7.5" height="7.5" /></svg>
+      </button>
+      <button
+        type="button"
+        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[#c42b1c] hover:text-white"
+        onClick={() => window.electronAPI?.windowClose?.()}
+        title="关闭到托盘"
+        aria-label="关闭窗口到系统托盘"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
+      </button>
+    </div>
+  );
+}
+
 function LoginView() {
   const authSubmitting = useStore((s) => s.authSubmitting);
   const authError = useStore((s) => s.authError);
@@ -31,7 +65,10 @@ function LoginView() {
   };
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+      <div className="titlebar-drag absolute inset-x-0 top-0 flex h-10 justify-end border-b border-[var(--color-border-default)]">
+        <WindowControls height="h-10" />
+      </div>
       <div className="w-full max-w-sm rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
         <div className="mb-5 flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white"
@@ -125,9 +162,9 @@ function StatusBar() {
   const activeProjectId = useStore((s) => s.activeProjectId);
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
+    <div className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] pl-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
       <button
-        className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
+        className="titlebar-no-drag flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
         title="Toggle sidebar"
       >
@@ -146,7 +183,7 @@ function StatusBar() {
           </>
         ) : null}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="titlebar-no-drag flex items-center gap-2">
         <span
           className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]"
           title={apiBase || '未连接'}
@@ -175,6 +212,7 @@ function StatusBar() {
             <path d="M8 2v12M2 8h12" />
           </svg>
         </button>
+        <WindowControls />
       </div>
     </div>
   );
@@ -235,6 +273,18 @@ function MainContent() {
   }
 }
 
+function GlobalErrorNotice() {
+  const error = useStore((state) => state.error);
+  const clearError = useStore((state) => state.clearError);
+  if (!error) return null;
+  return (
+    <div className="fixed bottom-5 right-5 z-[100] flex max-w-[440px] items-start gap-3 rounded-md border border-[rgba(239,68,68,0.45)] bg-[var(--color-bg-secondary)] px-4 py-3 text-sm text-[var(--color-accent-red)] shadow-xl" role="alert">
+      <span className="whitespace-pre-wrap break-words">{String(error)}</span>
+      <button className="btn-ghost shrink-0 px-2 py-1 text-xs" onClick={clearError} aria-label="关闭错误提示">关闭</button>
+    </div>
+  );
+}
+
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
   const settingsTheme = useStore((s) => s.settings?.theme);
@@ -281,6 +331,7 @@ export default function App() {
             <StatusBar />
             <MainContent />
           </div>
+          <GlobalErrorNotice />
         </>
       )}
     </div>

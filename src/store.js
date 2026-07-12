@@ -29,6 +29,8 @@ const threadTimelinePersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
 let fileDirectoryRequestId = 0;
 let filePreviewRequestId = 0;
+let fileSearchRequestId = 0;
+let fileNameSearchRequestId = 0;
 
 function emptyThreadRuntime() {
   return {
@@ -135,6 +137,8 @@ function confirmLeaveDirtyFile(state) {
 function resetFileWorkspace(path) {
   fileDirectoryRequestId += 1;
   filePreviewRequestId += 1;
+  fileSearchRequestId += 1;
+  fileNameSearchRequestId += 1;
   return {
     fileCwd: path || '.',
     fileEntries: [],
@@ -145,6 +149,12 @@ function resetFileWorkspace(path) {
     fileDirty: false,
     fileSaving: false,
     filePreviewLoading: false,
+    fileSearchQuery: '',
+    fileSearchResults: [],
+    fileSearching: false,
+    fileNameQuery: '',
+    fileNameResults: [],
+    fileNameSearching: false,
   };
 }
 
@@ -197,6 +207,7 @@ export const useStore = create((set, get) => ({
   statsError: null,
   statsLoading: false,
   scheduledTasks: [],
+  scheduledTasksError: null,
   taskTemplates: [],
   taskTemplatesError: null,
   taskTemplatesLoading: false,
@@ -472,6 +483,10 @@ export const useStore = create((set, get) => ({
   setRoute(route) {
     setHashRoute(route);
     set({ route });
+  },
+
+  clearError() {
+    set({ error: null });
   },
 
   getModelDisplayName() {
@@ -1304,11 +1319,15 @@ export const useStore = create((set, get) => ({
   async runFileSearch() {
     const query = get().fileSearchQuery.trim();
     if (!query) return;
+    const requestId = ++fileSearchRequestId;
+    const projectId = get().activeProjectId;
     set({ fileSearching: true });
     try {
       const results = await fsSearchContent({ query, cwd: get().fileCwd || '.' });
+      if (requestId !== fileSearchRequestId || projectId !== get().activeProjectId) return;
       set({ fileSearchResults: results, fileSearching: false });
     } catch (error) {
+      if (requestId !== fileSearchRequestId || projectId !== get().activeProjectId) return;
       set({ fileSearchResults: [], fileSearching: false, error: error.message });
     }
   },
@@ -1324,11 +1343,15 @@ export const useStore = create((set, get) => ({
   async runFileNameSearch() {
     const query = get().fileNameQuery.trim();
     if (!query) { set({ fileNameResults: [], fileNameSearching: false }); return; }
+    const requestId = ++fileNameSearchRequestId;
+    const projectId = get().activeProjectId;
     set({ fileNameSearching: true });
     try {
       const items = await fsSearchFiles(query, { limit: 15 });
+      if (requestId !== fileNameSearchRequestId || projectId !== get().activeProjectId) return;
       set({ fileNameResults: items, fileNameSearching: false });
     } catch (error) {
+      if (requestId !== fileNameSearchRequestId || projectId !== get().activeProjectId) return;
       set({ fileNameResults: [], fileNameSearching: false, error: error.message });
     }
   },
@@ -1451,14 +1474,19 @@ export const useStore = create((set, get) => ({
   },
 
   splitPane(paneId, direction) {
+    if (get().terminalPanes.length >= 2) return false;
     set((state) => {
-      const next = makePane(direction === 'right' ? 'Terminal Split Right' : 'Terminal Split Down');
+      const next = {
+        ...makePane(direction === 'right' ? 'Terminal Split Right' : 'Terminal Split Down'),
+        split: direction === 'down' ? 'down' : 'right',
+      };
       return {
         terminalPanes: [...state.terminalPanes, next],
         activePaneId: next.id,
       };
     });
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
   closePane(paneId) {
@@ -1661,8 +1689,10 @@ export const useStore = create((set, get) => ({
     // 2. 后端单项回写（对照源真实路径，失败不阻塞前端已更新态）
     try {
       await updateSettingByKeyApi(key, value, 'user');
+      return true;
     } catch (err) {
       set({ error: `设置已保存在本机，但 CodeBuddy 后端未保存: ${err.message}` });
+      return false;
     }
   },
 
@@ -1831,9 +1861,9 @@ export const useStore = create((set, get) => ({
   async refreshTasks() {
     try {
       const tasks = await fetchScheduledTasks(get().sessionId);
-      set({ scheduledTasks: tasks, error: null });
-    } catch (_) {
-      set({ scheduledTasks: [] });
+      set({ scheduledTasks: tasks, scheduledTasksError: null });
+    } catch (error) {
+      set({ scheduledTasks: [], scheduledTasksError: error.message || '加载定时任务失败' });
     }
     // 同时刷任务模板（失败不阻塞定时任务）
     get().refreshTaskTemplates?.();
@@ -1979,11 +2009,18 @@ export const useStore = create((set, get) => ({
 
   async refreshFileEntries() {
     const cwd = get().fileCwd;
+    const requestId = ++fileDirectoryRequestId;
+    const projectId = get().activeProjectId;
+    set({ fileLoading: true });
     try {
       const entries = await fsList(cwd, 1);
+      if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
       set({ fileEntries: entries, fileLoading: false });
+      return true;
     } catch (error) {
+      if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
       set({ fileEntries: [], fileLoading: false, error: error.message });
+      return false;
     }
   },
 

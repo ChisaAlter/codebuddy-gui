@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../store';
 
 function Toggle({ value, onChange }) {
@@ -76,13 +76,76 @@ function SettingRow({ label, desc, control }) {
   );
 }
 
+function JsonObjectEditor({ value, onSave }) {
+  const serialized = JSON.stringify(value || {}, null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(serialized);
+  }, [serialized]);
+
+  const save = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(draft || '{}');
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('请输入 JSON 对象');
+    } catch (error) {
+      setMessage(error.message || 'JSON 格式无效');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const saved = await onSave(parsed);
+    setSaving(false);
+    setMessage(saved === false ? '后端保存失败，本机值已保留' : '已保存');
+  };
+
+  return (
+    <div className="w-72">
+      <textarea
+        rows={5}
+        value={draft}
+        onChange={(event) => { setDraft(event.target.value); setMessage(''); }}
+        className="w-full resize-y rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
+        aria-label="环境变量 JSON"
+      />
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {message ? <span className={`mr-auto text-[11px] ${message === '已保存' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'}`}>{message}</span> : null}
+        <button className="btn-primary px-3 py-1 text-xs" disabled={saving || draft === serialized} onClick={save}>
+          {saving ? '保存中...' : '保存'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
-    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting,
+    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting, refreshInfo, refreshSettings,
   } = useStore();
+  const [loadError, setLoadError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   const isLoading = connectionState !== 'error' && (!infoLoaded || !settingsLoaded);
+
+  const reload = async () => {
+    setRefreshing(true);
+    setLoadError('');
+    try {
+      await Promise.all([refreshInfo(), refreshSettings()]);
+    } catch (error) {
+      setLoadError(error.message || '设置加载失败');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!infoLoaded || !settingsLoaded) reload();
+  }, []);
 
   const modelOptions = (models || []).map((m) => ({
     value: m.id || m.modelId,
@@ -98,6 +161,13 @@ export default function ReplicaSettingsView() {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-2xl px-8 py-8">
         <h1 className="mb-8 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
+
+        {loadError ? (
+          <div className="mb-6 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-[var(--color-accent-red)]">
+            <span>{loadError}</span>
+            <button className="btn-ghost px-3 py-1 text-xs" disabled={refreshing} onClick={reload}>{refreshing ? '重试中...' : '重试'}</button>
+          </div>
+        ) : null}
 
         {isLoading ? (
           <>
@@ -207,8 +277,8 @@ export default function ReplicaSettingsView() {
                 <option value="low">低</option>
                 <option value="medium">中</option>
                 <option value="high">高</option>
-                <option value="very_high">极高</option>
-                <option value="maximum">最大</option>
+                <option value="xhigh">极高</option>
+                <option value="max">最大</option>
               </select>
             } />
             <SettingRow label="始终启用深度思考" control={
@@ -265,7 +335,7 @@ export default function ReplicaSettingsView() {
             <SettingRow label="自动更新" control={<Toggle value={!!settings?.autoUpdates} onChange={(v) => updateSetting('autoUpdates', v)} />} />
             <SettingRow label="启用全部项目 MCP" control={<Toggle value={!!settings?.enableAllProjectMcpServers} onChange={(v) => updateSetting('enableAllProjectMcpServers', v)} />} />
             <SettingRow label="环境变量" desc="应用于每个会话的环境变量 (JSON)" control={
-              <TextInput value={settings?.envVars ? JSON.stringify(settings.envVars) : '{}'} onChange={(v) => { try { updateSetting('envVars', JSON.parse(v)); } catch (_) {} }} />
+              <JsonObjectEditor value={settings?.env} onSave={(value) => updateSetting('env', value)} />
             } />
           </div>
         </div>

@@ -478,12 +478,6 @@ export default function ReplicaWorkspaceView() {
                 }}>
                 打开
               </button>
-              {contextMenu.entry.type === 'file' && (
-                <button className="w-full text-left px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-                  onClick={() => { setSelectedFile(contextMenu.entry); setContextMenu(null); }}>
-                  预览
-                </button>
-              )}
               <button className="w-full text-left px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
                 onClick={() => startRename(contextMenu.entry)}>
                 重命名

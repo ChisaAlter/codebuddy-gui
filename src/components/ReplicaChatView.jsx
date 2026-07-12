@@ -300,24 +300,26 @@ export default function ReplicaChatView() {
     return () => clearTimeout(timer);
   }, [chatError]);
   const modeOptions = useMemo(() => {
-    const items = [
-      { id: 'default', name: '始终询问' },
-      { id: 'acceptEdits', name: '接受编辑' },
-      { id: 'plan', name: '计划模式' },
-      { id: 'bypassPermissions', name: '跳过权限' },
-      { id: 'dontAsk', name: '免确认' },
-      { id: 'auto', name: '自动' },
-    ];
-    // 后端返回的 mode 也加入列表
-    if (Array.isArray(modes)) {
-      for (const m of modes) {
-        if (!items.find((i) => i.id === (m.id || m.modeId))) {
-          items.push({ id: m.id || m.modeId, name: m.name || m.id || m.modeId });
-        }
-      }
+    const labels = {
+      default: '始终询问',
+      acceptEdits: '接受编辑',
+      plan: '计划模式',
+      bypassPermissions: '跳过权限',
+      dontAsk: '免确认',
+      auto: '自动',
+    };
+    const items = (Array.isArray(modes) ? modes : [])
+      .map((mode) => {
+        const id = mode.id || mode.modeId;
+        return id ? { id, name: mode.name || labels[id] || id } : null;
+      })
+      .filter(Boolean);
+    if (currentMode && !items.some((item) => item.id === currentMode)) {
+      items.unshift({ id: currentMode, name: labels[currentMode] || currentMode });
     }
+    if (items.length === 0) items.push({ id: 'default', name: labels.default });
     return items;
-  }, [modes]);
+  }, [currentMode, modes]);
   const currentModeName = modeOptions.find((m) => m.id === currentMode)?.name || currentMode || '始终询问';
 
   const permissionLabel = (() => {

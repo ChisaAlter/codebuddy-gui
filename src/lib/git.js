@@ -41,16 +41,26 @@ export async function runGitRemote(command, args = {}) {
 }
 
 export async function getGitStatus() {
-  const output = await runGit(['status', '--short']);
-  return output
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => ({
-      raw: line,
-      indexStatus: line.slice(0, 1),
-      worktreeStatus: line.slice(1, 2),
-      path: line.slice(3).trim(),
-    }));
+  const output = await runGit(['status', '--short', '-z']);
+  const fields = output.split('\0').filter(Boolean);
+  const items = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    const indexStatus = field.slice(0, 1);
+    const worktreeStatus = field.slice(1, 2);
+    const path = field.slice(3);
+    const renamed = ['R', 'C'].includes(indexStatus) || ['R', 'C'].includes(worktreeStatus);
+    const originalPath = renamed ? (fields[index + 1] || null) : null;
+    if (renamed) index += 1;
+    items.push({
+      raw: field,
+      indexStatus,
+      worktreeStatus,
+      path,
+      originalPath,
+    });
+  }
+  return items;
 }
 
 export async function getCurrentBranch() {
@@ -65,7 +75,12 @@ export async function getBranches() {
 }
 
 export async function getDiff(path) {
-  return await runGit(['diff', '--', path]);
+  const [staged, unstaged] = await Promise.all([
+    runGit(['diff', '--cached', '--', path]),
+    runGit(['diff', '--', path]),
+  ]);
+  if (staged && unstaged) return `STAGED CHANGES\n${staged}\n\nUNSTAGED CHANGES\n${unstaged}`;
+  return staged || unstaged;
 }
 
 export async function stageFile(path) {
