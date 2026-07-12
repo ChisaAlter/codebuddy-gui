@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect } from 'react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
+import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon.svg';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
@@ -292,6 +293,31 @@ function GlobalErrorNotice() {
   );
 }
 
+function DirtyFileConfirmDialog() {
+  const confirmation = useStore((state) => state.dirtyFileConfirmation);
+  const resolve = useStore((state) => state.resolveDirtyFileConfirmation);
+
+  return (
+    <ActionConfirmDialog
+      open={Boolean(confirmation)}
+      title="放弃未保存修改？"
+      description={confirmation ? (
+        <>
+          <div className="break-all font-medium text-[var(--color-text-primary)]">
+            {confirmation.filePath}
+          </div>
+          <div className="mt-2">
+            {confirmation.actionLabel}将丢失当前未保存内容，此操作无法撤销。
+          </div>
+        </>
+      ) : null}
+      confirmLabel="放弃修改并继续"
+      onCancel={() => resolve(false)}
+      onConfirm={() => resolve(true)}
+    />
+  );
+}
+
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
   const settingsTheme = useStore((s) => s.settings?.theme);
@@ -349,6 +375,7 @@ export default function App() {
           <GlobalErrorNotice />
         </>
       )}
+      <DirtyFileConfirmDialog />
     </div>
   );
 }

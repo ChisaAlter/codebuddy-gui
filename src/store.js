@@ -35,6 +35,7 @@ const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
+let dirtyFileConfirmationResolve = null;
 
 function beginScopedRequest(key, state, scope = 'project') {
   const version = (scopedRequestVersions.get(key) || 0) + 1;
@@ -179,9 +180,18 @@ function terminalStateFromProject(project, resetSessions = false) {
   return { panes, activePaneId };
 }
 
-function confirmLeaveDirtyFile(state) {
-  if (!state.fileDirty || !state.selectedFile) return true;
-  return window.confirm(`“${state.selectedFile}”有未保存修改。继续将丢失这些修改，确定吗？`);
+function requestDirtyFileConfirmation(set, get, actionLabel = '继续操作') {
+  const state = get();
+  if (!state.fileDirty || !state.selectedFile) return Promise.resolve(true);
+
+  if (dirtyFileConfirmationResolve) dirtyFileConfirmationResolve(false);
+
+  return new Promise((resolve) => {
+    dirtyFileConfirmationResolve = resolve;
+    set({
+      dirtyFileConfirmation: { filePath: state.selectedFile, actionLabel },
+    });
+  });
 }
 
 function resetFileWorkspace(path) {
@@ -313,12 +323,20 @@ export const useStore = create((set, get) => ({
   fileDirty: false,
   fileSaving: false,
   filePreviewLoading: false,
+  dirtyFileConfirmation: null,
 
   getThreadClient(threadId = get().activeThreadId) {
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project?.runtimePort) return null;
     return conversations.getClient(threadId, `http://127.0.0.1:${project.runtimePort}`);
+  },
+
+  resolveDirtyFileConfirmation(confirmed) {
+    const resolve = dirtyFileConfirmationResolve;
+    dirtyFileConfirmationResolve = null;
+    set({ dirtyFileConfirmation: null });
+    resolve?.(Boolean(confirmed));
   },
 
   patchThreadRuntime(threadId, patch) {
@@ -1008,7 +1026,7 @@ export const useStore = create((set, get) => ({
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project) return false;
     const projectChanged = thread.projectId !== get().activeProjectId;
-    if (projectChanged && !confirmLeaveDirtyFile(get())) return false;
+    if (projectChanged && !await requestDirtyFileConfirmation(set, get, '切换项目')) return false;
     if (projectChanged) await get().persistActiveProjectTerminalState();
     set({
       activeProjectId: project.id,
@@ -1164,7 +1182,7 @@ export const useStore = create((set, get) => ({
   async setWorkspace(path) {
     if (!path) return false;
     const currentProject = activeProject(get());
-    if (currentProject?.workspacePath?.toLowerCase() !== String(path).toLowerCase() && !confirmLeaveDirtyFile(get())) return false;
+    if (currentProject?.workspacePath?.toLowerCase() !== String(path).toLowerCase() && !await requestDirtyFileConfirmation(set, get, '切换工作区')) return false;
     await get().persistActiveProjectTerminalState();
     const normalizedPath = String(path);
     let project = Object.values(get().projectsById).find((item) => (
@@ -1215,7 +1233,7 @@ export const useStore = create((set, get) => ({
   async activateProject(projectId) {
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
-    if (!confirmLeaveDirtyFile(get())) return false;
+    if (!await requestDirtyFileConfirmation(set, get, '切换项目')) return false;
     await get().persistActiveProjectTerminalState();
     let threadId = get().threadOrderByProject[projectId]?.[0] || null;
     let thread = threadId ? get().threadsById[threadId] : null;
@@ -1279,7 +1297,7 @@ export const useStore = create((set, get) => ({
   async removeProject(projectId, options = {}) {
     const project = get().projectsById[projectId];
     if (!project) return false;
-    if (projectId === get().activeProjectId && !options.skipDirtyCheck && !confirmLeaveDirtyFile(get())) return false;
+    if (projectId === get().activeProjectId && !options.skipDirtyCheck && !await requestDirtyFileConfirmation(set, get, '移除当前项目')) return false;
     const previousState = get();
     const threadIds = get().threadOrderByProject[projectId] || [];
     await get().stopProjectRuntime(projectId).catch(() => null);
@@ -1444,7 +1462,7 @@ export const useStore = create((set, get) => ({
   },
 
   async openDirectory(path, options = {}) {
-    if (!options.skipDirtyCheck && !confirmLeaveDirtyFile(get())) return false;
+    if (!options.skipDirtyCheck && !await requestDirtyFileConfirmation(set, get, '打开其他目录')) return false;
     const requestId = ++fileDirectoryRequestId;
     const projectId = get().activeProjectId;
     set({
@@ -1470,7 +1488,7 @@ export const useStore = create((set, get) => ({
   },
 
   async openFile(path) {
-    if (path !== get().selectedFile && !confirmLeaveDirtyFile(get())) return false;
+    if (path !== get().selectedFile && !await requestDirtyFileConfirmation(set, get, '打开其他文件')) return false;
     const requestId = ++filePreviewRequestId;
     const projectId = get().activeProjectId;
     set({
