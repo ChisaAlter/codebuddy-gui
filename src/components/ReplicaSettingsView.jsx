@@ -189,27 +189,6 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
-        {/* 权限模式 */}
-        <div className="settings-group">
-          <h2 className="settings-heading">权限模式</h2>
-          <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-            <SettingRow label="权限模式" control={
-              <select
-                className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)]"
-                value={currentMode || 'default'}
-                onChange={(e) => setMode(e.target.value)}
-              >
-                <option value="default">默认</option>
-                <option value="acceptEdits">自动通过编辑</option>
-                <option value="plan">规划模式</option>
-                <option value="auto">自动</option>
-                <option value="dontAsk">免打扰</option>
-                <option value="bypassPermissions">跳过权限确认</option>
-              </select>
-            } />
-          </div>
-        </div>
-
         {/* 模型与推理 */}
         <div className="settings-group">
           <h2 className="settings-heading">模型与推理</h2>

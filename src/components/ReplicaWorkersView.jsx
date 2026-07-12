@@ -10,7 +10,7 @@ const STATUS_CONFIG = {
 };
 
 export default function ReplicaWorkersView() {
-  const { workers, refreshWorkers, error, setRoute } = useStore();
+  const { workers, refreshWorkers, workersError, setRoute } = useStore();
   const [refreshing, setRefreshing] = React.useState(false);
   const [expandedPid, setExpandedPid] = React.useState(null);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -74,9 +74,9 @@ export default function ReplicaWorkersView() {
         </div>
 
         {/* Error banner */}
-        {error && (
+        {workersError && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {error}
+            {workersError}
             <button className="ml-3 underline text-xs" onClick={handleRefresh}>重试</button>
           </div>
         )}

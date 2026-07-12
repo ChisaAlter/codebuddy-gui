@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { fetchJson, requestCodeBuddy } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
+import { useStore } from '../store';
 
 async function postJson(path, method = 'POST') {
   const response = await requestCodeBuddy(path, {
@@ -134,6 +135,7 @@ function ChannelCard({ channel, onRefresh }) {
 }
 
 export default function ReplicaRemoteControlView() {
+  const setRoute = useStore((state) => state.setRoute);
   const [channels, setChannels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -315,6 +317,7 @@ export default function ReplicaRemoteControlView() {
         <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
           <div className="text-sm font-medium text-white">安装更多渠道</div>
           <div className="mt-2 text-sm text-[var(--color-text-secondary)]">浏览插件市场，安装第三方渠道插件</div>
+          <button className="btn-ghost mt-3 text-xs" onClick={() => setRoute('plugins')}>打开插件</button>
         </div>
       </div>
     </div>

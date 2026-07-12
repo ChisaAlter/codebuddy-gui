@@ -2,14 +2,14 @@ import React from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, error, marketplaces, pluginError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
+  const { plugins, refreshPlugins, marketplaces, pluginError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all'); // 'all' | 'enabled' | 'disabled'
   const [showInstallModal, setShowInstallModal] = React.useState(false);
   const [installId, setInstallId] = React.useState('');
-  const [installMarketplace, setInstallMarketplace] = React.useState('codebuddy');
+  const [installMarketplace, setInstallMarketplace] = React.useState('');
   const [installing, setInstalling] = React.useState(false);
   const [installMsg, setInstallMsg] = React.useState(null);
   const [actionError, setActionError] = React.useState(null);
@@ -53,7 +53,7 @@ export default function ReplicaPluginsView() {
               className="btn-primary text-xs"
               onClick={() => {
                 setInstallId('');
-                setInstallMarketplace('codebuddy');
+                setInstallMarketplace('');
                 setShowInstallModal(true);
               }}
             >
@@ -74,9 +74,9 @@ export default function ReplicaPluginsView() {
         </div>
 
         {/* Error banner */}
-        {(error || actionError) && (
+        {(pluginError || actionError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {actionError || error}
+            {actionError || pluginError}
             <button className="ml-3 underline text-xs" onClick={() => { setActionError(null); handleRefresh(); }}>重试</button>
           </div>
         )}
@@ -254,10 +254,11 @@ export default function ReplicaPluginsView() {
                     value={installMarketplace}
                     onChange={(e) => setInstallMarketplace(e.target.value)}
                   >
-                    <option value="codebuddy">CodeBuddy</option>
-                    <option value="npm">npm</option>
-                    <option value="github">GitHub</option>
-                    <option value="custom">自定义</option>
+                    <option value="">默认来源</option>
+                    {(marketplaces || []).map((marketplace, index) => {
+                      const id = marketplace.id || marketplace.name || marketplace.marketplaceId || `market-${index}`;
+                      return <option key={id} value={id}>{marketplace.name || id}</option>;
+                    })}
                   </select>
                 </div>
               </div>
@@ -324,7 +325,7 @@ export default function ReplicaPluginsView() {
             />
             <button
               className="btn-primary text-xs"
-              disabled={mktBusy || !newMktId.trim()}
+              disabled={mktBusy || !newMktId.trim() || !newMktUrl.trim()}
               onClick={async () => {
                 setMktBusy(true); setMktMsg(null);
                 const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});

@@ -36,8 +36,6 @@ export const NAV_GROUPS = [
     title: '配置',
     items: [
       { id: 'settings', label: '设置' },
-      { id: 'keybindings', label: '快捷键' },
-      { id: 'docs', label: '文档' },
     ],
   },
 ];

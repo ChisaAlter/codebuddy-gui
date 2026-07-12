@@ -38,4 +38,6 @@ scripts/test/test_all.py
 
 # IDE/工具本地数据
 .workbuddy/
+.omo/
+.codeartsdoer/
 docs/

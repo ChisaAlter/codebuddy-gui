@@ -3,7 +3,7 @@ import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
-import { fetchSessionStats, fetchStats as fetchStatsApi, fetchScheduledTasks, createScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSetting as updateSettingApi, updateSettingByKey as updateSettingByKeyApi, deleteSession as apiDeleteSession, renameSession as apiRenameSession, fetchTaskTemplates as apiFetchTaskTemplates, refreshTaskTemplates as apiRefreshTaskTemplates, uninstallPlugin as apiUninstallPlugin, enablePlugin as apiEnablePlugin, disablePlugin as apiDisablePlugin, installPlugin as apiInstallPlugin, addMarketplace as apiAddMarketplace, removeMarketplace as apiRemoveMarketplace, fetchMarketplaces as apiFetchMarketplaces } from './lib/ops';
+import { fetchSessionStats, fetchStats as fetchStatsApi, fetchScheduledTasks, createScheduledTask, deleteScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSettingByKey as updateSettingByKeyApi, deleteSession as apiDeleteSession, renameSession as apiRenameSession, fetchTaskTemplates as apiFetchTaskTemplates, refreshTaskTemplates as apiRefreshTaskTemplates, uninstallPlugin as apiUninstallPlugin, enablePlugin as apiEnablePlugin, disablePlugin as apiDisablePlugin, installPlugin as apiInstallPlugin, addMarketplace as apiAddMarketplace, removeMarketplace as apiRemoveMarketplace, fetchMarketplaces as apiFetchMarketplaces } from './lib/ops';
 import {
   closeAssistantStream,
   pushUserMessage,
@@ -151,6 +151,7 @@ export const useStore = create((set, get) => ({
   availableCommands: [],
   sessions: [],
   workers: [],
+  workersError: null,
   plugins: [],
   marketplaces: [],
   pluginError: null,
@@ -1619,8 +1620,7 @@ export const useStore = create((set, get) => ({
     try {
       await updateSettingByKeyApi(key, value, 'user');
     } catch (err) {
-      // 兜底：单项路径失败时退回整体 PUT /settings（旧路径），避免后端无单项端点时静默丢写
-      try { await updateSettingApi(key, value); } catch (_) {}
+      set({ error: `设置已保存在本机，但 CodeBuddy 后端未保存: ${err.message}` });
     }
   },
 
@@ -1666,8 +1666,14 @@ export const useStore = create((set, get) => ({
   },
 
   async refreshWorkers() {
-    const payload = await fetchJson('/api/v1/workers');
-    set({ workers: normalizeWorkers(payload) });
+    try {
+      const payload = await fetchJson('/api/v1/workers');
+      set({ workers: normalizeWorkers(payload), workersError: null });
+      return true;
+    } catch (error) {
+      set({ workers: [], workersError: error.message || '加载 Worker 失败' });
+      return false;
+    }
   },
 
   async refreshPlugins() {
@@ -1783,7 +1789,7 @@ export const useStore = create((set, get) => ({
   async refreshTasks() {
     try {
       const tasks = await fetchScheduledTasks(get().sessionId);
-      set({ scheduledTasks: tasks });
+      set({ scheduledTasks: tasks, error: null });
     } catch (_) {
       set({ scheduledTasks: [] });
     }
@@ -1822,11 +1828,30 @@ export const useStore = create((set, get) => ({
   },
 
   async createTask(cron, prompt) {
+    if (!get().sessionId) throw new Error('当前会话尚未连接');
+    if (!String(cron || '').trim()) throw new Error('Cron 表达式不能为空');
+    if (!String(prompt || '').trim()) throw new Error('提示词不能为空');
     try {
+      set({ error: null });
       await createScheduledTask(get().sessionId, cron, prompt);
       await get().refreshTasks();
+      return true;
     } catch (error) {
       set({ error: error.message });
+      throw error;
+    }
+  },
+
+  async deleteTask(taskId) {
+    if (!taskId) throw new Error('任务 ID 缺失');
+    try {
+      set({ error: null });
+      await deleteScheduledTask(taskId, get().sessionId);
+      await get().refreshTasks();
+      return true;
+    } catch (error) {
+      set({ error: error.message });
+      throw error;
     }
   },
 
@@ -1917,14 +1942,6 @@ export const useStore = create((set, get) => ({
       set({ fileEntries: entries, fileLoading: false });
     } catch (error) {
       set({ fileEntries: [], fileLoading: false, error: error.message });
-    }
-  },
-
-  async syncSettingToBackend(key, value) {
-    try {
-      await updateSetting(key, value);
-    } catch (_) {
-      // 后端同步失败不影响前端状态，静默忽略
     }
   },
 

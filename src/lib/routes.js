@@ -14,8 +14,6 @@ export const ROUTES = [
   'logs',
   'workers',
   'settings',
-  'docs',
-  'keybindings',
 ];
 
 export function parseHashRoute() {

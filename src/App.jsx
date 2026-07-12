@@ -16,8 +16,6 @@ import ReplicaLogsView from './components/ReplicaLogsView';
 import ReplicaRemoteControlView from './components/ReplicaRemoteControlView';
 import ReplicaInstancesView from './components/ReplicaInstancesView';
 import ReplicaMonitorView from './components/ReplicaMonitorView';
-import ReplicaKeybindingsView from './components/ReplicaKeybindingsView';
-import ReplicaDocsView from './components/ReplicaDocsView';
 
 function LoginView() {
   const authSubmitting = useStore((s) => s.authSubmitting);
@@ -111,8 +109,6 @@ const ROUTE_TITLES = {
   monitor: '监控',
   logs: '日志',
   settings: '设置',
-  keybindings: '快捷键',
-  docs: '文档',
   workers: 'Workers',
   metrics: '指标',
 };
@@ -230,8 +226,6 @@ function MainContent() {
     case 'traces': return <ReplicaTracesView />;
     case 'monitor': return <ReplicaMonitorView />;
     case 'logs': return <ReplicaLogsView />;
-    case 'docs': return <ReplicaDocsView />;
-    case 'keybindings': return <ReplicaKeybindingsView />;
     default:
       return (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">

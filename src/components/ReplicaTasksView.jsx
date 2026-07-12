@@ -2,17 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { useStore } from '../store';
 
 export default function ReplicaTasksView() {
-  const { scheduledTasks, sessionId, refreshTasks, createTask, error, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
+  const { scheduledTasks, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
   const [cron, setCron] = useState('0 9 * * *');
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');
   const [creating, setCreating] = useState(false);
   const [localError, setLocalError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshingTemplates, setRefreshingTemplates] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [busyTaskId, setBusyTaskId] = useState(null);
 
   useEffect(() => {
-    setLoading(false);
-  }, []);
+    let active = true;
+    setLoading(true);
+    refreshTasks().finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [sessionId, refreshTasks]);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -32,18 +37,34 @@ export default function ReplicaTasksView() {
     try { await refreshTaskTemplatesNow(); } finally { setRefreshingTemplates(false); }
   };
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setLocalError(null);
+    try { await refreshTasks(); } finally { setRefreshing(false); }
+  };
+
+  const runTaskAction = async (taskId, action) => {
+    setBusyTaskId(taskId);
+    setLocalError(null);
+    try { await action(); } catch (err) { setLocalError(err.message || '任务操作失败'); }
+    finally { setBusyTaskId(null); }
+  };
+
   const tasksList = Array.isArray(scheduledTasks) ? scheduledTasks : [];
   const templatesList = Array.isArray(taskTemplates) ? taskTemplates : [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-3xl px-8 py-8">
-        <h1 className="mb-6 text-lg font-semibold text-[var(--color-text-primary)]">任务</h1>
+        <div className="mb-6 flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">任务</h1>
+          <button className="btn-ghost text-xs" disabled={refreshing} onClick={handleRefresh}>{refreshing ? '刷新中...' : '刷新'}</button>
+        </div>
 
         {/* Error banner */}
-        {(error || localError) && (
+        {localError && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {error || localError}
+            {localError}
             <button className="ml-3 underline text-xs" onClick={() => { setLocalError(null); refreshTasks(); }}>重试</button>
           </div>
         )}
@@ -104,6 +125,21 @@ export default function ReplicaTasksView() {
                     <div className="text-sm text-[var(--color-text-primary)] truncate">{task.prompt || task.name || `任务 ${idx + 1}`}</div>
                     <div className="mt-0.5 text-xs text-[var(--color-text-muted)]">{task.cron || task.schedule || '-'}</div>
                   </div>
+                  {(() => {
+                    const taskId = task.id || task.taskId;
+                    const busy = busyTaskId === taskId;
+                    return taskId ? (
+                      <div className="ml-3 flex shrink-0 items-center gap-1.5">
+                        <button
+                          className="btn-ghost text-xs text-[var(--color-error)]"
+                          disabled={busy}
+                          onClick={() => {
+                            if (window.confirm('确定删除这个定时任务吗？')) runTaskAction(taskId, () => deleteTask(taskId));
+                          }}
+                        >{busy ? '删除中...' : '删除'}</button>
+                      </div>
+                    ) : <span className="ml-3 text-[10px] text-[var(--color-text-muted)]">后端未返回任务 ID</span>;
+                  })()}
                 </div>
               </div>
             ))}

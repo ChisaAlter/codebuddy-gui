@@ -56,8 +56,10 @@ export default function ReplicaMonitorView() {
       setInfo(infoPayload?.data || infoPayload || null);
       setDaemon(daemonPayload?.data || daemonPayload || null);
       setMetrics(metricsPayload?.data || metricsPayload || null);
-      setWorkers(workersPayload?.data || workersPayload || []);
-      setChannels((channelsPayload?.clients || []).filter((item) => !item.hidden));
+      const workerList = workersPayload?.data?.workers || workersPayload?.workers || workersPayload?.data || workersPayload || [];
+      const channelList = channelsPayload?.data?.clients || channelsPayload?.clients || channelsPayload?.data?.channels || channelsPayload?.channels || [];
+      setWorkers(Array.isArray(workerList) ? workerList : []);
+      setChannels((Array.isArray(channelList) ? channelList : []).filter((item) => !item.hidden));
     } catch (err) {
       setError(err.message || '加载失败');
       setAuth(null);

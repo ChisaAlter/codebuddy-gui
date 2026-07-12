@@ -16,6 +16,7 @@ import {
   unstageAll,
   unstageFile,
 } from '../lib/git';
+import { useStore } from '../store';
 
 function DiffBlock({ diff }) {
   if (!diff) {
@@ -37,6 +38,7 @@ function DiffBlock({ diff }) {
 }
 
 export default function ReplicaChangesView() {
+  const workspacePath = useStore((state) => state.workspacePath);
   const [items, setItems] = useState([]);
   const [branch, setBranch] = useState('');
   const [branches, setBranches] = useState([]);
@@ -47,9 +49,11 @@ export default function ReplicaChangesView() {
   const [statusText, setStatusText] = useState('');
   const [commitMessage, setCommitMessage] = useState('');
   const [committing, setCommitting] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   async function loadAll(keepSelection = true) {
     setLoading(true);
+    setLoadError('');
     try {
       const [status, currentBranch, branchList] = await Promise.all([
         getGitStatus(),
@@ -65,6 +69,14 @@ export default function ReplicaChangesView() {
       } else if (!keepSelection) {
         setSelected(null);
       }
+    } catch (error) {
+      const message = error.message || '读取 Git 状态失败';
+      setItems([]);
+      setBranch('');
+      setBranches([]);
+      setSelected(null);
+      setDiff('');
+      setLoadError(/not a git repository/i.test(message) ? '当前文件夹不是 Git 仓库' : message);
     } finally {
       setLoading(false);
     }
@@ -72,7 +84,7 @@ export default function ReplicaChangesView() {
 
   useEffect(() => {
     loadAll(false);
-  }, []);
+  }, [workspacePath]);
 
   useEffect(() => {
     async function loadDiff() {
@@ -120,6 +132,12 @@ export default function ReplicaChangesView() {
     await perform(() => createBranch(name));
   }
 
+  const confirmDiscardAll = () => {
+    if (window.confirm('确定丢弃当前项目中的全部未提交修改吗？此操作无法撤销。')) {
+      perform(() => discardAll());
+    }
+  };
+
   const handleCommit = async () => {
     if (!commitMessage.trim()) return;
     setCommitting(true);
@@ -143,10 +161,10 @@ export default function ReplicaChangesView() {
           <div className="text-sm text-[var(--color-text-primary)]">当前分支: {branch || '-'}</div>
           <div className="mt-1 text-xs text-[var(--color-text-muted)]">{branches.length} 个分支</div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button className="btn-ghost" disabled={busy} onClick={onSwitchBranch}>切换分支</button>
-            <button className="btn-ghost" disabled={busy} onClick={onCreateBranch}>新建分支</button>
-            <button className="btn-ghost" disabled={busy} onClick={() => perform(() => pullBranch())}>Pull</button>
-            <button className="btn-ghost" disabled={busy} onClick={() => perform(() => pushBranch())}>Push</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={onSwitchBranch}>切换分支</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={onCreateBranch}>新建分支</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => pullBranch())}>Pull</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => pushBranch())}>Push</button>
           </div>
           {/* Commit area */}
           <div className="mt-3 space-y-2">
@@ -157,12 +175,12 @@ export default function ReplicaChangesView() {
                 onChange={(e) => setCommitMessage(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleCommit(); } }}
                 placeholder="输入提交信息..."
-                disabled={committing}
+                disabled={committing || !!loadError}
                 className="flex-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-focus-ring)] placeholder:text-[var(--color-text-muted)] disabled:opacity-50"
               />
               <button
                 onClick={handleCommit}
-                disabled={!commitMessage.trim() || committing}
+                disabled={!commitMessage.trim() || committing || !!loadError}
                 className="rounded-md bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {committing ? '提交中...' : '提交'}
@@ -170,9 +188,9 @@ export default function ReplicaChangesView() {
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button className="btn-ghost" disabled={busy} onClick={() => perform(() => stageAll())}>Stage All</button>
-            <button className="btn-ghost" disabled={busy} onClick={() => perform(() => unstageAll())}>Unstage All</button>
-            <button className="btn-ghost" disabled={busy} onClick={() => perform(() => discardAll())}>Discard All</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => stageAll())}>Stage All</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => unstageAll())}>Unstage All</button>
+            <button className="btn-ghost" disabled={busy || !!loadError} onClick={confirmDiscardAll}>Discard All</button>
           </div>
           {statusText && (
             <div className={`mt-2 rounded-md px-3 py-1.5 text-xs ${
@@ -187,6 +205,11 @@ export default function ReplicaChangesView() {
         <div className="flex-1 overflow-y-auto p-2">
           {loading ? (
             <div className="p-3 text-sm text-[var(--color-text-muted)]">加载改动中...</div>
+          ) : loadError ? (
+            <div className="m-2 rounded-md border border-[rgba(248,113,113,0.25)] bg-[rgba(248,113,113,0.08)] p-3 text-sm text-[#f87171]">
+              <div>{loadError}</div>
+              <button className="mt-2 text-xs underline" onClick={() => loadAll(false)}>重新检查</button>
+            </div>
           ) : items.length === 0 ? (
             <div className="p-3 text-sm text-[var(--color-text-muted)]">没有检测到改动</div>
           ) : (
@@ -207,7 +230,9 @@ export default function ReplicaChangesView() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button className="btn-ghost" disabled={busy} onClick={() => perform(() => stageFile(item.path))}>Stage</button>
                       <button className="btn-ghost" disabled={busy} onClick={() => perform(() => unstageFile(item.path))}>Unstage</button>
-                      <button className="btn-ghost" disabled={busy} onClick={() => perform(() => discardFile(item.path))}>Discard</button>
+                      <button className="btn-ghost" disabled={busy} onClick={() => {
+                        if (window.confirm(`确定丢弃 ${item.path} 的未提交修改吗？`)) perform(() => discardFile(item.path));
+                      }}>Discard</button>
                     </div>
                   ) : null}
                 </div>

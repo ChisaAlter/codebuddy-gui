@@ -72,22 +72,13 @@ export async function renameSession(sessionId, name) {
 
 // ===== Scheduled Tasks 管理 =====
 
-/** 更新定时任务 */
-export async function updateScheduledTask(taskId, updates) {
-  const payload = await fetchJson(`/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates),
-  });
-  return payload.data || payload;
-}
-
 /** 删除定时任务 */
-export async function deleteScheduledTask(taskId) {
-  const payload = await fetchJson(`/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}`, {
+export async function deleteScheduledTask(taskId, sessionId) {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  const payload = await fetchJson(`/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}${query}`, {
     method: 'DELETE',
   });
-  return payload.data || payload;
+  return payload?.data || payload || null;
 }
 
 // ===== Channels 管理 =====
@@ -243,12 +234,15 @@ export async function fetchWorkerDetail(pid) {
 
 /** 安装插件 */
 export async function installPlugin(pluginId, marketplace) {
-  const payload = await fetchJson('/api/v1/plugins/install', {
+  const id = String(pluginId || '').trim();
+  if (!id) throw new Error('plugin name 不能为空');
+  const plugin = marketplace && !id.includes('@') ? `${id}@${marketplace}` : id;
+  const payload = await fetchJson('/api/v1/plugins', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pluginId, marketplace }),
+    body: JSON.stringify({ plugin }),
   });
-  return payload.data || payload;
+  return payload?.data || payload || null;
 }
 
 /** 卸载插件（对照源 bundle：POST /api/v1/plugins/uninstall {plugin}）
@@ -282,9 +276,9 @@ export async function enablePlugin(pluginId) {
   const payload = await fetchJson('/api/v1/plugins/enable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pluginId }),
+    body: JSON.stringify({ plugin: pluginId }),
   });
-  return payload.data || payload;
+  return payload?.data || payload || null;
 }
 
 /** 禁用插件 */
@@ -292,9 +286,9 @@ export async function disablePlugin(pluginId) {
   const payload = await fetchJson('/api/v1/plugins/disable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pluginId }),
+    body: JSON.stringify({ plugin: pluginId }),
   });
-  return payload.data || payload;
+  return payload?.data || payload || null;
 }
 
 /**
@@ -370,26 +364,6 @@ export async function searchTraces(params = {}) {
 }
 
 // ===== Settings 管理 =====
-
-/** 更新单个设置项（回写到后端） */
-export async function updateSetting(key, value) {
-  const payload = await fetchJson('/api/v1/settings', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ [key]: value }),
-  });
-  return payload.data || payload;
-}
-
-/** 批量更新设置 */
-export async function updateSettingsBatch(settings) {
-  const payload = await fetchJson('/api/v1/settings/batch', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings),
-  });
-  return payload.data || payload;
-}
 
 /**
  * 单项细粒度写（对照源 bundle：PUT /api/v1/settings/{key}?scope=user body {value}）
@@ -477,24 +451,35 @@ export async function resetKeybindings() {
 /** 获取插件市场列表 */
 export async function fetchMarketplaces() {
   const payload = await fetchJson('/api/v1/plugins/marketplaces');
-  return payload.data?.marketplaces || payload.marketplaces || [];
+  const data = payload?.data ?? payload;
+  if (Array.isArray(data)) return data;
+  return data?.marketplaces || [];
 }
 
 /** 浏览指定市场的插件 */
 export async function browseMarketplace(marketplaceId, query) {
-  const payload = await fetchJson(`/api/v1/plugins/marketplaces/browse?marketplace=${encodeURIComponent(marketplaceId)}&q=${encodeURIComponent(query || '')}`);
-  return payload.data?.plugins || payload.plugins || [];
+  const payload = await fetchJson('/api/v1/plugins/marketplaces/browse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marketplace: marketplaceId }),
+  });
+  const plugins = payload?.data?.plugins || payload?.plugins || payload?.data || [];
+  if (!query || !Array.isArray(plugins)) return Array.isArray(plugins) ? plugins : [];
+  const term = String(query).toLowerCase();
+  return plugins.filter((plugin) => `${plugin.name || ''} ${plugin.description || ''}`.toLowerCase().includes(term));
 }
 
 // ===== Plugin Marketplaces 增删（对照源 bundle）=====
 
-/** 新增/更新插件市场（对照源 POST /api/v1/plugins/marketplaces/{id}） */
+/** 新增插件市场 */
 export async function addMarketplace(marketplaceId, config = {}) {
   if (!marketplaceId) throw new Error('marketplace id 不能为空');
-  const payload = await fetchJson(`/api/v1/plugins/marketplaces/${encodeURIComponent(marketplaceId)}`, {
+  const source = String(config.source || config.url || '').trim();
+  if (!source) throw new Error('marketplace source 不能为空');
+  const payload = await fetchJson('/api/v1/plugins/marketplaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
+    body: JSON.stringify({ name: marketplaceId, source }),
   });
   return payload?.data || payload || null;
 }
