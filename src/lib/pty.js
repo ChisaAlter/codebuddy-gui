@@ -36,6 +36,16 @@ export async function ptySendInputHttp(sessionId, data) {
   }).catch(() => null);
 }
 
+async function ptyResizeHttp(sessionId, cols, rows) {
+  const { requestCodeBuddy } = await import('./acp');
+  await requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(sessionId)}/resize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cols, rows }),
+    timeoutMs: 10000,
+  }).catch(() => null);
+}
+
 export class PtySocket {
   constructor(sessionId) {
     this.sessionId = sessionId;
@@ -46,6 +56,9 @@ export class PtySocket {
     this._reconnectInterval = 1000;
     this._reconnectAttempts = 0;
     this._reconnectTimer = null;
+    this._closedExplicitly = false;
+    this._sseStream = null;
+    this._transport = null;
   }
 
   get readyState() {
@@ -69,7 +82,13 @@ export class PtySocket {
   }
 
   connect() {
-    if (this.socket) return;
+    if (this.socket || this._sseStream) return;
+    this._closedExplicitly = false;
+    if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
+      this._connectSse();
+      return;
+    }
+    this._transport = 'websocket';
     const url = buildPtyWebSocketUrl(this.sessionId);
     const socket = new WebSocket(url);
     this.socket = socket;
@@ -80,7 +99,7 @@ export class PtySocket {
     socket.onclose = (event) => {
       this.emit('close', event);
       // 非主动关闭时尝试重连
-      if (!this._reconnecting && event.code !== 1000) {
+      if (!this._closedExplicitly && !this._reconnecting && event.code !== 1000) {
         this._tryReconnect();
       }
     };
@@ -96,6 +115,10 @@ export class PtySocket {
   }
 
   sendInput(data) {
+    if (this._transport === 'sse') {
+      ptySendInputHttp(this.sessionId, data);
+      return;
+    }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('PTY socket is not connected');
     }
@@ -103,6 +126,10 @@ export class PtySocket {
   }
 
   resize(cols, rows) {
+    if (this._transport === 'sse') {
+      ptyResizeHttp(this.sessionId, cols, rows);
+      return;
+    }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       throw new Error('PTY socket is not connected');
     }
@@ -110,10 +137,15 @@ export class PtySocket {
   }
 
   close() {
+    this._closedExplicitly = true;
     this._reconnecting = false;
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
+    }
+    if (this._sseStream) {
+      try { this._sseStream.close?.(); } catch (_) {}
+      this._sseStream = null;
     }
     if (this.socket) {
       this.socket.close();
@@ -162,7 +194,7 @@ export class PtySocket {
         socket.onclose = (event) => {
           this.emit('close', event);
           // 非主动关闭时尝试重连
-          if (!this._reconnecting && event.code !== 1000) {
+          if (!this._closedExplicitly && !this._reconnecting && event.code !== 1000) {
             this._tryReconnect();
           }
         };
@@ -202,6 +234,7 @@ export class PtySocket {
   }
 
   reconnect() {
+    this._closedExplicitly = false;
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -214,6 +247,59 @@ export class PtySocket {
       this.socket = null;
     }
 
+    if (this._sseStream) {
+      try { this._sseStream.close?.(); } catch (_) {}
+      this._sseStream = null;
+    }
+
+    if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
+      this._connectSse();
+      return;
+    }
+
     this._doReconnectAttempt();
+  }
+
+  async _connectSse() {
+    this._transport = 'sse';
+    try {
+      const { requestCodeBuddy } = await import('./acp');
+      const response = await requestCodeBuddy(`/api/v1/pty/${encodeURIComponent(this.sessionId)}`, {
+        timeoutMs: 10000,
+      });
+      if (!response.ok) throw new Error(`PTY session unavailable: ${response.status}`);
+      if (this._closedExplicitly) return;
+
+      const token = getAuthToken();
+      this._sseStream = window.electronAPI.openCodeBuddyStream({
+        url: `${getApiBase()}/api/v1/pty/${encodeURIComponent(this.sessionId)}/output`,
+        headers: {
+          Accept: 'text/event-stream',
+          'X-CodeBuddy-Request': '1',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }, {
+        onMessage: (message) => {
+          if (this._closedExplicitly) return;
+          const payload = message?.type || !message?.data
+            ? message
+            : { ...message, type: 'output' };
+          this.emit('message', payload);
+          if (payload?.type) this.emit(payload.type, payload);
+        },
+        onError: (error) => {
+          if (this._closedExplicitly) return;
+          this._sseStream = null;
+          this.emit('error', error);
+          this.emit('close', error);
+        },
+      });
+      this.emit('open', { sessionId: this.sessionId, transport: 'sse' });
+    } catch (error) {
+      if (this._closedExplicitly) return;
+      this._sseStream = null;
+      this.emit('error', error);
+      this.emit('close', error);
+    }
   }
 }

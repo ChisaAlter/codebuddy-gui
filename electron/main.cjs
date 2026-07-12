@@ -338,14 +338,22 @@ function parseSseMessagesFromBuffer(buffer) {
   const rest = parts.pop() || '';
   const messages = [];
   for (const part of parts) {
-    const data = part
-      .split(/\r?\n/)
+    const lines = part.split(/\r?\n/);
+    const eventType = lines
+      .find((line) => line.startsWith('event:'))
+      ?.slice(6).trim();
+    const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trim())
       .join('');
     if (!data) continue;
     try {
-      messages.push(JSON.parse(data));
+      const message = JSON.parse(data);
+      messages.push(
+        eventType && eventType !== 'message' && message && typeof message === 'object' && !message.type
+          ? { ...message, type: eventType }
+          : message,
+      );
     } catch (error) {
       logStartup(`codebuddy stream JSON parse failed: ${error.message}`);
     }
@@ -513,6 +521,44 @@ ipcMain.handle('workspace:choose', async () => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+ipcMain.handle('attachment:choose', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return [];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: '选择要发送的文件或图片',
+  });
+  if (result.canceled) return [];
+  const imageTypes = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const textExtensions = new Set([
+    '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
+    '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
+    '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env',
+  ]);
+  const attachments = [];
+  for (const filePath of result.filePaths) {
+    const stat = fs.statSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const base = { name: path.basename(filePath), path: filePath, size: stat.size };
+    if (imageTypes[ext]) {
+      if (stat.size > 20 * 1024 * 1024) throw new Error(`${base.name} 超过 20MB 图片限制`);
+      attachments.push({ ...base, kind: 'image', mimeType: imageTypes[ext], data: fs.readFileSync(filePath).toString('base64') });
+      continue;
+    }
+    if (!textExtensions.has(ext) && stat.size > 2 * 1024 * 1024) {
+      attachments.push({ ...base, kind: 'unsupported', error: '该二进制文件无法作为文本发送' });
+      continue;
+    }
+    if (stat.size > 5 * 1024 * 1024) throw new Error(`${base.name} 超过 5MB 文本文件限制`);
+    attachments.push({ ...base, kind: 'text', mimeType: 'text/plain', text: fs.readFileSync(filePath, 'utf8') });
+  }
+  return attachments;
 });
 ipcMain.handle('productState:load', () => productStateStore.load());
 ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));

@@ -18,7 +18,6 @@ import ReplicaInstancesView from './components/ReplicaInstancesView';
 import ReplicaMonitorView from './components/ReplicaMonitorView';
 import ReplicaKeybindingsView from './components/ReplicaKeybindingsView';
 import ReplicaDocsView from './components/ReplicaDocsView';
-import ReplicaCanvasView from './components/ReplicaCanvasView';
 
 function LoginView() {
   const authSubmitting = useStore((s) => s.authSubmitting);
@@ -104,7 +103,6 @@ const ROUTE_TITLES = {
   'remote-control': '远程控制',
   tasks: '任务',
   terminal: '终端',
-  canvas: '画布',
   editor: '编辑器',
   changes: '变更',
   plugins: '插件',
@@ -227,7 +225,6 @@ function MainContent() {
     case 'workers': return <ReplicaWorkersView />;
     case 'metrics': return <ReplicaMetricsView />;
     case 'plugins': return <ReplicaPluginsView />;
-    case 'canvas': return <ReplicaCanvasView />;
     case 'tasks': return <ReplicaTasksView />;
     case 'stats': return <ReplicaStatsView />;
     case 'traces': return <ReplicaTracesView />;

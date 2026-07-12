@@ -26,6 +26,7 @@ let routeListenerBound = false;
 let conversationEventsBound = false;
 let runtimeListenerBound = false;
 const threadTimelinePersistTimers = new Map();
+const terminalStatePersistTimers = new Map();
 
 function emptyThreadRuntime() {
   return {
@@ -37,12 +38,14 @@ function emptyThreadRuntime() {
     availableCommands: [],
     isAwaitingResponse: false,
     promptQueue: [],
+    pendingAttachments: [],
     promptSuggestion: null,
     teamState: null,
     models: [],
     modes: [],
     currentModel: null,
     currentMode: 'default',
+    capabilities: {},
   };
 }
 
@@ -55,12 +58,14 @@ const ACTIVE_THREAD_RUNTIME_KEYS = [
   'availableCommands',
   'isAwaitingResponse',
   'promptQueue',
+  'pendingAttachments',
   'promptSuggestion',
   'teamState',
   'models',
   'modes',
   'currentModel',
   'currentMode',
+  'capabilities',
 ];
 
 function normalizeSessions(payload) {
@@ -101,6 +106,23 @@ function makePane(title = 'Terminal') {
     output: '',
     split: 'single',
   };
+}
+
+function terminalStateFromProject(project, resetSessions = false) {
+  const saved = project?.preferences?.terminalState;
+  const panes = Array.isArray(saved?.panes) && saved.panes.length
+    ? saved.panes.map((pane) => ({
+        ...makePane(pane.title || 'Terminal'),
+        ...pane,
+        output: String(pane.output || '').slice(-200000),
+        sessionId: resetSessions ? null : (pane.sessionId || null),
+        status: resetSessions ? 'idle' : (pane.status || 'idle'),
+      }))
+    : [makePane()];
+  const activePaneId = panes.some((pane) => pane.id === saved?.activePaneId)
+    ? saved.activePaneId
+    : panes[0].id;
+  return { panes, activePaneId };
 }
 
 export const useStore = create((set, get) => ({
@@ -315,16 +337,20 @@ export const useStore = create((set, get) => ({
 
     const project = activeProject(loaded);
     const thread = activeThread(loaded);
-    const restoredProjects = Object.fromEntries(Object.entries(loaded.projectsById).map(([id, item]) => [
-      id,
-      {
+    const restoredProjects = Object.fromEntries(Object.entries(loaded.projectsById).map(([id, item]) => {
+      const terminalState = terminalStateFromProject(item, true);
+      return [id, {
         ...item,
+        preferences: {
+          ...(item.preferences || {}),
+          terminalState,
+        },
         runtimeStatus: 'idle',
         runtimePort: null,
         runtimePid: null,
         runtimeError: null,
-      },
-    ]));
+      }];
+    }));
     const restoredThreadRuntime = Object.fromEntries(Object.entries(loaded.threadsById).map(([id, item]) => [
       id,
       {
@@ -334,6 +360,7 @@ export const useStore = create((set, get) => ({
         currentMode: item.modeId || 'default',
       },
     ]));
+    const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], false);
     set({
       projectsById: restoredProjects,
       projectOrder: loaded.projectOrder,
@@ -342,6 +369,8 @@ export const useStore = create((set, get) => ({
       activeProjectId: loaded.activeProjectId,
       activeThreadId: loaded.activeThreadId,
       threadRuntimeById: restoredThreadRuntime,
+      terminalPanes: restoredTerminal.panes,
+      activePaneId: restoredTerminal.activePaneId,
       workspacePath: project?.workspacePath || null,
       fileCwd: project?.workspacePath || '.',
       sessionId: thread?.sessionId || null,
@@ -352,6 +381,8 @@ export const useStore = create((set, get) => ({
     });
 
     if (legacyWorkspace && window.electronAPI?.saveProductState) {
+      await get().persistProductState();
+    } else if (loaded.projectOrder.length > 0) {
       await get().persistProductState();
     }
   },
@@ -376,6 +407,44 @@ export const useStore = create((set, get) => ({
     get().persistProductState();
   },
 
+  async chooseAttachments() {
+    if (!window.electronAPI?.chooseAttachments) {
+      set({ error: '附件选择不可用' });
+      return [];
+    }
+    try {
+      const selected = await window.electronAPI.chooseAttachments();
+      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
+      const imageSupported = Boolean(
+        runtime.capabilities?.promptCapabilities?.image
+        || runtime.capabilities?.prompt_capabilities?.image,
+      );
+      const accepted = [];
+      const rejected = [];
+      for (const attachment of selected || []) {
+        if (attachment.kind === 'unsupported') rejected.push(`${attachment.name}: ${attachment.error}`);
+        else if (attachment.kind === 'image' && !imageSupported) rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
+        else accepted.push(attachment);
+      }
+      get().patchThreadRuntime(get().activeThreadId, {
+        pendingAttachments: [...runtime.pendingAttachments, ...accepted],
+      });
+      if (rejected.length) set({ error: rejected.join('\n') });
+      return accepted;
+    } catch (error) {
+      set({ error: error.message || '选择附件失败' });
+      return [];
+    }
+  },
+
+  removePendingAttachment(attachmentPath) {
+    const threadId = get().activeThreadId;
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    get().patchThreadRuntime(threadId, {
+      pendingAttachments: runtime.pendingAttachments.filter((item) => item.path !== attachmentPath),
+    });
+  },
+
   setRoute(route) {
     setHashRoute(route);
     set({ route });
@@ -392,6 +461,7 @@ export const useStore = create((set, get) => ({
 
   setActivePane(paneId) {
     set({ activePaneId: paneId });
+    get().scheduleTerminalStatePersist();
   },
 
   setFileSearchQuery(value) {
@@ -545,6 +615,10 @@ export const useStore = create((set, get) => ({
       get().handleThreadSessionUpdate(threadId, (detail || {}).update || {});
       return;
     }
+    if (type === 'initialized') {
+      get().patchThreadRuntime(threadId, { capabilities: detail?.agentCapabilities || detail || {} });
+      return;
+    }
     if (type === 'model_update') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       get().patchThreadRuntime(threadId, {
@@ -662,6 +736,7 @@ export const useStore = create((set, get) => ({
         models: normalizeModels(availableModels),
         modes: normalizeModes(availableModes),
         currentMode,
+        capabilities: init?.agentCapabilities || get().threadRuntimeById[thread.id]?.capabilities || {},
       });
       await get().updateActiveThread({
         sessionId: resolvedSessionId,
@@ -743,12 +818,15 @@ export const useStore = create((set, get) => ({
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project) return false;
+    const projectChanged = thread.projectId !== get().activeProjectId;
+    if (projectChanged) await get().persistActiveProjectTerminalState();
     set({
       activeProjectId: project.id,
       activeThreadId: thread.id,
       workspacePath: project.workspacePath,
       fileCwd: project.workspacePath,
     });
+    if (projectChanged) get().loadProjectTerminalState(project.id);
     get().activateThreadRuntime(thread.id);
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(project.id);
@@ -891,6 +969,7 @@ export const useStore = create((set, get) => ({
 
   async setWorkspace(path) {
     if (!path) return false;
+    await get().persistActiveProjectTerminalState();
     const normalizedPath = String(path);
     let project = Object.values(get().projectsById).find((item) => (
       item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
@@ -921,6 +1000,7 @@ export const useStore = create((set, get) => ({
       workspacePath: normalizedPath,
       fileCwd: normalizedPath,
     }));
+    get().loadProjectTerminalState(project.id);
     try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(project.id);
@@ -936,6 +1016,7 @@ export const useStore = create((set, get) => ({
   async activateProject(projectId) {
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
+    await get().persistActiveProjectTerminalState();
     let threadId = get().threadOrderByProject[projectId]?.[0] || null;
     let thread = threadId ? get().threadsById[threadId] : null;
     if (!thread) {
@@ -955,6 +1036,7 @@ export const useStore = create((set, get) => ({
       workspacePath: project.workspacePath,
       fileCwd: project.workspacePath,
     });
+    get().loadProjectTerminalState(projectId);
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(projectId);
     if (!runtime) return false;
@@ -1067,6 +1149,9 @@ export const useStore = create((set, get) => ({
             headers: { 'X-CodeBuddy-Request': '1' },
             credentials: 'include',
           });
+          setAuthToken(null);
+          const loginResult = await apiAuthLogin(runtime.password);
+          if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
         }
       }
       get().applyProjectRuntimeStatus(runtime);
@@ -1107,6 +1192,9 @@ export const useStore = create((set, get) => ({
             headers: { 'X-CodeBuddy-Request': '1' },
             credentials: 'include',
           });
+          setAuthToken(null);
+          const loginResult = await apiAuthLogin(runtime.password);
+          if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
         }
         return get().initializeActiveThread(undefined);
       }
@@ -1236,15 +1324,87 @@ export const useStore = create((set, get) => ({
     set({ watcherId: null });
   },
 
+  loadProjectTerminalState(projectId) {
+    const project = get().projectsById[projectId];
+    const terminalState = terminalStateFromProject(project, false);
+    set({
+      terminalPanes: terminalState.panes,
+      activePaneId: terminalState.activePaneId,
+      terminalSessions: [],
+      ptySessionId: null,
+    });
+  },
+
+  async persistProjectTerminalState(projectId, snapshot) {
+    const project = get().projectsById[projectId];
+    if (!project) return;
+    const terminalState = snapshot || {
+      panes: get().terminalPanes,
+      activePaneId: get().activePaneId,
+    };
+    set((state) => ({
+      projectsById: {
+        ...state.projectsById,
+        [projectId]: {
+          ...state.projectsById[projectId],
+          preferences: {
+            ...(state.projectsById[projectId].preferences || {}),
+            terminalState: {
+              activePaneId: terminalState.activePaneId,
+              panes: terminalState.panes.map((pane) => ({
+                ...pane,
+                output: String(pane.output || '').slice(-200000),
+              })),
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await get().persistProductState();
+  },
+
+  scheduleTerminalStatePersist() {
+    const projectId = get().activeProjectId;
+    if (!projectId) return;
+    const previous = terminalStatePersistTimers.get(projectId);
+    if (previous) clearTimeout(previous);
+    const snapshot = {
+      panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
+      activePaneId: get().activePaneId,
+    };
+    const timer = setTimeout(() => {
+      terminalStatePersistTimers.delete(projectId);
+      get().persistProjectTerminalState(projectId, snapshot);
+    }, 500);
+    terminalStatePersistTimers.set(projectId, timer);
+  },
+
+  async persistActiveProjectTerminalState() {
+    const projectId = get().activeProjectId;
+    if (!projectId) return;
+    const pending = terminalStatePersistTimers.get(projectId);
+    if (pending) {
+      clearTimeout(pending);
+      terminalStatePersistTimers.delete(projectId);
+    }
+    await get().persistProjectTerminalState(projectId, {
+      panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
+      activePaneId: get().activePaneId,
+    });
+  },
+
   initializeTerminal() {
     const panes = get().terminalPanes;
     if (!panes.length) {
       const pane = makePane();
       set({ terminalPanes: [pane], activePaneId: pane.id });
+      get().scheduleTerminalStatePersist();
       return;
     }
     if (!get().activePaneId) {
       set({ activePaneId: panes[0].id });
+      get().scheduleTerminalStatePersist();
     }
   },
 
@@ -1256,17 +1416,21 @@ export const useStore = create((set, get) => ({
         activePaneId: next.id,
       };
     });
+    get().scheduleTerminalStatePersist();
   },
 
   closePane(paneId) {
+    if (get().terminalPanes.length === 1) return;
+    const sessionId = get().terminalPanes.find((pane) => pane.id === paneId)?.sessionId;
     set((state) => {
-      if (state.terminalPanes.length === 1) return state;
       const nextPanes = state.terminalPanes.filter((x) => x.id !== paneId);
       return {
         terminalPanes: nextPanes,
         activePaneId: state.activePaneId === paneId ? nextPanes[0]?.id || null : state.activePaneId,
       };
     });
+    if (sessionId) get().releasePty(sessionId);
+    get().scheduleTerminalStatePersist();
   },
 
   bindPtyToPane(paneId, sessionId) {
@@ -1274,24 +1438,28 @@ export const useStore = create((set, get) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
       ptySessionId: sessionId,
     }));
+    get().scheduleTerminalStatePersist();
   },
 
   setPaneStatus(paneId, status) {
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, status } : pane),
     }));
+    get().scheduleTerminalStatePersist();
   },
 
   setPaneSession(paneId, sessionId) {
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
     }));
+    get().scheduleTerminalStatePersist();
   },
 
   appendPaneOutput(paneId, chunk) {
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, output: pane.output + chunk } : pane),
+      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, output: `${pane.output || ''}${chunk}`.slice(-200000) } : pane),
     }));
+    get().scheduleTerminalStatePersist();
   },
 
   appendTimelineEvent(eventType, payload) {
@@ -1810,8 +1978,6 @@ export const useStore = create((set, get) => ({
   },
 
   async sendPrompt(text) {
-    const content = String(text || '').trim();
-    if (!content) return;
     const threadId = get().activeThreadId;
     const thread = get().threadsById[threadId];
     const client = get().getThreadClient(threadId);
@@ -1820,32 +1986,48 @@ export const useStore = create((set, get) => ({
       return;
     }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const attachments = runtime.pendingAttachments || [];
+    const content = String(text || '').trim() || (attachments.length ? '请查看附件。' : '');
+    if (!content) return;
     if (thread.status === 'running' || runtime.isAwaitingResponse) {
       const queuedPrompt = {
         id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         text: content,
+        attachments,
         createdAt: Date.now(),
       };
-      get().patchThreadRuntime(threadId, { promptQueue: [...runtime.promptQueue, queuedPrompt] });
+      get().patchThreadRuntime(threadId, { promptQueue: [...runtime.promptQueue, queuedPrompt], pendingAttachments: [] });
       return { queued: true, id: queuedPrompt.id };
     }
-    return get().runThreadPrompt(threadId, content);
+    get().patchThreadRuntime(threadId, { pendingAttachments: [] });
+    return get().runThreadPrompt(threadId, content, attachments);
   },
 
-  async runThreadPrompt(threadId, content) {
+  async runThreadPrompt(threadId, content, attachments = []) {
     const thread = get().threadsById[threadId];
     const client = get().getThreadClient(threadId);
     if (!thread || !client) return false;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
     get().patchThreadRuntime(threadId, {
-      timeline: pushUserMessage(runtime.timeline, content),
+      timeline: pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`),
       isAwaitingResponse: true,
     });
     await get().updateThreadRecord(threadId, { status: 'running', draft: '', unread: false });
     try {
+      const prompt = [{ type: 'text', text: content }];
+      for (const attachment of attachments) {
+        if (attachment.kind === 'image') {
+          prompt.push({ type: 'image', data: attachment.data, mimeType: attachment.mimeType });
+        } else if (attachment.kind === 'text') {
+          const text = String(attachment.text || '');
+          const clipped = text.length > 500000 ? `${text.slice(0, 500000)}\n\n[文件内容已截断]` : text;
+          prompt.push({ type: 'text', text: `文件: ${attachment.name}\n路径: ${attachment.path}\n\n${clipped}` });
+        }
+      }
       await client.request('session/prompt', {
         sessionId: thread.sessionId,
-        prompt: [{ type: 'text', text: content }],
+        prompt,
       });
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       get().patchThreadRuntime(threadId, {
@@ -1878,7 +2060,7 @@ export const useStore = create((set, get) => ({
     const [next, ...rest] = runtime.promptQueue;
     if (!next) return false;
     get().patchThreadRuntime(threadId, { promptQueue: rest });
-    return get().runThreadPrompt(threadId, next.text);
+    return get().runThreadPrompt(threadId, next.text, next.attachments || []);
   },
 
   removeQueuedPrompt(threadId, promptId) {

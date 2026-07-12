@@ -3,7 +3,6 @@ export const ROUTES = [
   'instances',
   'remote-control',
   'terminal',
-  'canvas',
   'tasks',
   'plugins',
   'editor',

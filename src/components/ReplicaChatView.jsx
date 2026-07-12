@@ -279,6 +279,10 @@ export default function ReplicaChatView() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const promptQueue = useStore((s) => s.promptQueue || []);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
+  const pendingAttachments = useStore((s) => s.pendingAttachments || []);
+  const chooseAttachments = useStore((s) => s.chooseAttachments);
+  const removePendingAttachment = useStore((s) => s.removePendingAttachment);
+  const capabilities = useStore((s) => s.capabilities || {});
   const models = useStore((s) => s.models);
   const modes = useStore((s) => s.modes);
   const setModel = useStore((s) => s.setModel);
@@ -350,7 +354,7 @@ export default function ReplicaChatView() {
 
   const onSubmit = async () => {
     const value = input.trim();
-    if (!value) return;
+    if (!value && pendingAttachments.length === 0) return;
     setInput('');
     setChatError(null);
     try {
@@ -446,6 +450,17 @@ export default function ReplicaChatView() {
       {/* Input area */}
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto max-w-3xl">
+          {pendingAttachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {pendingAttachments.map((attachment) => (
+                <div key={attachment.path} className="flex max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">
+                  <span>{attachment.kind === 'image' ? '图片' : '文件'}</span>
+                  <span className="max-w-[220px] truncate" title={attachment.path}>{attachment.name}</span>
+                  <button className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]" onClick={() => removePendingAttachment(attachment.path)} title="移除附件">×</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {promptQueue.length > 0 ? (
             <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
               <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">待发送 {promptQueue.length}</div>
@@ -494,10 +509,10 @@ export default function ReplicaChatView() {
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  disabled
-                  className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] opacity-50"
-                  title="当前运行时未声明文件或图片附件能力"
-                  aria-label="添加附件（当前不可用）"
+                  className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                  onClick={chooseAttachments}
+                  title={capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image ? '添加文本文件或图片' : '添加文本文件（当前运行时未声明图片输入能力）'}
+                  aria-label="添加附件"
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" /></svg>
                 </button>
@@ -589,7 +604,7 @@ export default function ReplicaChatView() {
                 <button
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
                   onClick={onSubmit}
-                  disabled={!input.trim()}
+                  disabled={!input.trim() && pendingAttachments.length === 0}
                   title={isStreaming ? '加入待发送队列' : '发送'}
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

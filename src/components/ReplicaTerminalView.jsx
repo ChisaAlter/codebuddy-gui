@@ -32,9 +32,12 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
-    fitAddon.fit();
+    if (pane.output) term.write(pane.output);
     terminalRef.current = term;
     fitRef.current = fitAddon;
+    requestAnimationFrame(() => {
+      try { fitAddon.fit(); } catch (_) {}
+    });
 
     term.onData((data) => {
       socketRef.current?.sendInput(data);
@@ -62,6 +65,7 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
       if (pane.sessionId) return;
       setPaneStatus(pane.id, 'connecting');
       const created = await createPty(120, 32);
+      if (!created?.sessionId) throw new Error('PTY 创建失败');
       bindPtyToPane(pane.id, created.sessionId);
     }
     ensureSession().catch(() => setPaneStatus(pane.id, 'error'));
@@ -144,7 +148,7 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
               pane.status === 'connected' ? 'bg-[rgba(74,222,128,0.12)] text-[#4ade80]' :
               pane.status === 'connecting' ? 'bg-[rgba(251,191,36,0.12)] text-[#fbbf24] animate-pulse' :
               'bg-[rgba(113,113,122,0.12)] text-[var(--color-text-muted)]'
-            }`}>{pane.status || 'idle'}</span>
+            }`}>{pane.status === 'connected' ? '已连接' : pane.status === 'connecting' ? '连接中' : '空闲'}</span>
           )}
           {pane.sessionId ? <span className="text-[10px] opacity-70">{pane.sessionId.slice(0, 8)}</span> : null}
         </div>
@@ -175,6 +179,9 @@ function TerminalPane({ pane, active, onFocus, onSplitRight, onSplitDown, onClos
 export default function ReplicaTerminalView() {
   const panes = useStore((s) => s.terminalPanes);
   const activePaneId = useStore((s) => s.activePaneId);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const activeProject = useStore((s) => s.projectsById[s.activeProjectId] || null);
+  const apiBase = useStore((s) => s.apiBase);
   const splitPane = useStore((s) => s.splitPane);
   const closePane = useStore((s) => s.closePane);
   const setActivePane = useStore((s) => s.setActivePane);
@@ -187,6 +194,13 @@ export default function ReplicaTerminalView() {
   useEffect(() => {
     initializeTerminal();
   }, [initializeTerminal]);
+
+  const runtimeReady = Boolean(
+    activeProjectId
+    && activeProject?.runtimeStatus === 'running'
+    && activeProject.runtimePort
+    && apiBase === `http://127.0.0.1:${activeProject.runtimePort}`
+  );
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -210,14 +224,12 @@ export default function ReplicaTerminalView() {
     setPaneStatus(paneId, 'connecting');
     const previousSessionId = pane.sessionId;
     if (previousSessionId) {
-      bindPtyToPane(paneId, null);
       await releasePty(previousSessionId);
     }
     try {
       const created = await createPty(120, 32);
       if (created && created.sessionId) {
         bindPtyToPane(paneId, created.sessionId);
-        setPaneStatus(paneId, 'connected');
       } else {
         setPaneStatus(paneId, 'error');
       }
@@ -232,9 +244,16 @@ export default function ReplicaTerminalView() {
     <div className="flex min-h-0 flex-1 flex-col bg-black text-white">
       <div className="flex h-12 items-center justify-between border-b border-[#2a2a2a] px-4">
         <div className="text-sm">Terminal</div>
-        <div className="text-xs text-[#9ca3af]">真实 PTY / WebSocket 内核接入中</div>
+        <div className="text-xs text-[#9ca3af]">项目级 PTY 实时连接</div>
       </div>
-      {panes.length === 0 ? (
+      {!runtimeReady ? (
+        <div className="flex-1 flex items-center justify-center bg-[var(--color-bg-primary)]">
+          <div className="text-center">
+            <div className="mb-2 text-sm text-[var(--color-text-secondary)]">正在连接项目运行时</div>
+            <div className="text-xs text-[var(--color-text-muted)]">终端会在项目端口就绪后自动恢复</div>
+          </div>
+        </div>
+      ) : panes.length === 0 ? (
         <div className="flex-1 flex items-center justify-center bg-[var(--color-bg-primary)]">
           <div className="text-center">
             <div className="mb-2 text-4xl opacity-20">⌨</div>

@@ -12,6 +12,7 @@ export default function ReplicaPluginsView() {
   const [installMarketplace, setInstallMarketplace] = React.useState('codebuddy');
   const [installing, setInstalling] = React.useState(false);
   const [installMsg, setInstallMsg] = React.useState(null);
+  const [actionError, setActionError] = React.useState(null);
   // 市场增删表单态
   const [newMktId, setNewMktId] = React.useState('');
   const [newMktUrl, setNewMktUrl] = React.useState('');
@@ -73,10 +74,10 @@ export default function ReplicaPluginsView() {
         </div>
 
         {/* Error banner */}
-        {error && (
+        {(error || actionError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {error}
-            <button className="ml-3 underline text-xs" onClick={handleRefresh}>重试</button>
+            {actionError || error}
+            <button className="ml-3 underline text-xs" onClick={() => { setActionError(null); handleRefresh(); }}>重试</button>
           </div>
         )}
 
@@ -178,8 +179,9 @@ export default function ReplicaPluginsView() {
                     <div
                       className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginBusy === `toggle:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
                       onClick={async () => {
+                        setActionError(null);
                         const ok = await togglePluginByName(p.name, !enabled);
-                        if (!ok) window.alert(useStore.getState().pluginError || '操作失败');
+                        if (!ok) setActionError(useStore.getState().pluginError || '操作失败');
                       }}
                       title={enabled ? '点击禁用' : '点击启用'}
                     >
@@ -205,8 +207,9 @@ export default function ReplicaPluginsView() {
                       className={`text-xs text-[var(--color-error)] hover:underline ${pluginBusy === `uninstall:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
                       onClick={async () => {
                         if (!window.confirm(`确定要卸载插件 "${p.name}" 吗？`)) return;
+                        setActionError(null);
                         const ok = await uninstallPluginByName(p.name);
-                        if (!ok) window.alert(useStore.getState().pluginError || '卸载失败');
+                        if (!ok) setActionError(useStore.getState().pluginError || '卸载失败');
                       }}
                     >
                       {pluginBusy === `uninstall:${p.name}` ? '卸载中...' : '卸载'}
@@ -356,7 +359,7 @@ export default function ReplicaPluginsView() {
                       disabled={busy}
                       className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
                       onClick={async () => {
-                        if (!window.confirm(`确定删除市场 "${id}" 吾？`)) return;
+                        if (!window.confirm(`确定删除市场 "${id}" 吗？`)) return;
                         await removeMarketplaceById(id);
                       }}
                     >
