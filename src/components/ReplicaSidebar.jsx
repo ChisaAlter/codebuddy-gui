@@ -101,7 +101,7 @@ export default function ReplicaSidebar() {
     route, setRoute, sidebarCollapsed,
     info, currentModel, currentMode, models, modes,
     connectionState, newSession, setModel, setMode, changesCount,
-    workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId,
+    workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId, fileDirty, selectedFile,
     threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
   } = useStore();
   const projectThreads = (threadOrderByProject[activeProjectId] || [])
@@ -121,6 +121,10 @@ export default function ReplicaSidebar() {
   const [pendingDelete, setPendingDelete] = React.useState(null);
   const [menuOpenId, setMenuOpenId] = React.useState(null);
   const [projectMenuOpenId, setProjectMenuOpenId] = React.useState(null);
+  const [projectDialog, setProjectDialog] = React.useState(null);
+  const [projectName, setProjectName] = React.useState('');
+  const [projectActionBusy, setProjectActionBusy] = React.useState(false);
+  const [projectActionError, setProjectActionError] = React.useState('');
 
   const startRename = (thread) => {
     setRenamingId(thread.id);
@@ -140,16 +144,42 @@ export default function ReplicaSidebar() {
     await deleteThread(pendingDelete.id);
   };
 
-  const handleRenameProject = async (project) => {
+  const openProjectDialog = (mode, project) => {
     setProjectMenuOpenId(null);
-    const name = window.prompt('项目名称', project.name || '');
-    if (name?.trim()) await renameProject(project.id, name);
+    setProjectDialog({ mode, project });
+    setProjectName(project.name || '');
+    setProjectActionError('');
   };
 
-  const handleRemoveProject = async (project) => {
-    setProjectMenuOpenId(null);
-    if (!window.confirm(`从 CodeBuddy GUI 移除“${project.name}”吗？磁盘中的项目文件不会被删除。`)) return;
-    await removeProject(project.id);
+  const closeProjectDialog = () => {
+    if (projectActionBusy) return;
+    setProjectDialog(null);
+    setProjectActionError('');
+  };
+
+  const submitProjectDialog = async () => {
+    if (!projectDialog || projectActionBusy) return;
+    const { mode, project } = projectDialog;
+    if (mode === 'rename' && !projectName.trim()) {
+      setProjectActionError('项目名称不能为空');
+      return;
+    }
+    setProjectActionBusy(true);
+    setProjectActionError('');
+    try {
+      const ok = mode === 'rename'
+        ? await renameProject(project.id, projectName.trim())
+        : await removeProject(project.id, { skipDirtyCheck: true });
+      if (!ok) {
+        setProjectActionError(mode === 'rename' ? '重命名失败，请重试' : '移除失败，请重试');
+        return;
+      }
+      setProjectDialog(null);
+    } catch (error) {
+      setProjectActionError(error.message || (mode === 'rename' ? '重命名失败' : '移除失败'));
+    } finally {
+      setProjectActionBusy(false);
+    }
   };
 
   // 点击外部关菜单
@@ -232,8 +262,8 @@ export default function ReplicaSidebar() {
                     </button>
                     {projectMenuOpen ? (
                       <div data-project-menu className="absolute right-0 top-7 z-40 w-32 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-lg">
-                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]" onClick={() => handleRenameProject(project)}>重命名</button>
-                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]" onClick={() => handleRemoveProject(project)}>移除项目</button>
+                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]" onClick={() => openProjectDialog('rename', project)}>重命名</button>
+                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]" onClick={() => openProjectDialog('remove', project)}>移除项目</button>
                       </div>
                     ) : null}
                   </div>
@@ -430,6 +460,68 @@ export default function ReplicaSidebar() {
                   );
                 })
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 项目管理弹窗 */}
+      {projectDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={projectDialog.mode === 'rename' ? '重命名项目' : '移除项目确认'}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeProjectDialog();
+          }}
+        >
+          <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+            <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+              {projectDialog.mode === 'rename' ? '重命名项目' : '从应用中移除项目？'}
+            </div>
+            {projectDialog.mode === 'rename' ? (
+              <div className="mt-4">
+                <label className="mb-1.5 block text-xs text-[var(--color-text-secondary)]" htmlFor="project-name-input">项目名称</label>
+                <input
+                  id="project-name-input"
+                  autoFocus
+                  className="input-field w-full"
+                  value={projectName}
+                  disabled={projectActionBusy}
+                  onChange={(event) => {
+                    setProjectName(event.target.value);
+                    setProjectActionError('');
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') submitProjectDialog();
+                    else if (event.key === 'Escape') closeProjectDialog();
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="mt-3 space-y-2 text-xs leading-5 text-[var(--color-text-secondary)]">
+                <p>“{projectDialog.project.name}”将从 CodeBuddy GUI 的项目列表中移除，项目文件不会从磁盘删除。</p>
+                {projectDialog.project.id === activeProjectId && fileDirty ? (
+                  <p className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-[var(--color-accent-red)]">
+                    {selectedFile ? `“${selectedFile}”` : '当前文件'}有未保存修改，继续移除会丢失这些修改。
+                  </p>
+                ) : null}
+              </div>
+            )}
+            {projectActionError ? (
+              <div className="mt-3 text-xs text-[var(--color-accent-red)]">{projectActionError}</div>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={projectActionBusy} onClick={closeProjectDialog}>取消</button>
+              <button
+                className={projectDialog.mode === 'rename' ? 'btn-primary px-3 py-1.5 text-xs' : 'rounded-md px-3 py-1.5 text-xs font-medium text-white'}
+                style={projectDialog.mode === 'remove' ? { background: 'var(--color-accent-red)' } : undefined}
+                disabled={projectActionBusy || (projectDialog.mode === 'rename' && !projectName.trim())}
+                onClick={submitProjectDialog}
+              >
+                {projectActionBusy ? '处理中...' : projectDialog.mode === 'rename' ? '保存' : '移除项目'}
+              </button>
             </div>
           </div>
         </div>

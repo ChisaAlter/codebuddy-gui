@@ -402,7 +402,7 @@ export const useStore = create((set, get) => ({
   },
 
   async persistProductState() {
-    if (!window.electronAPI?.saveProductState) return;
+    if (!window.electronAPI?.saveProductState) return false;
     try {
       const saved = await window.electronAPI.saveProductState(productStateSnapshot(get()));
       const normalized = normalizeProductState(saved);
@@ -414,8 +414,10 @@ export const useStore = create((set, get) => ({
         activeProjectId: normalized.activeProjectId,
         activeThreadId: normalized.activeThreadId,
       });
+      return true;
     } catch (error) {
       set({ error: `保存项目状态失败: ${error.message}` });
+      return false;
     }
   },
 
@@ -1257,14 +1259,28 @@ export const useStore = create((set, get) => ({
         [projectId]: { ...state.projectsById[projectId], name: nextName, updatedAt: new Date().toISOString() },
       },
     }));
-    await get().persistProductState();
+    const persisted = await get().persistProductState();
+    if (!persisted) {
+      set((state) => {
+        const current = state.projectsById[projectId];
+        if (!current || current.name !== nextName) return {};
+        return {
+          projectsById: {
+            ...state.projectsById,
+            [projectId]: { ...current, name: project.name, updatedAt: project.updatedAt },
+          },
+        };
+      });
+      return false;
+    }
     return true;
   },
 
-  async removeProject(projectId) {
+  async removeProject(projectId, options = {}) {
     const project = get().projectsById[projectId];
     if (!project) return false;
-    if (projectId === get().activeProjectId && !confirmLeaveDirtyFile(get())) return false;
+    if (projectId === get().activeProjectId && !options.skipDirtyCheck && !confirmLeaveDirtyFile(get())) return false;
+    const previousState = get();
     const threadIds = get().threadOrderByProject[projectId] || [];
     await get().stopProjectRuntime(projectId).catch(() => null);
     const wasActive = get().activeProjectId === projectId;
@@ -1295,7 +1311,15 @@ export const useStore = create((set, get) => ({
         ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
       };
     });
-    await get().persistProductState();
+    const persisted = await get().persistProductState();
+    if (!persisted) {
+      const persistenceError = get().error;
+      set({ ...previousState, error: persistenceError });
+      if (wasActive || project.runtimeStatus === 'running') {
+        await get().ensureProjectRuntime(projectId).catch(() => null);
+      }
+      return false;
+    }
     if (wasActive && get().activeProjectId) {
       const nextProject = activeProject(get());
       const runtime = await get().ensureProjectRuntime(get().activeProjectId);
