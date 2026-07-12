@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   commit,
   createBranch,
@@ -58,16 +58,21 @@ export default function ReplicaChangesView() {
   const [operationValue, setOperationValue] = useState('');
   const [operationError, setOperationError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const loadRequestRef = useRef(0);
+  const diffRequestRef = useRef(0);
 
   async function loadAll(keepSelection = true) {
+    const requestId = ++loadRequestRef.current;
+    const cwd = workspacePath || '.';
     setLoading(true);
     setLoadError('');
     try {
       const [status, currentBranch, branchList] = await Promise.all([
-        getGitStatus(),
-        getCurrentBranch(),
-        getBranches(),
+        getGitStatus(cwd),
+        getCurrentBranch(cwd),
+        getBranches(cwd),
       ]);
+      if (requestId !== loadRequestRef.current || useStore.getState().workspacePath !== workspacePath) return false;
       setItems(status);
       setBranch(currentBranch);
       setBranches(branchList);
@@ -77,7 +82,9 @@ export default function ReplicaChangesView() {
       } else if (!keepSelection) {
         setSelected(null);
       }
+      return true;
     } catch (error) {
+      if (requestId !== loadRequestRef.current || useStore.getState().workspacePath !== workspacePath) return false;
       const message = error.message || '读取 Git 状态失败';
       setItems([]);
       setBranch('');
@@ -85,30 +92,40 @@ export default function ReplicaChangesView() {
       setSelected(null);
       setDiff('');
       setLoadError(/not a git repository/i.test(message) ? '当前文件夹不是 Git 仓库' : message);
+      return false;
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current && useStore.getState().workspacePath === workspacePath) setLoading(false);
     }
   }
 
   useEffect(() => {
     loadAll(false);
+    setSelected(null);
+    setDiff('');
+    setStatusText('');
+    setCommitMessage('');
+    setOperationDialog(null);
   }, [workspacePath]);
 
   useEffect(() => {
     async function loadDiff() {
+      const requestId = ++diffRequestRef.current;
+      const cwd = workspacePath || '.';
       if (!selected?.path) {
         setDiff('');
         return;
       }
       try {
-        const text = await getDiff(selected.path);
+        const text = await getDiff(selected.path, cwd);
+        if (requestId !== diffRequestRef.current || useStore.getState().workspacePath !== workspacePath) return;
         setDiff(text || '该文件当前无可显示 diff');
       } catch (error) {
+        if (requestId !== diffRequestRef.current || useStore.getState().workspacePath !== workspacePath) return;
         setDiff(`加载 diff 失败: ${error.message}`);
       }
     }
     loadDiff();
-  }, [selected]);
+  }, [selected, workspacePath]);
 
   async function perform(action) {
     setBusy(true);
@@ -117,10 +134,6 @@ export default function ReplicaChangesView() {
       await action();
       setStatusText('已完成');
       await loadAll(true);
-      if (selected?.path) {
-        const text = await getDiff(selected.path).catch(() => '');
-        setDiff(text || '该文件当前无可显示 diff');
-      }
       return { ok: true };
     } catch (error) {
       setStatusText(`失败: ${error.message}`);
@@ -186,7 +199,7 @@ export default function ReplicaChangesView() {
   };
 
   const handleCommit = async () => {
-    if (!commitMessage.trim()) return;
+    if (!commitMessage.trim() || !hasStagedChanges) return;
     setCommitting(true);
     try {
       await commit(commitMessage.trim());
@@ -221,6 +234,10 @@ export default function ReplicaChangesView() {
         : discardIsUntracked
           ? '删除文件'
           : '丢弃修改';
+  const hasStagedChanges = items.some((item) => item.indexStatus !== ' ' && item.indexStatus !== '?');
+  const hasUnstagedChanges = items.some((item) => item.worktreeStatus !== ' ' || item.indexStatus === '?');
+  const selectedHasStagedChanges = Boolean(selected && selected.indexStatus !== ' ' && selected.indexStatus !== '?');
+  const selectedHasUnstagedChanges = Boolean(selected && (selected.worktreeStatus !== ' ' || selected.indexStatus === '?'));
 
   return (
     <>
@@ -265,7 +282,7 @@ export default function ReplicaChangesView() {
                 />
                 <button
                   onClick={handleCommit}
-                  disabled={!commitMessage.trim() || committing || !!loadError}
+                  disabled={!commitMessage.trim() || !hasStagedChanges || committing || !!loadError}
                   className="rounded-md bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {committing ? '提交中...' : '提交'}
@@ -273,13 +290,13 @@ export default function ReplicaChangesView() {
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => stageAll())}>
+              <button className="btn-ghost" disabled={busy || !!loadError || !hasUnstagedChanges} onClick={() => perform(() => stageAll())}>
                 Stage All
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => unstageAll())}>
+              <button className="btn-ghost" disabled={busy || !!loadError || !hasStagedChanges} onClick={() => perform(() => unstageAll())}>
                 Unstage All
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={confirmDiscardAll}>
+              <button className="btn-ghost" disabled={busy || !!loadError || (!hasStagedChanges && !hasUnstagedChanges)} onClick={confirmDiscardAll}>
                 Discard All
               </button>
             </div>
@@ -339,21 +356,21 @@ export default function ReplicaChangesView() {
                       <div className="mt-2 flex flex-wrap gap-2">
                         <button
                           className="btn-ghost"
-                          disabled={busy}
+                          disabled={busy || !selectedHasUnstagedChanges}
                           onClick={() => perform(() => stageFile(item.path))}
                         >
                           Stage
                         </button>
                         <button
                           className="btn-ghost"
-                          disabled={busy}
+                          disabled={busy || !selectedHasStagedChanges}
                           onClick={() => perform(() => unstageFile(item.path))}
                         >
                           Unstage
                         </button>
                         <button
                           className="btn-ghost"
-                          disabled={busy}
+                          disabled={busy || (!selectedHasStagedChanges && !selectedHasUnstagedChanges)}
                           onClick={() => {
                             setOperationDialog({ type: 'discard-file', item });
                             setOperationValue('');
