@@ -1,4 +1,22 @@
 const { spawn, execFileSync } = require('child_process');
+const fs = require('fs');
+
+const CLI_UNAVAILABLE_MESSAGE = '未找到 CodeBuddy CLI。请先安装 CodeBuddy，并确认在命令行中可以直接运行 codebuddy。';
+
+function isCliUnavailable(value) {
+  return /(?:codebuddy.*(?:not recognized|not found)|不是内部或外部命令|找不到.*codebuddy|ENOENT)/i
+    .test(String(value || ''));
+}
+
+function decodeProcessOutput(data) {
+  const utf8 = data.toString('utf8');
+  if (process.platform !== 'win32' || !utf8.includes('\uFFFD')) return utf8;
+  try {
+    return new TextDecoder('gbk').decode(data);
+  } catch (_) {
+    return utf8;
+  }
+}
 
 function publicRuntime(entry) {
   if (!entry) return null;
@@ -54,14 +72,19 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     logger(`Starting CodeBuddy runtime project=${entry.projectId} cwd=${entry.cwd}`);
 
     const promise = new Promise((resolve, reject) => {
-      const proc = spawn('codebuddy', ['--serve'], {
+      const isWindows = process.platform === 'win32';
+      const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
+      const commandArgs = isWindows ? ['/d', '/s', '/c', 'codebuddy --serve'] : ['--serve'];
+      const proc = spawn(command, commandArgs, {
         cwd: entry.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: true,
+        shell: false,
+        windowsHide: true,
       });
       entry.proc = proc;
       entry.startedAt = new Date().toISOString();
       let stdoutBuffer = '';
+      let stderrBuffer = '';
       let settled = false;
 
       entry.cancelStart = () => {
@@ -122,11 +145,15 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       });
 
       proc.stderr.on('data', (data) => {
-        const text = data.toString().trim();
+        const text = decodeProcessOutput(data).trim();
+        stderrBuffer = `${stderrBuffer}${text}\n`.slice(-8000);
         if (text) logger(`CodeBuddy runtime stderr project=${entry.projectId}: ${text}`);
       });
 
-      proc.on('error', (error) => finish(error));
+      proc.on('error', (error) => {
+        finish(isCliUnavailable(error?.code || error?.message)
+          ? new Error(CLI_UNAVAILABLE_MESSAGE) : error);
+      });
       proc.on('exit', (code, signal) => {
         clearTimeout(timeoutId);
         if (entry.runId !== runId) return;
@@ -134,7 +161,9 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         entry.port = null;
         entry.password = null;
         if (!settled) {
-          finish(new Error(`CodeBuddy exited before ready (code=${code}, signal=${signal})`));
+          finish(new Error(isCliUnavailable(stderrBuffer)
+            ? CLI_UNAVAILABLE_MESSAGE
+            : `CodeBuddy exited before ready (code=${code}, signal=${signal})`));
           return;
         }
         if (entry.status !== 'stopping' && entry.status !== 'error') {
@@ -157,6 +186,11 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     if (!projectId) throw new Error('projectId is required');
     if (!cwd) throw new Error('project cwd is required');
     let entry = runtimes.get(projectId);
+    try {
+      if (!fs.statSync(cwd).isDirectory()) throw new Error('not a directory');
+    } catch (_) {
+      throw new Error(`项目目录不存在或不可访问: ${cwd}`);
+    }
     if (entry?.status === 'running' && entry.proc && !entry.proc.killed) return runtimeConnection(entry);
     if (entry?.startPromise) return entry.startPromise;
     if (entry && entry.cwd !== cwd) {
