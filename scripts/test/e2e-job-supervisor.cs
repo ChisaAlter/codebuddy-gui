@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -12,7 +13,6 @@ namespace CodeBuddy.E2E
     public static class JobSupervisor
     {
         private const uint CREATE_SUSPENDED = 0x00000004;
-        private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
         private const uint STARTF_USESTDHANDLES = 0x00000100;
         private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
@@ -25,7 +25,9 @@ namespace CodeBuddy.E2E
         private const uint GENERIC_WRITE = 0x40000000;
         private const uint FILE_SHARE_READ = 0x00000001;
         private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
         private const uint OPEN_EXISTING = 3;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
         private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
         private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
         private const uint WAIT_OBJECT_0 = 0x00000000;
@@ -35,6 +37,7 @@ namespace CodeBuddy.E2E
         private const int ERROR_ALREADY_EXISTS = 183;
         private const int ERROR_INSUFFICIENT_BUFFER = 122;
         private const int ERROR_FILE_NOT_FOUND = 2;
+        private const int CONTROL_COMMAND_MAXIMUM_CHARACTERS = 16;
         private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
         private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
 
@@ -171,6 +174,9 @@ namespace CodeBuddy.E2E
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr CreateFileW(string fileName, uint access, uint share,
             ref SECURITY_ATTRIBUTES attributes, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(IntPtr file, StringBuilder path,
+            uint pathLength, uint flags);
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool InitializeProcThreadAttributeList(IntPtr list, int count,
             int flags, ref IntPtr size);
@@ -185,6 +191,8 @@ namespace CodeBuddy.E2E
         private sealed class BoundaryState
         {
             public string JobName = String.Empty;
+            public bool JobCreatedNew;
+            public bool CollisionDetected;
             public bool KillOnJobClose;
             public bool RootCreatedSuspended;
             public bool RootAssignedBeforeResume;
@@ -201,6 +209,10 @@ namespace CodeBuddy.E2E
         private sealed class SupervisorBoundary : IDisposable
         {
             private readonly string statePath;
+            private readonly string projectRoot;
+            private readonly string projectRealRoot;
+            private readonly string markerPath;
+            private readonly string markerToken;
             private readonly BoundaryState state;
             private IntPtr jobHandle;
             private IntPtr processHandle;
@@ -208,11 +220,17 @@ namespace CodeBuddy.E2E
             private bool boundaryClosed;
             private bool processAssigned;
 
-            public SupervisorBoundary(string jobName, string stateFile)
+            public SupervisorBoundary(string jobName, string stateFile, string projectRootValue,
+                string projectRealRootValue, string markerPathValue, string markerTokenValue)
             {
                 statePath = stateFile;
+                projectRoot = Path.GetFullPath(projectRootValue);
+                projectRealRoot = Path.GetFullPath(projectRealRootValue);
+                markerPath = Path.GetFullPath(markerPathValue);
+                markerToken = markerTokenValue;
                 state = new BoundaryState();
                 state.JobName = jobName;
+                ValidateRuntimeOwnership();
                 WriteState();
             }
 
@@ -223,9 +241,16 @@ namespace CodeBuddy.E2E
                 int createError = Marshal.GetLastWin32Error();
                 if (createError == ERROR_ALREADY_EXISTS)
                 {
+                    state.JobCreatedNew = false;
+                    state.CollisionDetected = true;
+                    state.Win32Error = ERROR_ALREADY_EXISTS;
                     CloseNativeHandle(ref jobHandle);
+                    WriteState();
                     throw new InvalidOperationException("job-name-collision");
                 }
+                state.JobCreatedNew = true;
+                state.CollisionDetected = false;
+                WriteState();
                 JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
                 limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
                 if (!SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, ref limits,
@@ -239,14 +264,14 @@ namespace CodeBuddy.E2E
             }
 
             public void CreateAssignAndResume(string executable, string[] arguments,
-                string workingDirectory, string[] environmentKeys, string[] environmentValues)
+                string workingDirectory)
             {
+                ValidateRuntimeOwnership();
                 IntPtr inheritedInput = IntPtr.Zero;
                 IntPtr inheritedOutput = IntPtr.Zero;
                 IntPtr inheritedError = IntPtr.Zero;
                 IntPtr handleArray = IntPtr.Zero;
                 IntPtr attributeList = IntPtr.Zero;
-                IntPtr environmentBlock = IntPtr.Zero;
                 try
                 {
                     SECURITY_ATTRIBUTES security = new SECURITY_ATTRIBUTES();
@@ -291,13 +316,10 @@ namespace CodeBuddy.E2E
                     startup.lpAttributeList = attributeList;
                     StringBuilder commandLine = new StringBuilder(BuildCommandLine(executable, arguments));
                     if (commandLine.Length > 32766) throw new InvalidOperationException("command-line-too-long");
-                    environmentBlock = Marshal.StringToHGlobalUni(
-                        BuildEnvironmentBlock(environmentKeys, environmentValues));
-
                     PROCESS_INFORMATION processInfo;
-                    uint flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+                    uint flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
                     if (!CreateProcessW(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true, flags,
-                        environmentBlock, workingDirectory, ref startup, out processInfo))
+                        IntPtr.Zero, workingDirectory, ref startup, out processInfo))
                     {
                         ThrowWin32("create-root-suspended");
                     }
@@ -325,7 +347,6 @@ namespace CodeBuddy.E2E
                 }
                 finally
                 {
-                    if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
                     if (handleArray != IntPtr.Zero) Marshal.FreeHGlobal(handleArray);
                     if (attributeList != IntPtr.Zero)
                     {
@@ -399,44 +420,99 @@ namespace CodeBuddy.E2E
 
             private void WriteState()
             {
+                ValidateRuntimeOwnership();
                 WriteAtomicState(statePath, StateJson(state));
+            }
+
+            private void ValidateRuntimeOwnership()
+            {
+                if (!IsLowerHexToken(markerToken)) throw new InvalidOperationException("runtime-marker-token-invalid");
+                string runtimeDirectory = Path.GetDirectoryName(Path.GetFullPath(statePath));
+                string expectedMarkerPath = Path.Combine(runtimeDirectory, ".codebuddy-e2e-runtime-owner");
+                if (!PathEquals(markerPath, expectedMarkerPath))
+                {
+                    throw new InvalidOperationException("runtime-marker-path-invalid");
+                }
+                if (!PathEquals(CanonicalDirectoryPath(projectRoot), projectRealRoot))
+                {
+                    throw new InvalidOperationException("runtime-project-canonical-anchor-changed");
+                }
+                DirectoryInfo cursor = new DirectoryInfo(runtimeDirectory);
+                bool reachedProjectRoot = false;
+                while (cursor != null)
+                {
+                    if (PathEquals(cursor.FullName, projectRoot))
+                    {
+                        reachedProjectRoot = true;
+                        break;
+                    }
+                    if ((cursor.Attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        throw new InvalidOperationException("runtime-reparse-point-detected");
+                    }
+                    cursor = cursor.Parent;
+                }
+                if (!reachedProjectRoot) throw new InvalidOperationException("runtime-path-escaped-project-root");
+                string runtimeRealPath = CanonicalDirectoryPath(runtimeDirectory);
+                string realPrefix = projectRealRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (!runtimeRealPath.StartsWith(realPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("runtime-canonical-path-escaped-project-root");
+                }
+                FileInfo marker = new FileInfo(markerPath);
+                if (!marker.Exists || (marker.Attributes & FileAttributes.ReparsePoint) != 0 || marker.Length != 33)
+                {
+                    throw new InvalidOperationException("runtime-marker-file-invalid");
+                }
+                string markerText = File.ReadAllText(markerPath, new UTF8Encoding(false, true));
+                if (!String.Equals(markerText, markerToken + "\n", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("runtime-marker-token-mismatch");
+                }
             }
         }
 
         public static int Supervise(string jobName, string executable, string[] arguments,
-            string workingDirectory, string[] environmentKeys, string[] environmentValues, string statePath)
+            string workingDirectory, string controlPipeName, string projectRoot,
+            string projectRealRoot, string markerPath, string markerToken, string statePath)
         {
-            SupervisorBoundary boundary = new SupervisorBoundary(jobName, statePath);
-            try
+            using (NamedPipeClientStream controlPipe = new NamedPipeClientStream(
+                ".", controlPipeName, PipeDirection.In, PipeOptions.None))
+            using (StreamReader controlReader = new StreamReader(controlPipe, new UTF8Encoding(false, true)))
             {
-                boundary.CreateJob();
-                boundary.CreateAssignAndResume(executable, arguments, workingDirectory,
-                    environmentKeys, environmentValues);
-                string control = Console.In.ReadLine();
-                if (control == null)
+                controlPipe.Connect(10000);
+                SupervisorBoundary boundary = new SupervisorBoundary(jobName, statePath,
+                    projectRoot, projectRealRoot, markerPath, markerToken);
+                try
                 {
-                    boundary.Close("stdin-eof");
+                    boundary.CreateJob();
+                    boundary.CreateAssignAndResume(executable, arguments, workingDirectory);
+                    string control = ReadBoundedControl(controlReader);
+                    if (control == null)
+                    {
+                        boundary.Close("stdin-eof");
+                    }
+                    else if (String.Equals(control, "CLOSE", StringComparison.Ordinal))
+                    {
+                        boundary.Close("controller-close");
+                    }
+                    else
+                    {
+                        boundary.Close("invalid-control");
+                        return 3;
+                    }
+                    return 0;
                 }
-                else if (String.Equals(control, "CLOSE", StringComparison.Ordinal))
+                catch (Exception error)
                 {
-                    boundary.Close("controller-close");
+                    boundary.RecordFailure(error);
+                    boundary.Close("supervisor-error");
+                    return 2;
                 }
-                else
+                finally
                 {
-                    boundary.Close("invalid-control");
-                    return 3;
+                    boundary.Dispose();
                 }
-                return 0;
-            }
-            catch (Exception error)
-            {
-                boundary.RecordFailure(error);
-                boundary.Close("supervisor-error");
-                return 2;
-            }
-            finally
-            {
-                boundary.Dispose();
             }
         }
 
@@ -470,6 +546,66 @@ namespace CodeBuddy.E2E
             }
             return TerminateJson(jobName, requested, zeroVerified, activeProcessCount,
                 true, win32Error, status);
+        }
+
+        private static bool IsLowerHexToken(string value)
+        {
+            if (value == null || value.Length != 32) return false;
+            for (int index = 0; index < value.Length; index += 1)
+            {
+                char character = value[index];
+                if (!((character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f'))) return false;
+            }
+            return true;
+        }
+
+        private static bool PathEquals(string left, string right)
+        {
+            return String.Equals(
+                Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar),
+                Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string CanonicalDirectoryPath(string directoryPath)
+        {
+            SECURITY_ATTRIBUTES attributes = new SECURITY_ATTRIBUTES();
+            attributes.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+            attributes.bInheritHandle = false;
+            IntPtr handle = CreateFileW(directoryPath, 0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ref attributes, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+            if (!IsValidHandle(handle)) ThrowWin32("open-runtime-directory");
+            try
+            {
+                StringBuilder finalPath = new StringBuilder(512);
+                uint length = GetFinalPathNameByHandleW(handle, finalPath, (uint)finalPath.Capacity, 0);
+                if (length == 0) ThrowWin32("canonical-runtime-directory");
+                if (length >= finalPath.Capacity)
+                {
+                    finalPath = new StringBuilder(checked((int)length + 1));
+                    length = GetFinalPathNameByHandleW(handle, finalPath, (uint)finalPath.Capacity, 0);
+                    if (length == 0 || length >= finalPath.Capacity)
+                    {
+                        ThrowWin32("canonical-runtime-directory");
+                    }
+                }
+                string value = finalPath.ToString();
+                if (value.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    value = "\\\\" + value.Substring(8);
+                }
+                else if (value.StartsWith("\\\\?\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    value = value.Substring(4);
+                }
+                return Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar);
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
         }
 
         private static IntPtr DuplicateStandardHandle(int standardHandle, string operation)
@@ -522,6 +658,27 @@ namespace CodeBuddy.E2E
             return commandLine.ToString();
         }
 
+        private static string ReadBoundedControl(StreamReader reader)
+        {
+            StringBuilder value = new StringBuilder();
+            while (true)
+            {
+                int next = reader.Read();
+                if (next < 0) return value.Length == 0 ? null : value.ToString();
+                char character = (char)next;
+                if (character == '\n')
+                {
+                    if (value.Length > 0 && value[value.Length - 1] == '\r') value.Length -= 1;
+                    return value.ToString();
+                }
+                if (value.Length >= CONTROL_COMMAND_MAXIMUM_CHARACTERS)
+                {
+                    throw new InvalidOperationException("control-command-too-long");
+                }
+                value.Append(character);
+            }
+        }
+
         private static string QuoteWindowsArgument(string value)
         {
             if (value == null) value = String.Empty;
@@ -566,33 +723,6 @@ namespace CodeBuddy.E2E
             return quoted.ToString();
         }
 
-        private static string BuildEnvironmentBlock(string[] keys, string[] values)
-        {
-            if (keys == null || values == null || keys.Length != values.Length)
-            {
-                throw new InvalidOperationException("environment-shape-invalid");
-            }
-            List<KeyValuePair<string, string>> entries = new List<KeyValuePair<string, string>>();
-            for (int index = 0; index < keys.Length; index += 1)
-            {
-                entries.Add(new KeyValuePair<string, string>(keys[index], values[index]));
-            }
-            entries.Sort(delegate(KeyValuePair<string, string> left, KeyValuePair<string, string> right)
-            {
-                return StringComparer.OrdinalIgnoreCase.Compare(left.Key, right.Key);
-            });
-            StringBuilder block = new StringBuilder();
-            for (int index = 0; index < entries.Count; index += 1)
-            {
-                block.Append(entries[index].Key);
-                block.Append('=');
-                block.Append(entries[index].Value);
-                block.Append('\0');
-            }
-            block.Append('\0');
-            return block.ToString();
-        }
-
         private static string NormalizeCloseReason(string reason)
         {
             switch (reason)
@@ -614,6 +744,8 @@ namespace CodeBuddy.E2E
                 "\"version\":1," +
                 "\"kind\":\"windows-job\"," +
                 "\"jobName\":\"" + JsonEscape(state.JobName) + "\"," +
+                "\"jobCreatedNew\":" + JsonBoolean(state.JobCreatedNew) + "," +
+                "\"collisionDetected\":" + JsonBoolean(state.CollisionDetected) + "," +
                 "\"established\":" + JsonBoolean(state.Established) + "," +
                 "\"rootCreatedSuspended\":" + JsonBoolean(state.RootCreatedSuspended) + "," +
                 "\"rootAssignedBeforeResume\":" + JsonBoolean(state.RootAssignedBeforeResume) + "," +

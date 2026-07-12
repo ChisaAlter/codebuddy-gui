@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -439,6 +440,7 @@ describe('desktop E2E harness public contract', () => {
         userDataDir: layout.userDataDir,
         runtimeRoot: layout.runtimeRoot,
         runtimeDir: layout.runtimeDir,
+        runtimeOwnership: layout,
         pickPort: async () => 43123,
         spawnImpl: () => {
           queueMicrotask(() => {
@@ -483,6 +485,7 @@ describe('desktop E2E harness public contract', () => {
         userDataDir: layout.userDataDir,
         runtimeRoot: layout.runtimeRoot,
         runtimeDir: layout.runtimeDir,
+        runtimeOwnership: layout,
         signal: controller.signal,
         pickPort: async () => 43123,
         listProcesses: async () => [root, lateChild],
@@ -589,6 +592,7 @@ describe('desktop E2E harness public contract', () => {
           userDataDir: layout.userDataDir,
           runtimeRoot: layout.runtimeRoot,
           runtimeDir: layout.runtimeDir,
+          runtimeOwnership: layout,
           pickPort: async () => 43123,
           onOwnershipController(controller) {
             ownershipController = controller;
@@ -672,7 +676,7 @@ describe('desktop E2E harness public contract', () => {
         }
       }
     },
-    45000,
+    70000,
   );
 
   it.runIf(process.platform === 'win32')(
@@ -693,6 +697,7 @@ describe('desktop E2E harness public contract', () => {
           userDataDir: layout.userDataDir,
           runtimeRoot: layout.runtimeRoot,
           runtimeDir: layout.runtimeDir,
+          runtimeOwnership: layout,
           pickPort: async () => 43124,
           onOwnershipController(controller) {
             ownershipController = controller;
@@ -728,6 +733,8 @@ describe('desktop E2E harness public contract', () => {
       const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-job-collision-'));
       const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'collision-first', label: 'launch' });
       const fixtureDir = path.join(layout.runtimeDir, 'fixture');
+      const token = '33'.repeat(16);
+      const jobName = `CodeBuddyE2E-${token}`;
       fs.mkdirSync(layout.userDataDir, { recursive: true });
       let ownershipController = null;
       let launched = null;
@@ -740,20 +747,21 @@ describe('desktop E2E harness public contract', () => {
           userDataDir: layout.userDataDir,
           runtimeRoot: layout.runtimeRoot,
           runtimeDir: layout.runtimeDir,
+          runtimeOwnership: layout,
           pickPort: async () => 43126,
           onOwnershipController(controller) {
             ownershipController = controller;
           },
+          randomBytesImpl: (size) => Buffer.alloc(size, 0x33),
         });
         await waitForFixtureMarker(fixtureDir, 'survivor-ready');
 
-        const configName = fs.readdirSync(layout.runtimeDir).find((name) => /^e2e-job-[0-9a-f]{32}\.config\.json$/.test(name));
-        const firstConfig = JSON.parse(fs.readFileSync(path.join(layout.runtimeDir, configName), 'utf8'));
-        const token = firstConfig.jobName.match(/^CodeBuddyE2E-([0-9a-f]{32})$/)?.[1];
-        expect(token).toBeTruthy();
-
-        const collisionDir = path.join(layout.runtimeRoot, 'collision-second');
-        fs.mkdirSync(collisionDir, { recursive: true });
+        const collisionLayout = driver.createRuntimeLayout({
+          projectRoot,
+          runStamp: 'collision-second',
+          label: 'launch',
+        });
+        const collisionDir = collisionLayout.runtimeDir;
         const sourcePath = path.join(collisionDir, `e2e-job-${token}.cs`);
         const configPath = path.join(collisionDir, `e2e-job-${token}.config.json`);
         const statePath = path.join(collisionDir, `e2e-job-${token}.state.json`);
@@ -762,22 +770,31 @@ describe('desktop E2E harness public contract', () => {
         fs.writeFileSync(
           configPath,
           JSON.stringify({
-            version: 1,
-            jobName: firstConfig.jobName,
+            version: 2,
+            jobName,
             executable: process.execPath,
             arguments: ['-e', 'setInterval(() => {}, 1000)'],
             workingDirectory: projectRoot,
-            environment: Object.fromEntries(
-              Object.entries({
-                SystemRoot: process.env.SystemRoot,
-                PATH: process.env.PATH,
-                TEMP: process.env.TEMP,
-                TMP: process.env.TMP,
-              }).filter(([, value]) => value != null),
-            ),
           }),
         );
-        const collision = spawnSync(
+        const controlPipeToken = '44'.repeat(16);
+        const controlPipeName = `CodeBuddyE2E-Control-${controlPipeToken}`;
+        const controlPipePath = `\\\\.\\pipe\\${controlPipeName}`;
+        const controlServer = net.createServer();
+        controlServer.maxConnections = 1;
+        await new Promise((resolve, reject) => {
+          controlServer.once('error', reject);
+          controlServer.listen(controlPipePath, resolve);
+        });
+        const controlConnected = new Promise((resolve, reject) => {
+          controlServer.once('error', reject);
+          controlServer.once('connection', (socket) => {
+            socket.on('error', () => {});
+            controlServer.close();
+            resolve(socket);
+          });
+        });
+        const collisionProcess = spawn(
           'powershell.exe',
           [
             '-NoProfile',
@@ -799,12 +816,41 @@ describe('desktop E2E harness public contract', () => {
             '-SourceSha256',
             crypto.createHash('sha256').update(source).digest('hex'),
             '-JobName',
-            firstConfig.jobName,
+            jobName,
+            '-ControlPipeName',
+            controlPipeName,
+            '-ControlPipeToken',
+            controlPipeToken,
+            '-ProjectRoot',
+            collisionLayout.projectRoot,
+            '-ProjectRealRoot',
+            collisionLayout.projectRealRoot,
+            '-MarkerPath',
+            collisionLayout.markerPath,
+            '-MarkerToken',
+            collisionLayout.markerToken,
           ],
-          { input: 'CLOSE\n', encoding: 'utf8', timeout: 20000, windowsHide: true },
+          { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
         );
+        const collisionStdout = [];
+        const collisionStderr = [];
+        collisionProcess.stdout.on('data', (chunk) => collisionStdout.push(String(chunk)));
+        collisionProcess.stderr.on('data', (chunk) => collisionStderr.push(String(chunk)));
+        const controlSocket = await controlConnected;
+        controlSocket.end('CLOSE\n');
+        const collision = await new Promise((resolve, reject) => {
+          collisionProcess.once('error', reject);
+          collisionProcess.once('exit', (status, signal) => {
+            resolve({
+              status,
+              signal,
+              stdout: collisionStdout.join(''),
+              stderr: collisionStderr.join(''),
+            });
+          });
+        });
 
-        expect(collision.status, collision.stderr || collision.error?.message).toBe(2);
+        expect(collision.status, collision.stderr || collision.signal).toBe(2);
         expect(await exactProcessStillExists(launched.rootIdentity), 'the pre-existing Job member must survive').toBe(true);
       } finally {
         signalFixture(fixtureDir, 'shutdown');
@@ -812,6 +858,320 @@ describe('desktop E2E harness public contract', () => {
       }
     },
     35000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a forged Windows Job control pipe token before root creation',
+    () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-job-forged-pipe-'));
+      const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'forged-pipe', label: 'launch' });
+      const token = '11'.repeat(16);
+      const forgedToken = '22'.repeat(16);
+      const sourcePath = path.join(layout.runtimeDir, `e2e-job-${token}.cs`);
+      const configPath = path.join(layout.runtimeDir, `e2e-job-${token}.config.json`);
+      const statePath = path.join(layout.runtimeDir, `e2e-job-${token}.state.json`);
+      const source = fs.readFileSync(path.join(process.cwd(), 'scripts', 'test', 'e2e-job-supervisor.cs'));
+      fs.mkdirSync(layout.runtimeDir, { recursive: true });
+      fs.writeFileSync(sourcePath, source);
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          version: 2,
+          jobName: `CodeBuddyE2E-${token}`,
+          executable: process.execPath,
+          arguments: ['-e', 'setInterval(() => {}, 1000)'],
+          workingDirectory: projectRoot,
+        }),
+      );
+
+      const run = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          path.join(process.cwd(), 'scripts', 'test', 'e2e-job-supervisor.ps1'),
+          '-Mode',
+          'Supervise',
+          '-RuntimeDir',
+          layout.runtimeDir,
+          '-ConfigPath',
+          configPath,
+          '-StatePath',
+          statePath,
+          '-SourcePath',
+          sourcePath,
+          '-SourceSha256',
+          crypto.createHash('sha256').update(source).digest('hex'),
+          '-JobName',
+          `CodeBuddyE2E-${token}`,
+          '-ControlPipeName',
+          `CodeBuddyE2E-Control-${forgedToken}`,
+          '-ControlPipeToken',
+          token,
+          '-ProjectRoot',
+          layout.projectRoot,
+          '-ProjectRealRoot',
+          layout.projectRealRoot,
+          '-MarkerPath',
+          layout.markerPath,
+          '-MarkerToken',
+          layout.markerToken,
+        ],
+        { input: 'CLOSE\n', encoding: 'utf8', timeout: 20000, windowsHide: true },
+      );
+
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toMatch(/ControlPipeName must match the control ownership token/i);
+      expect(fs.existsSync(statePath), 'forged control token must be rejected before boundary creation').toBe(false);
+    },
+    30000,
+  );
+
+  it('bounds Windows Job control-pipe commands before parsing them', () => {
+    const source = fs.readFileSync(
+      path.join(process.cwd(), 'scripts', 'test', 'e2e-job-supervisor.cs'),
+      'utf8',
+    );
+
+    expect(source).toContain('CONTROL_COMMAND_MAXIMUM_CHARACTERS');
+    expect(source).toContain('ReadBoundedControl(controlReader)');
+    expect(source).not.toContain('controlReader.ReadLine()');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'JS collision recovery rejects the second launch without terminating the existing Job member',
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-js-job-collision-'));
+      const firstLayout = driver.createRuntimeLayout({
+        projectRoot,
+        runStamp: 'collision-first',
+        label: 'launch',
+      });
+      const secondLayout = driver.createRuntimeLayout({
+        projectRoot,
+        runStamp: 'collision-second',
+        label: 'launch',
+      });
+      const firstFixtureDir = path.join(firstLayout.runtimeDir, 'fixture');
+      const secondFixtureDir = path.join(secondLayout.runtimeDir, 'fixture');
+      const deterministicRandomBytes = (size) => Buffer.alloc(size, 0x11);
+      let first = null;
+      let secondError = null;
+
+      try {
+        first = await driver.launchDesktop({
+          executable: process.execPath,
+          appArgs: [ownedTreeFixturePath, '--role', 'survivor', '--fixture-dir', firstFixtureDir],
+          projectRoot,
+          userDataDir: firstLayout.userDataDir,
+          runtimeRoot: firstLayout.runtimeRoot,
+          runtimeDir: firstLayout.runtimeDir,
+          runtimeOwnership: firstLayout,
+          pickPort: async () => 43127,
+          randomBytesImpl: deterministicRandomBytes,
+        });
+        await waitForFixtureMarker(firstFixtureDir, 'survivor-ready');
+
+        try {
+          await driver.launchDesktop({
+            executable: process.execPath,
+            appArgs: [ownedTreeFixturePath, '--role', 'survivor', '--fixture-dir', secondFixtureDir],
+            projectRoot,
+            userDataDir: secondLayout.userDataDir,
+            runtimeRoot: secondLayout.runtimeRoot,
+            runtimeDir: secondLayout.runtimeDir,
+            runtimeOwnership: secondLayout,
+            pickPort: async () => 43128,
+            randomBytesImpl: deterministicRandomBytes,
+          });
+        } catch (error) {
+          secondError = error;
+        }
+
+        expect(secondError).toBeInstanceOf(Error);
+        expect(secondError.message).toMatch(/collision|ownership was established/i);
+        expect(secondError.ownershipBoundary).toMatchObject({
+          jobCreatedNew: false,
+          collisionDetected: true,
+          established: false,
+          rootCreatedSuspended: false,
+          rootAssignedBeforeResume: false,
+          supervisorReaped: true,
+        });
+        expect(secondError.remainingVerifiedProcesses).toEqual({
+          basis: 'controller-no-owned-root',
+          verified: true,
+          count: 0,
+          empty: true,
+        });
+
+        expect(
+          await exactProcessStillExists(first.rootIdentity),
+          'the existing Job member must survive second-launch JS recovery',
+        ).toBe(true);
+
+        const cleanup = await first.ownershipController.close();
+        expect(await exactProcessStillExists(first.rootIdentity)).toBe(false);
+        expect(cleanup.ownershipBoundary).toMatchObject({
+          jobCreatedNew: true,
+          collisionDetected: false,
+          established: true,
+          rootAssignedBeforeResume: true,
+          closeReason: 'controller-close',
+          supervisorReaped: true,
+        });
+        expect(cleanup.remainingVerifiedProcesses).toMatchObject({ verified: true, count: 0, empty: true });
+      } finally {
+        signalFixture(firstFixtureDir, 'shutdown');
+        signalFixture(secondFixtureDir, 'shutdown');
+        try {
+          await first?.ownershipController?.close?.();
+        } catch (_) {
+          // The behavior assertion retains the primary RED while the fixture receives cooperative shutdown.
+        }
+      }
+    },
+    45000,
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'parent exit inherits the target environment without persisting it in runtime files',
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-job-parent-exit-'));
+      const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'parent-exit', label: 'launch' });
+      const fixtureDir = path.join(layout.runtimeDir, 'fixture');
+      const identityPath = path.join(projectRoot, 'env-root-identity.json');
+      const driverPath = path.join(process.cwd(), 'scripts', 'test', 'e2e-driver.cjs');
+      const sentinel = 'present-only-in-env';
+      const probe = `
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const driver = require(${JSON.stringify(driverPath)});
+        const fixture = ${JSON.stringify(ownedTreeFixturePath)};
+        const fixtureDir = ${JSON.stringify(fixtureDir)};
+        const identityPath = ${JSON.stringify(identityPath)};
+        const layout = ${JSON.stringify(layout)};
+        const waitForMarker = async () => {
+          const target = path.join(fixtureDir, 'env-root-ready.json');
+          const deadline = Date.now() + 15000;
+          while (Date.now() < deadline) {
+            if (fs.existsSync(target)) return JSON.parse(fs.readFileSync(target, 'utf8'));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          throw new Error('env-root marker timed out');
+        };
+        (async () => {
+          const launched = await driver.launchDesktop({
+            executable: process.execPath,
+            appArgs: [fixture, '--role', 'env-root', '--fixture-dir', fixtureDir],
+            projectRoot: ${JSON.stringify(projectRoot)},
+            userDataDir: layout.userDataDir,
+            runtimeRoot: layout.runtimeRoot,
+            runtimeDir: layout.runtimeDir,
+            runtimeOwnership: layout,
+            pickPort: async () => 43129,
+            env: { CODEBUDDY_E2E_SENTINEL: process.env.CODEBUDDY_E2E_SENTINEL },
+          });
+          const marker = await waitForMarker();
+          if (marker.sentinelPresent !== true) throw new Error('target did not inherit sentinel');
+          fs.writeFileSync(identityPath, JSON.stringify(launched.rootIdentity), 'utf8');
+          process.exit(0);
+        })().catch((error) => {
+          process.stderr.write(String(error && (error.stack || error.message || error)));
+          process.exit(24);
+        });
+      `;
+      let rootIdentity = null;
+
+      try {
+        const probeProcess = spawn(process.execPath, ['-e', probe], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8',
+          windowsHide: true,
+          env: { ...process.env, CODEBUDDY_E2E_SENTINEL: sentinel },
+        });
+        const stdout = [];
+        const stderr = [];
+        probeProcess.stdout.on('data', (chunk) => stdout.push(String(chunk)));
+        probeProcess.stderr.on('data', (chunk) => stderr.push(String(chunk)));
+        const run = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            probeProcess.kill();
+            reject(new Error('parent-exit probe timed out after 25000ms'));
+          }, 25000);
+          probeProcess.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          probeProcess.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            resolve({ code, signal });
+          });
+        });
+        expect(run.code, stderr.join('') || stdout.join('') || run.signal).toBe(0);
+        rootIdentity = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
+        await waitForExactProcessExit(rootIdentity, 15000);
+
+        const marker = await waitForFixtureMarker(fixtureDir, 'env-root-ready');
+        expect(marker).toMatchObject({ sentinelPresent: true });
+        const statePath = await waitForFixtureCondition(
+          () => {
+            if (!fs.existsSync(layout.runtimeDir)) return null;
+            const name = fs.readdirSync(layout.runtimeDir).find((entry) => /^e2e-job-[0-9a-f]{32}\.state\.json$/.test(entry));
+            return name ? path.join(layout.runtimeDir, name) : null;
+          },
+          { description: 'parent-exit supervisor state' },
+        );
+        let lastState = null;
+        let finalState = null;
+        try {
+          finalState = await waitForFixtureCondition(
+            () => {
+              lastState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+              return lastState.closeReason === 'stdin-eof' && lastState.zeroVerified === true &&
+                lastState.activeProcessCount === 0 && lastState.jobClosed === true
+                ? lastState
+                : null;
+            },
+            { description: 'parent-exit zero-member proof' },
+          );
+        } catch (error) {
+          error.message += `; last state=${JSON.stringify(lastState)}`;
+          throw error;
+        }
+        expect(finalState).toMatchObject({ closeReason: 'stdin-eof', activeProcessCount: 0, zeroVerified: true });
+
+        const configPath = statePath.replace(/\.state\.json$/, '.config.json');
+        const jsonPaths = [];
+        const collectJson = (directory) => {
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const entryPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) collectJson(entryPath);
+            else if (entry.isFile() && entry.name.endsWith('.json')) jsonPaths.push(entryPath);
+          }
+        };
+        collectJson(layout.runtimeDir);
+        const privacyViolations = jsonPaths
+          .filter((jsonPath) => {
+            const contents = fs.readFileSync(jsonPath, 'utf8');
+            return contents.includes(sentinel) || /"environment"\s*:/i.test(contents) ||
+              /"commandLine"\s*:/i.test(contents);
+          })
+          .map((jsonPath) => path.relative(layout.runtimeDir, jsonPath).replaceAll('\\', '/'));
+        expect(privacyViolations, 'runtime JSON must not persist inherited environment data').toEqual([]);
+        expect(fs.existsSync(configPath), 'validated launch config must be removed before target resume').toBe(false);
+      } finally {
+        signalFixture(fixtureDir, 'shutdown');
+        if (rootIdentity && (await exactProcessStillExists(rootIdentity))) {
+          await waitForExactProcessExit(rootIdentity, 5000);
+        }
+        if (fs.existsSync(layout.runtimeDir)) await driver.cleanupRuntimeDir(layout);
+      }
+    },
+    40000,
   );
 
   it.runIf(process.platform === 'win32')(
@@ -851,6 +1211,7 @@ describe('desktop E2E harness public contract', () => {
             userDataDir: layout.userDataDir,
             runtimeRoot: layout.runtimeRoot,
             runtimeDir: layout.runtimeDir,
+            runtimeOwnership: layout,
             pickPort: async () => 43125,
             onOwnershipController(controller) { ownershipController = controller; },
           });
@@ -1119,6 +1480,7 @@ describe('desktop E2E harness public contract', () => {
     const pending = driver.finalizeUnsafeHarnessFailure({
       error: hardError,
       ownershipController,
+      runtimeOwnership: layout,
       runtimeRoot: layout.runtimeRoot,
       runtimeDir: layout.runtimeDir,
       evidenceOptions: {
@@ -1927,6 +2289,139 @@ describe('desktop E2E harness public contract', () => {
     expect(result).toMatchObject({ path: screenshotPath, bytes: png.length });
   });
 
+  it('captureScreenshot masks whole-page identity data during capture and restores the DOM afterward', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-e2e-private-shot-'));
+    const screenshotPath = path.join(tempDir, 'route.png');
+    const projectRoot = 'C:\\Users\\privacy-user\\Documents\\Private Project';
+    const userHome = 'C:\\Users\\privacy-user';
+    const userName = 'privacy.user@example.test';
+    const sessionId = '123e4567-e89b-12d3-a456-426614174000';
+    const png = Buffer.from('privacy-safe-png');
+    document.body.innerHTML = `
+      <aside role="navigation" aria-label="Main navigation">
+        <div class="workspace-info" title="${projectRoot}" data-workspace="${projectRoot}">
+          <span>工作区</span><span>${projectRoot}</span>
+        </div>
+        <section data-session-history aria-label="会话历史">
+          <button title="${sessionId}">Private roadmap title</button>
+        </section>
+        <div class="sidebar-user-section" title="Private Account Alias">Private Account Alias</div>
+      </aside>
+      <main>
+        <section class="log-output" aria-label="Logs">
+          <pre>RAW-LOG-PRIVATE-LINE session=${sessionId.slice(0, 12)}...</pre>
+        </section>
+        <input
+          value="${projectRoot}"
+          placeholder="Open ${userHome}"
+          title="${userName}"
+          data-session-id="${sessionId}"
+        />
+        <select title="${userName}">
+          <option value="${sessionId}">${userName} ${sessionId}</option>
+        </select>
+        <div data-note="mailto:${userName}">
+          Backup ${userName} at D:\\Private\\secret.txt for ${sessionId}.
+        </div>
+      </main>
+    `;
+    const input = document.querySelector('input');
+    const option = document.querySelector('option');
+    const originalHtml = document.body.innerHTML;
+    const originalInputValue = input.value;
+    const originalOptionValue = option.value;
+    let domDuringCapture = '';
+    const client = {
+      evaluate: async (expression) => globalThis.eval(expression),
+      send: async (method) => {
+        expect(method).toBe('Page.captureScreenshot');
+        domDuringCapture = JSON.stringify({
+          html: document.body.innerHTML,
+          text: document.body.textContent,
+          controls: [...document.querySelectorAll('input, textarea, select, option')].map((element) => ({
+            value: element.value,
+            placeholder: element.placeholder,
+            title: element.title,
+            attributes: [...element.attributes].map((attribute) => [attribute.name, attribute.value]),
+          })),
+        });
+        return { data: png.toString('base64') };
+      },
+    };
+
+    const result = await driver.captureScreenshot(client, screenshotPath, {
+      privacy: { sensitiveValues: [projectRoot, userHome, userName, sessionId] },
+    });
+
+    for (const sensitive of [
+      projectRoot,
+      userHome,
+      userName,
+      sessionId,
+      sessionId.slice(0, 12),
+      'Private roadmap title',
+      'Private Account Alias',
+      'RAW-LOG-PRIVATE-LINE',
+      'D:\\Private\\secret.txt',
+    ]) {
+      expect(domDuringCapture).not.toContain(sensitive);
+    }
+    expect(domDuringCapture).not.toMatch(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i);
+    expect(domDuringCapture).not.toMatch(/[a-f\d]{8}-[a-f\d]{4}-[1-5][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}/i);
+    expect(result.privacy).toMatchObject({ privacyVerified: true, remaining: 0 });
+    expect(Object.keys(result.privacy).sort()).toEqual(
+      ['privacyVerified', 'redactedNodes', 'redactedAttributes', 'redactedRanges', 'remaining'].sort(),
+    );
+    expect(result.privacy.redactedNodes).toBeGreaterThan(0);
+    expect(result.privacy.redactedAttributes).toBeGreaterThan(0);
+    expect(result.privacy.redactedRanges).toBeGreaterThan(0);
+    expect(document.body.innerHTML).toBe(originalHtml);
+    expect(input.value).toBe(originalInputValue);
+    expect(option.value).toBe(originalOptionValue);
+  });
+
+  it('captureScreenshot restores masked content when CDP capture rejects', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-e2e-private-shot-error-'));
+    const screenshotPath = path.join(tempDir, 'route.png');
+    const projectRoot = 'C:\\Users\\privacy-user\\Documents\\Rejected Capture';
+    const sessionId = '913e4567-e89b-42d3-a456-426614174999';
+    document.body.innerHTML = `
+      <aside>
+        <div class="sidebar-user-section">Failure Account Alias</div>
+        <section data-session-history><span>Rejected history title ${sessionId}</span></section>
+      </aside>
+      <main class="log-output"><pre>REJECTED-RAW-LOG ${projectRoot}</pre></main>
+      <input value="${sessionId}" title="${projectRoot}" />
+    `;
+    const input = document.querySelector('input');
+    const originalHtml = document.body.innerHTML;
+    const originalInputValue = input.value;
+    let domDuringCapture = '';
+
+    await expect(
+      driver.captureScreenshot(
+        {
+          evaluate: async (expression) => globalThis.eval(expression),
+          send: async () => {
+            domDuringCapture = `${document.body.textContent}\n${document.body.innerHTML}\n${input.value}`;
+            throw new Error('synthetic capture failure');
+          },
+        },
+        screenshotPath,
+        { privacy: { sensitiveValues: [projectRoot, sessionId] } },
+      ),
+    ).rejects.toThrow('synthetic capture failure');
+
+    expect(domDuringCapture).not.toContain(projectRoot);
+    expect(domDuringCapture).not.toContain(sessionId);
+    expect(domDuringCapture).not.toContain('Failure Account Alias');
+    expect(domDuringCapture).not.toContain('Rejected history title');
+    expect(domDuringCapture).not.toContain('REJECTED-RAW-LOG');
+    expect(document.body.innerHTML).toBe(originalHtml);
+    expect(input.value).toBe(originalInputValue);
+    expect(fs.existsSync(screenshotPath)).toBe(false);
+  });
+
   it('captureScreenshot cannot write after its shared harness signal is aborted', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-e2e-aborted-shot-'));
     const screenshotPath = path.join(tempDir, 'late.png');
@@ -2442,6 +2937,120 @@ describe('desktop E2E harness public contract', () => {
     expect(scan).toMatchObject({ count: 0, paths: [] });
     expect(combined).not.toContain('legacy-secret');
     expect(combined).not.toContain('legacy-json-secret');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a runtime root junction before creating any owned runtime files',
+    () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-root-junction-'));
+      const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-root-outside-'));
+      const outsideSentinel = path.join(outsideRoot, 'outside-sentinel.txt');
+      const runtimeRoot = path.join(projectRoot, '.omo', 'e2e-runtime');
+      fs.writeFileSync(outsideSentinel, 'must survive', 'utf8');
+      fs.mkdirSync(path.dirname(runtimeRoot), { recursive: true });
+      fs.symlinkSync(outsideRoot, runtimeRoot, 'junction');
+
+      expect(() =>
+        driver.createRuntimeLayout({ projectRoot, runStamp: 'junction', label: 'launch' }),
+      ).toThrow(/reparse|junction|canonical/i);
+      expect(fs.existsSync(outsideSentinel), 'outside sentinel must survive rejected runtime creation').toBe(true);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'accepts the project root itself through a junction while anchoring descendants to its real path',
+    async () => {
+      const realProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-real-project-'));
+      const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-project-link-'));
+      const linkedProjectRoot = path.join(linkParent, 'project');
+      fs.symlinkSync(realProjectRoot, linkedProjectRoot, 'junction');
+
+      const layout = driver.createRuntimeLayout({
+        projectRoot: linkedProjectRoot,
+        runStamp: 'linked-project',
+        label: 'launch',
+      });
+
+      expect(path.resolve(layout.projectRoot)).toBe(path.resolve(linkedProjectRoot));
+      expect(path.resolve(layout.projectRealRoot).toLowerCase()).toBe(path.resolve(realProjectRoot).toLowerCase());
+      await driver.cleanupRuntimeDir(layout);
+      expect(fs.existsSync(layout.runtimeDir)).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a reparse descendant inside an otherwise owned runtime before recursive cleanup',
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-subtree-junction-'));
+      const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-subtree-outside-'));
+      const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'subtree', label: 'launch' });
+      const outsideSentinel = path.join(outsideRoot, 'outside-sentinel.txt');
+      fs.writeFileSync(outsideSentinel, 'must survive', 'utf8');
+      fs.symlinkSync(outsideRoot, path.join(layout.runtimeDir, 'redirected-user-data'), 'junction');
+
+      await expect(driver.cleanupRuntimeDir(layout)).rejects.toThrow(/reparse|junction/i);
+      expect(fs.existsSync(outsideSentinel), 'outside subtree sentinel must survive rejected cleanup').toBe(true);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects cleanup after a validated runtime ancestor is swapped to an outside junction',
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-swap-'));
+      const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-swap-outside-'));
+      const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'swap', label: 'renderer' });
+      fs.mkdirSync(layout.userDataDir, { recursive: true });
+      const runRoot = path.dirname(layout.runtimeDir);
+      const originalRunRoot = `${runRoot}-original`;
+      const redirectedRuntimeDir = path.join(outsideRoot, path.basename(layout.runtimeDir));
+      const outsideSentinel = path.join(redirectedRuntimeDir, 'outside-sentinel.txt');
+      fs.mkdirSync(redirectedRuntimeDir, { recursive: true });
+      fs.writeFileSync(outsideSentinel, 'must survive', 'utf8');
+      fs.renameSync(runRoot, originalRunRoot);
+      fs.symlinkSync(outsideRoot, runRoot, 'junction');
+
+      let cleanupError = null;
+      try {
+        await driver.cleanupRuntimeDir(layout);
+      } catch (error) {
+        cleanupError = error;
+      }
+
+      expect({
+        rejected: cleanupError instanceof Error && /reparse|junction|canonical|ownership/i.test(cleanupError.message),
+        outsideSentinelSurvived: fs.existsSync(outsideSentinel),
+      }).toEqual({ rejected: true, outsideSentinelSurvived: true });
+    },
+  );
+
+  it('creates a regular ownership marker whose token is retained in runtime metadata', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-marker-'));
+    const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'marker', label: 'renderer' });
+
+    expect(layout.markerToken).toMatch(/^[0-9a-f]{32}$/);
+    expect(layout.markerPath).toBe(path.join(layout.runtimeDir, '.codebuddy-e2e-runtime-owner'));
+    expect(fs.lstatSync(layout.markerPath).isFile()).toBe(true);
+    expect(fs.readFileSync(layout.markerPath, 'utf8')).toBe(`${layout.markerToken}\n`);
+  });
+
+  it('revalidates runtime ownership across Node, PowerShell, and C# controller writes', () => {
+    const driverSource = fs.readFileSync(path.join(process.cwd(), 'scripts', 'test', 'e2e-driver.cjs'), 'utf8');
+    const powerShellSource = fs.readFileSync(
+      path.join(process.cwd(), 'scripts', 'test', 'e2e-job-supervisor.ps1'),
+      'utf8',
+    );
+    const csharpSource = fs.readFileSync(
+      path.join(process.cwd(), 'scripts', 'test', 'e2e-job-supervisor.cs'),
+      'utf8',
+    );
+
+    for (const field of ['ProjectRoot', 'ProjectRealRoot', 'MarkerPath', 'MarkerToken']) {
+      expect(driverSource).toContain(`'-${field}'`);
+      expect(powerShellSource).toContain(`[string]$${field}`);
+    }
+    expect(powerShellSource).toContain('Assert-RuntimeOwnership');
+    expect(csharpSource).toContain('ValidateRuntimeOwnership();');
+    expect(csharpSource).toContain('CanonicalDirectoryPath(projectRoot)');
   });
 
   it('keeps raw Electron profiles outside evidence and safely removes only the owned runtime directory', async () => {

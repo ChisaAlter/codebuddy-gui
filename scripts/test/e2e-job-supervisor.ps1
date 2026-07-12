@@ -14,7 +14,19 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$SourceSha256,
   [Parameter(Mandatory = $true)]
-  [string]$JobName
+  [string]$JobName,
+  [Parameter(Mandatory = $true)]
+  [string]$ControlPipeName,
+  [Parameter(Mandatory = $true)]
+  [string]$ControlPipeToken,
+  [Parameter(Mandatory = $true)]
+  [string]$ProjectRoot,
+  [Parameter(Mandatory = $true)]
+  [string]$ProjectRealRoot,
+  [Parameter(Mandatory = $true)]
+  [string]$MarkerPath,
+  [Parameter(Mandatory = $true)]
+  [string]$MarkerToken
 )
 
 Set-StrictMode -Version Latest
@@ -63,10 +75,61 @@ function Assert-BoundedString {
   return $text
 }
 
+function Assert-RuntimeOwnership {
+  $resolvedProjectRoot = Resolve-FullPath $ProjectRoot 'ProjectRoot'
+  $resolvedProjectRealRoot = Resolve-FullPath $ProjectRealRoot 'ProjectRealRoot'
+  if (-not (Test-Path -LiteralPath $resolvedProjectRoot -PathType Container) -or
+      -not (Test-Path -LiteralPath $resolvedProjectRealRoot -PathType Container)) {
+    throw 'Runtime project ownership anchors are missing'
+  }
+  if ($MarkerToken -notmatch '^[0-9a-f]{32}$') {
+    throw 'MarkerToken must be a 128-bit lowercase ownership token'
+  }
+  $expectedRuntimeRoot = [System.IO.Path]::Combine($resolvedProjectRoot, '.omo', 'e2e-runtime')
+  $runtimePrefix = $expectedRuntimeRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) +
+    [System.IO.Path]::DirectorySeparatorChar
+  if (-not $script:ResolvedRuntimeDir.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'RuntimeDir is outside the project runtime ownership root'
+  }
+  $cursor = $script:ResolvedRuntimeDir
+  while (-not [string]::Equals($cursor, $resolvedProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::IsNullOrWhiteSpace($cursor) -or
+        -not $cursor.StartsWith($resolvedProjectRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) +
+          [System.IO.Path]::DirectorySeparatorChar,
+          [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Runtime ownership path escaped the project root'
+    }
+    $attributes = [System.IO.File]::GetAttributes($cursor)
+    if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'Runtime ownership path cannot contain a reparse point or junction'
+    }
+    $cursor = [System.IO.Path]::GetDirectoryName($cursor)
+  }
+  $resolvedMarkerPath = Resolve-FullPath $MarkerPath 'MarkerPath'
+  $expectedMarkerPath = [System.IO.Path]::Combine($script:ResolvedRuntimeDir, '.codebuddy-e2e-runtime-owner')
+  if (-not [string]::Equals($resolvedMarkerPath, $expectedMarkerPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+      -not (Test-Path -LiteralPath $resolvedMarkerPath -PathType Leaf)) {
+    throw 'Runtime ownership marker is missing or misplaced'
+  }
+  $markerInfo = Get-Item -LiteralPath $resolvedMarkerPath
+  if (($markerInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $markerInfo.Length -ne 33) {
+    throw 'Runtime ownership marker must be a regular bounded file'
+  }
+  $markerText = [System.IO.File]::ReadAllText($resolvedMarkerPath, [System.Text.Encoding]::UTF8)
+  if (-not [string]::Equals($markerText, $MarkerToken + [char]10, [System.StringComparison]::Ordinal)) {
+    throw 'Runtime ownership marker token mismatch'
+  }
+}
+
 if ($JobName -notmatch '^CodeBuddyE2E-([0-9a-f]{32})$') {
   throw 'JobName must be a random CodeBuddy E2E name'
 }
 $token = $Matches[1]
+$expectedControlPipeName = "CodeBuddyE2E-Control-$ControlPipeToken"
+if ($ControlPipeToken -notmatch '^[0-9a-f]{32}$' -or $ControlPipeName.Length -gt 96 -or
+    -not [string]::Equals($ControlPipeName, $expectedControlPipeName, [System.StringComparison]::Ordinal)) {
+  throw 'ControlPipeName must match the control ownership token'
+}
 $script:ResolvedRuntimeDir = Resolve-FullPath $RuntimeDir 'RuntimeDir'
 if (-not (Test-Path -LiteralPath $script:ResolvedRuntimeDir -PathType Container)) {
   throw 'RuntimeDir is missing'
@@ -75,8 +138,9 @@ $runtimeAttributes = [System.IO.File]::GetAttributes($script:ResolvedRuntimeDir)
 if (($runtimeAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
   throw 'RuntimeDir cannot be a reparse point'
 }
+Assert-RuntimeOwnership
 
-$resolvedConfigPath = Assert-DirectRuntimeFile $ConfigPath "e2e-job-$token.config.json" 'ConfigPath' $true
+$resolvedConfigPath = Assert-DirectRuntimeFile $ConfigPath "e2e-job-$token.config.json" 'ConfigPath' ($Mode -eq 'Supervise')
 $resolvedStatePath = Assert-DirectRuntimeFile $StatePath "e2e-job-$token.state.json" 'StatePath' $false
 $resolvedSourcePath = Assert-DirectRuntimeFile $SourcePath "e2e-job-$token.cs" 'SourcePath' $true
 if ($SourceSha256 -notmatch '^[0-9a-f]{64}$') {
@@ -118,7 +182,7 @@ if ($configInfo.Length -lt 2 -or $configInfo.Length -gt 524288) {
 }
 $configText = [System.IO.File]::ReadAllText($resolvedConfigPath, [System.Text.Encoding]::UTF8)
 $config = $configText | ConvertFrom-Json
-$requiredProperties = @('version', 'jobName', 'executable', 'arguments', 'workingDirectory', 'environment')
+$requiredProperties = @('version', 'jobName', 'executable', 'arguments', 'workingDirectory')
 $actualProperties = @($config.PSObject.Properties.Name)
 foreach ($required in $requiredProperties) {
   if ($actualProperties -notcontains $required) { throw "Config is missing $required" }
@@ -126,7 +190,7 @@ foreach ($required in $requiredProperties) {
 foreach ($actual in $actualProperties) {
   if ($requiredProperties -notcontains $actual) { throw 'Config contains an unsupported property' }
 }
-if ([int]$config.version -ne 1) { throw 'Config version is unsupported' }
+if ([int]$config.version -ne 2) { throw 'Config version is unsupported' }
 $configJobName = Assert-BoundedString $config.jobName 'config.jobName' 64 $false
 if (-not [string]::Equals($configJobName, $JobName, [System.StringComparison]::Ordinal)) {
   throw 'Config JobName mismatch'
@@ -145,22 +209,9 @@ foreach ($argument in $arguments) {
   $argumentValues.Add($value)
 }
 
-if ($null -eq $config.environment -or -not ($config.environment -is [psobject])) {
-  throw 'Config environment must be an object'
-}
-$environmentProperties = @($config.environment.PSObject.Properties)
-if ($environmentProperties.Count -gt 512) { throw 'Config environment exceeds the allowed count' }
-$environmentKeys = New-Object 'System.Collections.Generic.List[string]'
-$environmentValues = New-Object 'System.Collections.Generic.List[string]'
-$environmentCharacters = 1
-foreach ($property in $environmentProperties) {
-  $key = Assert-BoundedString ([string]$property.Name) 'config.environment key' 32767 $false
-  if ($key.IndexOf('=') -ge 0) { throw 'Config environment key is invalid' }
-  $value = Assert-BoundedString ([string]$property.Value) 'config.environment value' 32767 $true
-  $environmentCharacters += $key.Length + $value.Length + 2
-  if ($environmentCharacters -gt 32760) { throw 'Config environment exceeds the allowed size' }
-  $environmentKeys.Add($key)
-  $environmentValues.Add($value)
+[System.IO.File]::Delete($resolvedConfigPath)
+if (Test-Path -LiteralPath $resolvedConfigPath) {
+  throw 'Validated ConfigPath could not be removed before root resume'
 }
 
 $exitCode = [CodeBuddy.E2E.JobSupervisor]::Supervise(
@@ -168,8 +219,11 @@ $exitCode = [CodeBuddy.E2E.JobSupervisor]::Supervise(
   $executable,
   $argumentValues.ToArray(),
   $workingDirectory,
-  $environmentKeys.ToArray(),
-  $environmentValues.ToArray(),
+  $ControlPipeName,
+  $ProjectRoot,
+  $ProjectRealRoot,
+  $MarkerPath,
+  $MarkerToken,
   $resolvedStatePath
 )
 exit $exitCode

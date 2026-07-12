@@ -40,11 +40,12 @@ const runLayout = createTaskRunLayout({
   runLabel: 'unpackaged-launch',
   requestedId: runStamp,
 });
-const { runtimeRoot, runtimeDir, userDataDir } = createRuntimeLayout({
+const runtimeOwnership = createRuntimeLayout({
   projectRoot,
   runStamp: runLayout.runName,
   label: 'launch',
 });
+const { runtimeRoot, runtimeDir, userDataDir } = runtimeOwnership;
 const screenshotPath = path.join(runLayout.screenshotDir, 'startup.png');
 const runnerProfile =
   'dedicated authenticated test profile; CodeBuddy backend session state may persist between runs';
@@ -191,6 +192,7 @@ async function main(signal) {
     userDataDir,
     runtimeRoot,
     runtimeDir,
+    runtimeOwnership,
     debugPort: requestedDebugPort(),
     signal,
     onOwnershipController(controller) {
@@ -388,7 +390,7 @@ async function finish(error) {
 
   const startupText = startup?.text || findStartupLog(startupOptions()).text || '';
   try {
-    await cleanupRuntimeDir({ runtimeRoot, runtimeDir });
+    await cleanupRuntimeDir({ runtimeOwnership, runtimeRoot, runtimeDir });
     check('isolated runtime profile removed after evidence capture', !fs.existsSync(runtimeDir));
   } catch (runtimeError) {
     check('isolated runtime profile removed after evidence capture', false, runtimeError.message);
@@ -468,6 +470,7 @@ async function runHarness() {
       unsafeFinalizer: () => finalizeUnsafeHarnessFailure({
         error,
         ownershipController,
+        runtimeOwnership,
         runtimeRoot,
         runtimeDir,
         evidenceOptions: {

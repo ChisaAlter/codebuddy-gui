@@ -143,6 +143,12 @@ switch (role) {
   case 'eof-root':
     stayAlive('eof-root-ready');
     break;
+  case 'env-root':
+    writeMarker('env-root-ready', {
+      sentinelPresent: process.env.CODEBUDDY_E2E_SENTINEL === 'present-only-in-env',
+    });
+    stayAlive('env-root-staying');
+    break;
   default:
     process.stderr.write(`unknown fixture role: ${role}\n`);
     process.exit(2);

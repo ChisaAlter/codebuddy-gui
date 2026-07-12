@@ -208,29 +208,178 @@ function safeRuntimeSegment(value, fallback) {
   return cleaned || fallback;
 }
 
+const RUNTIME_OWNER_MARKER = '.codebuddy-e2e-runtime-owner';
+const RUNTIME_OWNER_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
+
+function sameCanonicalPath(left, right) {
+  const normalize = (value) => process.platform === 'win32'
+    ? path.resolve(value).toLowerCase()
+    : path.resolve(value);
+  return normalize(left) === normalize(right);
+}
+
+function descendantRelative(root, candidate, label, allowEqual = false) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  if ((!allowEqual && !relative) || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`${label} is outside the owned runtime root`);
+  }
+  return relative;
+}
+
+function canonicalRealPath(value) {
+  return (fs.realpathSync.native || fs.realpathSync)(value);
+}
+
+function verifyProjectAnchor(projectRoot, projectRealRoot) {
+  if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
+    throw new Error('runtime project root must be an existing directory');
+  }
+  const currentRealRoot = canonicalRealPath(projectRoot);
+  if (!sameCanonicalPath(currentRealRoot, projectRealRoot)) {
+    throw new Error('runtime project root canonical anchor changed');
+  }
+}
+
+function verifyRuntimeDirectoryChain(options = {}) {
+  const { projectRoot, projectRealRoot, targetPath, createMissing = false, allowMissing = false } = options;
+  verifyProjectAnchor(projectRoot, projectRealRoot);
+  const relative = descendantRelative(projectRoot, targetPath, 'runtime path');
+  const segments = relative.split(path.sep).filter(Boolean);
+  let current = projectRoot;
+  let expectedReal = projectRealRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    expectedReal = path.join(expectedReal, segment);
+    if (!fs.existsSync(current)) {
+      if (!createMissing) {
+        if (allowMissing) return { exists: false, path: current };
+        throw new Error(`runtime path component is missing: ${segment}`);
+      }
+      fs.mkdirSync(current, { recursive: false, mode: 0o700 });
+    }
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`runtime path contains a reparse point or junction: ${segment}`);
+    }
+    if (!stat.isDirectory()) throw new Error(`runtime path component is not a directory: ${segment}`);
+    const currentReal = canonicalRealPath(current);
+    if (!sameCanonicalPath(currentReal, expectedReal)) {
+      throw new Error(`runtime path canonical location changed at ${segment}`);
+    }
+  }
+  return { exists: true, path: targetPath };
+}
+
+function lexicalRuntimePaths(options = {}) {
+  const source = options.runtimeOwnership || options;
+  const runtimeRoot = path.resolve(source.runtimeRoot || options.runtimeRoot || '');
+  const runtimeDir = path.resolve(source.runtimeDir || options.runtimeDir || '');
+  descendantRelative(runtimeRoot, runtimeDir, 'runtime directory');
+  return { source, runtimeRoot, runtimeDir };
+}
+
+function verifyRuntimeSubtree(runtimeDir) {
+  const pending = [runtimeDir];
+  let inspected = 0;
+  while (pending.length) {
+    const directory = pending.pop();
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      inspected += 1;
+      if (inspected > 100000) throw new Error('runtime subtree exceeds the validation entry limit');
+      const entryPath = path.join(directory, entry.name);
+      const stat = fs.lstatSync(entryPath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`runtime subtree contains a reparse point or junction: ${entry.name}`);
+      }
+      if (stat.isDirectory()) pending.push(entryPath);
+      else if (!stat.isFile()) throw new Error(`runtime subtree contains an unsupported entry: ${entry.name}`);
+    }
+  }
+}
+
+function verifyRuntimeOwnership(options = {}, verification = {}) {
+  const { source, runtimeRoot, runtimeDir } = lexicalRuntimePaths(options);
+  const projectRoot = path.resolve(source.projectRoot || '');
+  const projectRealRoot = path.resolve(source.projectRealRoot || '');
+  const markerPath = path.resolve(source.markerPath || '');
+  const markerToken = String(source.markerToken || '');
+  if (!projectRoot || !projectRealRoot || !RUNTIME_OWNER_TOKEN_PATTERN.test(markerToken)) {
+    throw new Error('runtime ownership metadata is incomplete');
+  }
+  if (!sameCanonicalPath(runtimeRoot, path.join(projectRoot, '.omo', 'e2e-runtime'))) {
+    throw new Error('runtime root does not match the project ownership anchor');
+  }
+  if (!sameCanonicalPath(markerPath, path.join(runtimeDir, RUNTIME_OWNER_MARKER))) {
+    throw new Error('runtime ownership marker path is invalid');
+  }
+  verifyRuntimeDirectoryChain({ projectRoot, projectRealRoot, targetPath: runtimeRoot });
+  const runtimeStatus = verifyRuntimeDirectoryChain({
+    projectRoot,
+    projectRealRoot,
+    targetPath: runtimeDir,
+    allowMissing: verification.allowMissingRuntimeDir === true,
+  });
+  if (!runtimeStatus.exists) {
+    return { projectRoot, projectRealRoot, runtimeRoot, runtimeDir, markerPath, markerToken, exists: false };
+  }
+  const markerStat = fs.lstatSync(markerPath);
+  if (markerStat.isSymbolicLink() || !markerStat.isFile() || markerStat.size !== 33) {
+    throw new Error('runtime ownership marker is not a regular bounded file');
+  }
+  if (fs.readFileSync(markerPath, 'utf8') !== `${markerToken}\n`) {
+    throw new Error('runtime ownership marker token does not match in-memory ownership');
+  }
+  if (verification.verifySubtree === true) verifyRuntimeSubtree(runtimeDir);
+  return { projectRoot, projectRealRoot, runtimeRoot, runtimeDir, markerPath, markerToken, exists: true };
+}
+
 function createRuntimeLayout(options = {}) {
   const projectRoot = path.resolve(options.projectRoot || process.cwd());
+  const projectRealRoot = canonicalRealPath(projectRoot);
   const runStamp = safeRuntimeSegment(options.runStamp, new Date().toISOString());
   const label = safeRuntimeSegment(options.label, 'desktop');
   const runtimeRoot = path.join(projectRoot, '.omo', 'e2e-runtime');
   const runtimeDir = path.join(runtimeRoot, runStamp, label);
+  verifyRuntimeDirectoryChain({ projectRoot, projectRealRoot, targetPath: runtimeDir, createMissing: true });
+  const markerBytes = (options.randomBytesImpl || crypto.randomBytes)(16);
+  if (!Buffer.isBuffer(markerBytes) || markerBytes.length !== 16) {
+    throw new Error('runtime ownership token source must return exactly 16 bytes');
+  }
+  const markerToken = markerBytes.toString('hex');
+  const markerPath = path.join(runtimeDir, RUNTIME_OWNER_MARKER);
+  fs.writeFileSync(markerPath, `${markerToken}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   return {
+    projectRoot,
+    projectRealRoot,
     runtimeRoot,
     runtimeDir,
+    markerPath,
+    markerToken,
     userDataDir: path.join(runtimeDir, 'user-data'),
   };
 }
 
 async function cleanupRuntimeDir(options = {}) {
-  const runtimeRoot = path.resolve(options.runtimeRoot || '');
-  const runtimeDir = path.resolve(options.runtimeDir || '');
-  const relative = path.relative(runtimeRoot, runtimeDir);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Refusing to remove runtime directory outside the owned runtime root: ${runtimeDir}`);
-  }
-  if (!fs.existsSync(runtimeDir)) return { runtimeRoot, runtimeDir, removed: false };
+  const ownership = verifyRuntimeOwnership(options, {
+    allowMissingRuntimeDir: true,
+    verifySubtree: true,
+  });
+  const { runtimeRoot, runtimeDir } = ownership;
+  if (!ownership.exists) return { runtimeRoot, runtimeDir, removed: false };
+  const quarantineDir = path.join(
+    path.dirname(runtimeDir),
+    `.codebuddy-e2e-quarantine-${ownership.markerToken}-${crypto.randomBytes(8).toString('hex')}`,
+  );
+  if (fs.existsSync(quarantineDir)) throw new Error('runtime quarantine path already exists');
+  fs.renameSync(runtimeDir, quarantineDir);
+  const quarantinedOwnership = {
+    ...ownership,
+    runtimeDir: quarantineDir,
+    markerPath: path.join(quarantineDir, RUNTIME_OWNER_MARKER),
+  };
+  verifyRuntimeOwnership(quarantinedOwnership, { verifySubtree: true });
   const removeImpl = options.removeImpl || fs.rmSync;
-  removeImpl(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  removeImpl(quarantineDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   return { runtimeRoot, runtimeDir, removed: !fs.existsSync(runtimeDir) };
 }
 
@@ -240,6 +389,7 @@ const WINDOWS_JOB_CONFIG_BYTES = 512 * 1024;
 const WINDOWS_JOB_SOURCE_BYTES = 256 * 1024;
 const windowsJobScriptPath = path.join(__dirname, 'e2e-job-supervisor.ps1');
 const windowsJobSourcePath = path.join(__dirname, 'e2e-job-supervisor.cs');
+const windowsJobHostPath = path.join(__dirname, 'e2e-job-supervisor-host.cjs');
 
 function runtimeChildPath(runtimeDir, basename) {
   const candidate = path.resolve(runtimeDir, basename);
@@ -249,8 +399,8 @@ function runtimeChildPath(runtimeDir, basename) {
   return candidate;
 }
 
-function validateWindowsJobRuntime(runtimeRootValue, runtimeDirValue) {
-  if (!runtimeRootValue || !runtimeDirValue) {
+function validateWindowsJobRuntime(runtimeOwnership, runtimeRootValue, runtimeDirValue) {
+  if (!runtimeOwnership || !runtimeRootValue || !runtimeDirValue) {
     throw new Error('real Windows desktop launches require runtimeRoot and runtimeDir');
   }
   const resolvedRoot = path.resolve(runtimeRootValue);
@@ -259,12 +409,12 @@ function validateWindowsJobRuntime(runtimeRootValue, runtimeDirValue) {
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('Windows Job runtimeDir must be inside runtimeRoot');
   }
-  fs.mkdirSync(resolvedDir, { recursive: true });
-  const stat = fs.lstatSync(resolvedDir);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error('Windows Job runtimeDir must be a non-link directory');
+  const verified = verifyRuntimeOwnership({ runtimeOwnership });
+  if (!sameCanonicalPath(verified.runtimeRoot, resolvedRoot) ||
+      !sameCanonicalPath(verified.runtimeDir, resolvedDir)) {
+    throw new Error('Windows Job runtime paths do not match runtime ownership metadata');
   }
-  return { runtimeRoot: resolvedRoot, runtimeDir: resolvedDir };
+  return verified;
 }
 
 function boundedWindowsJobEnvironment(baseEnvironment, overrides) {
@@ -297,7 +447,7 @@ function boundedWindowsJobEnvironment(baseEnvironment, overrides) {
   return environment;
 }
 
-function validateWindowsJobLaunchValues(executable, launchArgs, projectRoot, environment) {
+function validateWindowsJobLaunchValues(executable, launchArgs, projectRoot) {
   const executableValue = String(executable || '');
   const workingDirectory = path.resolve(projectRoot || process.cwd());
   if (!path.isAbsolute(executableValue) || !fs.existsSync(executableValue)) {
@@ -322,10 +472,14 @@ function validateWindowsJobLaunchValues(executable, launchArgs, projectRoot, env
     if (argumentCharacters > 32767) throw new Error('real Windows desktop launch arguments are too large');
     return text;
   });
-  return { executable: executableValue, arguments: argumentsList, workingDirectory, environment };
+  return { executable: executableValue, arguments: argumentsList, workingDirectory };
 }
 
-function writeAtomicOwnedFile(targetPath, content, maximumBytes) {
+function writeAtomicOwnedFile(targetPath, content, maximumBytes, runtimeOwnership) {
+  const ownership = verifyRuntimeOwnership({ runtimeOwnership });
+  if (!sameCanonicalPath(path.dirname(targetPath), ownership.runtimeDir)) {
+    throw new Error('owned runtime file is outside the verified runtime directory');
+  }
   const bytes = Buffer.byteLength(content, 'utf8');
   if (bytes < 1 || bytes > maximumBytes) {
     throw new Error(`owned runtime file ${path.basename(targetPath)} is outside its allowed size`);
@@ -336,6 +490,7 @@ function writeAtomicOwnedFile(targetPath, content, maximumBytes) {
   );
   fs.writeFileSync(temporaryPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   try {
+    verifyRuntimeOwnership({ runtimeOwnership });
     fs.renameSync(temporaryPath, targetPath);
   } catch (error) {
     try {
@@ -380,6 +535,8 @@ function normalizeWindowsJobState(value, expectedJobName) {
     version: 1,
     kind: 'windows-job',
     jobName: value.jobName,
+    jobCreatedNew: boolean('jobCreatedNew'),
+    collisionDetected: boolean('collisionDetected'),
     established: boolean('established'),
     rootCreatedSuspended: boolean('rootCreatedSuspended'),
     rootAssignedBeforeResume: boolean('rootAssignedBeforeResume'),
@@ -394,7 +551,11 @@ function normalizeWindowsJobState(value, expectedJobName) {
   };
 }
 
-function readWindowsJobState(statePath, jobName) {
+function readWindowsJobState(statePath, jobName, runtimeOwnership) {
+  const ownership = verifyRuntimeOwnership({ runtimeOwnership });
+  if (!sameCanonicalPath(path.dirname(statePath), ownership.runtimeDir)) {
+    throw new Error('Windows Job state is outside the verified runtime directory');
+  }
   const stat = fs.statSync(statePath);
   if (!stat.isFile() || stat.size < 2 || stat.size > WINDOWS_JOB_STATE_BYTES) {
     throw new Error('Windows Job state file is outside its allowed size');
@@ -402,15 +563,34 @@ function readWindowsJobState(statePath, jobName) {
   return normalizeWindowsJobState(JSON.parse(fs.readFileSync(statePath, 'utf8')), jobName);
 }
 
+function stateProvesOwnedEstablishedJob(state) {
+  return state?.jobCreatedNew === true &&
+    state?.collisionDetected === false &&
+    state?.established === true &&
+    state?.rootAssignedBeforeResume === true;
+}
+
+function stateProvesNoOwnedRoot(state) {
+  return state?.jobCreatedNew === false &&
+    state?.collisionDetected === true &&
+    state?.rootCreatedSuspended === false &&
+    state?.rootPid === 0;
+}
+
 function ownershipCleanupFromState(state, overrides = {}) {
-  const activeCount = Number.isInteger(overrides.activeProcessCount)
+  const noOwnedRoot = overrides.noOwnedRoot === true && stateProvesNoOwnedRoot(state);
+  const activeCount = noOwnedRoot
+    ? 0
+    : Number.isInteger(overrides.activeProcessCount)
     ? overrides.activeProcessCount
     : state?.activeProcessCount;
-  const zeroVerified = overrides.zeroVerified === true || state?.zeroVerified === true;
+  const zeroVerified = noOwnedRoot || overrides.zeroVerified === true || state?.zeroVerified === true;
   const verified = zeroVerified && activeCount === 0;
   return {
     ownershipBoundary: {
       kind: 'windows-job',
+      jobCreatedNew: state?.jobCreatedNew === true,
+      collisionDetected: state?.collisionDetected === true,
       established: state?.established === true,
       rootCreatedSuspended: state?.rootCreatedSuspended === true,
       rootAssignedBeforeResume: state?.rootAssignedBeforeResume === true,
@@ -423,7 +603,7 @@ function ownershipCleanupFromState(state, overrides = {}) {
       supervisorReaped: overrides.supervisorReaped === true,
     },
     remainingVerifiedProcesses: {
-      basis: 'job-active-process-count',
+      basis: noOwnedRoot ? 'controller-no-owned-root' : 'job-active-process-count',
       verified,
       count: Number.isInteger(activeCount) && activeCount >= 0 ? activeCount : null,
       empty: verified,
@@ -464,6 +644,8 @@ function safeOwnershipBoundary(value) {
   ]);
   return {
     kind: 'windows-job',
+    jobCreatedNew: value.jobCreatedNew === true,
+    collisionDetected: value.collisionDetected === true,
     established: value.established === true,
     rootCreatedSuspended: value.rootCreatedSuspended === true,
     rootAssignedBeforeResume: value.rootAssignedBeforeResume === true,
@@ -478,11 +660,12 @@ function safeOwnershipBoundary(value) {
 }
 
 function safeRemainingVerifiedProcesses(value) {
-  if (!value || value.basis !== 'job-active-process-count') return null;
+  const allowedBases = new Set(['job-active-process-count', 'controller-no-owned-root']);
+  if (!value || !allowedBases.has(value.basis)) return null;
   const count = Number.isInteger(value.count) && value.count >= 0 ? value.count : null;
   const verified = value.verified === true && count === 0;
   return {
-    basis: 'job-active-process-count',
+    basis: value.basis,
     verified,
     count,
     empty: verified && value.empty === true,
@@ -609,6 +792,7 @@ async function finalizeUnsafeHarnessFailure(options = {}) {
   const {
     error,
     ownershipController,
+    runtimeOwnership,
     runtimeRoot,
     runtimeDir,
     evidenceOptions = {},
@@ -669,7 +853,7 @@ async function finalizeUnsafeHarnessFailure(options = {}) {
   const runtimeRemoval = { attempted: true, removed: false };
 
   try {
-    const removed = await cleanupRuntimeDir({ runtimeRoot, runtimeDir });
+    const removed = await cleanupRuntimeDir({ runtimeOwnership, runtimeRoot, runtimeDir });
     runtimeRemoval.removed = removed.removed === true || !fs.existsSync(path.resolve(runtimeDir || ''));
     if (!runtimeRemoval.removed) throw new Error('owned runtime directory still exists after cleanup');
   } catch (runtimeError) {
@@ -789,7 +973,81 @@ function windowsJobPowerShellArgs(mode, metadata) {
     metadata.sourceSha256,
     '-JobName',
     metadata.jobName,
+    '-ControlPipeName',
+    metadata.controlPipeName,
+    '-ControlPipeToken',
+    metadata.controlPipeToken,
+    '-ProjectRoot',
+    metadata.runtimeOwnership.projectRoot,
+    '-ProjectRealRoot',
+    metadata.runtimeOwnership.projectRealRoot,
+    '-MarkerPath',
+    metadata.runtimeOwnership.markerPath,
+    '-MarkerToken',
+    metadata.runtimeOwnership.markerToken,
   ];
+}
+
+async function createWindowsJobControlListener(pipeName) {
+  if (!/^CodeBuddyE2E-Control-[0-9a-f]{32}$/.test(pipeName)) {
+    throw new Error('Windows Job control pipe name is invalid');
+  }
+  const pipePath = `\\\\.\\pipe\\${pipeName}`;
+  const server = net.createServer();
+  server.maxConnections = 1;
+  await new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.removeListener('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(pipePath);
+  });
+  return { server, pipePath };
+}
+
+function waitForWindowsJobControlConnection(listener, timeoutMs, signal) {
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      listener.server.removeListener('connection', onConnection);
+      listener.server.removeListener('error', onError);
+      signal?.removeEventListener?.('abort', onAbort);
+    };
+    const closeListener = () => {
+      if (listener.server.listening) listener.server.close();
+    };
+    const onConnection = (socket) => {
+      cleanup();
+      closeListener();
+      socket.on('error', () => {});
+      resolve(socket);
+    };
+    const onError = (error) => {
+      cleanup();
+      closeListener();
+      reject(error);
+    };
+    const onAbort = () => {
+      cleanup();
+      closeListener();
+      reject(abortError(signal, 'Windows Job control pipe connection aborted'));
+    };
+    listener.server.once('connection', onConnection);
+    listener.server.once('error', onError);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      cleanup();
+      closeListener();
+      reject(new Error(`Windows Job control pipe connection timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
 }
 
 function waitForChildSpawn(child, timeoutMs, signal, label) {
@@ -869,7 +1127,11 @@ function parseEmergencyJobResult(stdout, jobName) {
   return { activeProcessCount, win32Error, zeroVerified: value.zeroVerified === true };
 }
 
-function removeExactControllerFile(filePath, runtimeDir, expectedBasename) {
+function removeExactControllerFile(filePath, runtimeDir, expectedBasename, runtimeOwnership) {
+  const ownership = verifyRuntimeOwnership({ runtimeOwnership });
+  if (!sameCanonicalPath(ownership.runtimeDir, runtimeDir)) {
+    throw new Error('refusing to remove a Windows Job controller file from an unverified runtime');
+  }
   if (filePath !== runtimeChildPath(runtimeDir, expectedBasename)) {
     throw new Error('refusing to remove an unvalidated Windows Job controller file');
   }
@@ -890,7 +1152,7 @@ function createWindowsJobController(options) {
 
   const refreshState = () => {
     try {
-      latestState = readWindowsJobState(metadata.statePath, metadata.jobName);
+      latestState = readWindowsJobState(metadata.statePath, metadata.jobName, metadata.runtimeOwnership);
     } catch (_) {
       // An atomic state update may not exist yet; the previous verified snapshot remains authoritative.
     }
@@ -902,6 +1164,19 @@ function createWindowsJobController(options) {
   const emergencyClose = () => {
     if (completedCleanup?.remainingVerifiedProcesses?.empty) return completedCleanup;
     refreshState();
+    if (!stateProvesOwnedEstablishedJob(latestState)) {
+      try {
+        supervisor.stdin?.destroy?.();
+      } catch (_) {
+        // Closing this controller's pipe cannot affect a foreign Job.
+      }
+      const cleanup = ownershipCleanupFromState(latestState, {
+        noOwnedRoot: stateProvesNoOwnedRoot(latestState),
+        supervisorReaped: supervisor.exitCode != null || supervisor.signalCode != null,
+      });
+      completedCleanup = cleanup;
+      return cleanup;
+    }
     let proof = null;
     let emergencyError = null;
     try {
@@ -925,11 +1200,6 @@ function createWindowsJobController(options) {
         supervisor.stdin?.destroy?.();
       } catch (_) {
         // The owned control pipe may already be closed.
-      }
-      try {
-        supervisor.kill?.();
-      } catch (_) {
-        // Job termination proof, not a PID fallback, is authoritative for target cleanup.
       }
     }
     const cleanup = ownershipCleanupFromState(latestState, {
@@ -958,10 +1228,15 @@ function createWindowsJobController(options) {
           supervisor.stdin.end('CLOSE\n');
         }
         const exit = await waitForChildExit(supervisor, 15000);
-        latestState = readWindowsJobState(metadata.statePath, metadata.jobName);
-        cleanup = ownershipCleanupFromState(latestState, { supervisorReaped: true });
-        if (exit.code !== 0 || !cleanup.ownershipBoundary.jobClosed ||
-            !cleanup.remainingVerifiedProcesses.verified || cleanup.remainingVerifiedProcesses.count !== 0) {
+        latestState = readWindowsJobState(
+          metadata.statePath,
+          metadata.jobName,
+          metadata.runtimeOwnership,
+        );
+        const noOwnedRoot = stateProvesNoOwnedRoot(latestState);
+        cleanup = ownershipCleanupFromState(latestState, { noOwnedRoot, supervisorReaped: true });
+        if (!noOwnedRoot && (exit.code !== 0 || !cleanup.ownershipBoundary.jobClosed ||
+            !cleanup.remainingVerifiedProcesses.verified || cleanup.remainingVerifiedProcesses.count !== 0)) {
           throw new Error(
             `Windows Job supervisor cleanup was not verified (exit=${exit.code}, ` +
               `active=${cleanup.remainingVerifiedProcesses.count})`,
@@ -983,6 +1258,7 @@ function createWindowsJobController(options) {
             metadata.configPath,
             metadata.runtimeDir,
             `e2e-job-${metadata.token}.config.json`,
+            metadata.runtimeOwnership,
           );
         } catch (error) {
           if (!primaryError) primaryError = error;
@@ -992,6 +1268,7 @@ function createWindowsJobController(options) {
             metadata.statePath,
             metadata.runtimeDir,
             `e2e-job-${metadata.token}.state.json`,
+            metadata.runtimeOwnership,
           );
         } catch (error) {
           if (!primaryError) primaryError = error;
@@ -1009,7 +1286,7 @@ function createWindowsJobController(options) {
     do {
       throwIfAborted(signal, 'Windows Job launch aborted while waiting for ownership proof');
       const state = refreshState();
-      if (state?.established && state.rootCreatedSuspended && state.rootAssignedBeforeResume &&
+      if (stateProvesOwnedEstablishedJob(state) && state.rootCreatedSuspended &&
           state.rootResumed && state.killOnJobClose && state.rootPid > 0) {
         return state;
       }
@@ -1114,14 +1391,19 @@ async function launchDesktopWithWindowsJob(options) {
     listProcesses,
     runtimeRoot,
     runtimeDir,
+    runtimeOwnership,
     signal,
     onOwnershipController,
     debugPort,
+    randomBytesImpl,
   } = options;
   let layout = null;
   let supervisor = null;
   let ownershipController = null;
   let metadata = null;
+  let controlListener = null;
+  let controlConnectionPromise = null;
+  let controlSocket = null;
   const launchCleanupErrors = [];
   const replacements = [
     [runtimeDir, '[runtime-dir]'],
@@ -1130,12 +1412,20 @@ async function launchDesktopWithWindowsJob(options) {
   ];
 
   try {
-    layout = validateWindowsJobRuntime(runtimeRoot, runtimeDir);
-    if (!fs.existsSync(windowsJobScriptPath) || !fs.existsSync(windowsJobSourcePath)) {
+    layout = validateWindowsJobRuntime(runtimeOwnership, runtimeRoot, runtimeDir);
+    if (!fs.existsSync(windowsJobScriptPath) || !fs.existsSync(windowsJobSourcePath) ||
+        !fs.existsSync(windowsJobHostPath)) {
       throw new Error('Windows Job supervisor sources are missing');
     }
-    const token = crypto.randomBytes(16).toString('hex');
+    const tokenBytes = randomBytesImpl(16);
+    if (!Buffer.isBuffer(tokenBytes) || tokenBytes.length !== 16) {
+      throw new Error('Windows Job random token source must return exactly 16 bytes');
+    }
+    const token = tokenBytes.toString('hex');
     const jobName = `CodeBuddyE2E-${token}`;
+    const controlTokenBytes = crypto.randomBytes(16);
+    const controlPipeToken = controlTokenBytes.toString('hex');
+    const controlPipeName = `CodeBuddyE2E-Control-${controlPipeToken}`;
     const configPath = runtimeChildPath(layout.runtimeDir, `e2e-job-${token}.config.json`);
     const statePath = runtimeChildPath(layout.runtimeDir, `e2e-job-${token}.state.json`);
     const sourcePath = runtimeChildPath(layout.runtimeDir, `e2e-job-${token}.cs`);
@@ -1144,11 +1434,11 @@ async function launchDesktopWithWindowsJob(options) {
       throw new Error('Windows Job supervisor source exceeds its allowed size');
     }
     const sourceSha256 = crypto.createHash('sha256').update(source, 'utf8').digest('hex');
-    writeAtomicOwnedFile(sourcePath, source, WINDOWS_JOB_SOURCE_BYTES);
+    writeAtomicOwnedFile(sourcePath, source, WINDOWS_JOB_SOURCE_BYTES, layout);
     const environment = boundedWindowsJobEnvironment(process.env, env);
-    const config = validateWindowsJobLaunchValues(executable, launchArgs, projectRoot, environment);
-    const configText = `${JSON.stringify({ version: 1, jobName, ...config })}\n`;
-    writeAtomicOwnedFile(configPath, configText, WINDOWS_JOB_CONFIG_BYTES);
+    const config = validateWindowsJobLaunchValues(executable, launchArgs, projectRoot);
+    const configText = `${JSON.stringify({ version: 2, jobName, ...config })}\n`;
+    writeAtomicOwnedFile(configPath, configText, WINDOWS_JOB_CONFIG_BYTES, layout);
     metadata = {
       token,
       jobName,
@@ -1157,22 +1447,26 @@ async function launchDesktopWithWindowsJob(options) {
       statePath,
       sourcePath,
       sourceSha256,
+      controlPipeName,
+      controlPipeToken,
+      runtimeOwnership: layout,
     };
 
-    supervisor = spawn('powershell.exe', windowsJobPowerShellArgs('Supervise', metadata), {
+    controlListener = await createWindowsJobControlListener(controlPipeName);
+    controlConnectionPromise = waitForWindowsJobControlConnection(controlListener, spawnTimeoutMs, signal);
+    controlConnectionPromise.catch(() => {});
+
+    supervisor = spawn(process.execPath, [windowsJobHostPath, ...windowsJobPowerShellArgs('Supervise', metadata)], {
       cwd: layout.runtimeDir,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: windowsHide !== false,
-      detached: false,
-      env: { ...process.env },
+      detached: true,
+      env: environment,
     });
     if (!supervisor || typeof supervisor.once !== 'function') {
       throw new Error('Windows Job launch did not receive a ChildProcess-like supervisor');
     }
-    ownershipController = createWindowsJobController({ supervisor, metadata });
-    if (typeof onOwnershipController === 'function') onOwnershipController(ownershipController);
-
     const stdout = [];
     const stderr = [];
     let captureOutput = !signal?.aborted;
@@ -1188,6 +1482,13 @@ async function launchDesktopWithWindowsJob(options) {
     });
 
     await waitForChildSpawn(supervisor, spawnTimeoutMs, signal, 'Windows Job supervisor');
+    controlSocket = await controlConnectionPromise;
+    supervisor.stdin = controlSocket;
+    if (supervisor.stdin !== controlSocket) {
+      throw new Error('Windows Job supervisor control pipe could not be attached');
+    }
+    ownershipController = createWindowsJobController({ supervisor, metadata });
+    if (typeof onOwnershipController === 'function') onOwnershipController(ownershipController);
     const readyState = await ownershipController.waitUntilReady(spawnTimeoutMs, signal);
     const rootPid = readyState.rootPid;
     let rootIdentity = null;
@@ -1230,6 +1531,7 @@ async function launchDesktopWithWindowsJob(options) {
     };
   } catch (error) {
     let cleanup = null;
+    if (controlListener?.server?.listening) controlListener.server.close();
     if (ownershipController) {
       try {
         cleanup = await ownershipController.close();
@@ -1243,10 +1545,13 @@ async function launchDesktopWithWindowsJob(options) {
       }
     } else if (supervisor) {
       try {
-        supervisor.kill?.();
-      } catch (killError) {
-        launchCleanupErrors.push(sanitizeSecondaryCleanupText(killError, replacements));
+        controlSocket?.destroy?.();
+        await waitForChildExit(supervisor, 15000);
+      } catch (reapError) {
+        launchCleanupErrors.push(sanitizeSecondaryCleanupText(reapError, replacements));
       }
+    } else {
+      controlSocket?.destroy?.();
     }
     if (cleanup?.ownershipBoundary) error.ownershipBoundary = cleanup.ownershipBoundary;
     if (cleanup?.remainingVerifiedProcesses) {
@@ -1283,8 +1588,10 @@ async function launchDesktop(options = {}) {
     cleanupOwnedImpl = cleanupOwned,
     runtimeRoot,
     runtimeDir,
+    runtimeOwnership,
     onOwnershipController,
     signal,
+    randomBytesImpl = crypto.randomBytes,
   } = options;
 
   throwIfAborted(signal, 'desktop launch aborted');
@@ -1317,9 +1624,11 @@ async function launchDesktop(options = {}) {
       listProcesses,
       runtimeRoot,
       runtimeDir,
+      runtimeOwnership,
       signal,
       onOwnershipController,
       debugPort: selectedPort,
+      randomBytesImpl,
     });
   }
   const child = spawnImpl(executable, launchArgs, {
@@ -1456,7 +1765,7 @@ async function launchDesktop(options = {}) {
     }
     if (runtimeRoot && runtimeDir) {
       try {
-        await cleanupRuntimeDir({ runtimeRoot, runtimeDir });
+        await cleanupRuntimeDir({ runtimeOwnership, runtimeRoot, runtimeDir });
       } catch (runtimeError) {
         launchCleanupErrors.push(`runtime cleanup failed: ${runtimeError.message}`);
       }
@@ -2180,6 +2489,117 @@ async function driveRoutes(client, options = {}) {
   return results;
 }
 
+function applyScreenshotPrivacyMaskInPage(input = {}) {
+  const token = String(input.token || '');
+  const sensitiveValues = Array.isArray(input.sensitiveValues)
+    ? input.sensitiveValues.map((value) => String(value || '')).filter(Boolean).sort((a, b) => b.length - a.length)
+    : [];
+  const registryKey = '__codeBuddyScreenshotPrivacyMasks';
+  const registry = window[registryKey] || (window[registryKey] = Object.create(null));
+  const mutations = [];
+  let redactedNodes = 0;
+  let redactedAttributes = 0;
+  let redactedRanges = 0;
+
+  const replaceSensitive = (value) => {
+    let output = String(value ?? '');
+    let replacements = 0;
+    for (const sensitive of sensitiveValues) {
+      const escaped = sensitive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      output = output.replace(new RegExp(escaped, 'gi'), () => {
+        replacements += 1;
+        return '[redacted]';
+      });
+    }
+    for (const pattern of [
+      /[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi,
+      /\b[a-f\d]{8}-[a-f\d]{4}-[1-5][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}\b/gi,
+      /\b[A-Za-z]:\\(?:[^\\\s"'<>|]+\\)*[^\\\s"'<>|]*/g,
+    ]) {
+      output = output.replace(pattern, () => {
+        replacements += 1;
+        return '[redacted]';
+      });
+    }
+    redactedRanges += replacements;
+    return output;
+  };
+
+  for (const element of document.querySelectorAll(
+    '[data-session-history], .sidebar-user-section, .log-output',
+  )) {
+    for (const attribute of [...element.attributes]) {
+      if (['class', 'role', 'aria-label', 'data-session-history'].includes(attribute.name)) continue;
+      mutations.push({ kind: 'attribute', node: element, name: attribute.name, value: attribute.value });
+      element.setAttribute(attribute.name, '[redacted]');
+      redactedAttributes += 1;
+      redactedRanges += 1;
+    }
+    mutations.push({ kind: 'html', node: element, value: element.innerHTML });
+    element.textContent = '[redacted]';
+    redactedNodes += 1;
+    redactedRanges += 1;
+  }
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const masked = replaceSensitive(node.nodeValue);
+    if (masked !== node.nodeValue) {
+      mutations.push({ kind: 'text', node, value: node.nodeValue });
+      node.nodeValue = masked;
+      redactedNodes += 1;
+    }
+  }
+
+  for (const element of document.body.querySelectorAll('*')) {
+    for (const attribute of [...element.attributes]) {
+      const masked = replaceSensitive(attribute.value);
+      if (masked !== attribute.value) {
+        mutations.push({ kind: 'attribute', node: element, name: attribute.name, value: attribute.value });
+        element.setAttribute(attribute.name, masked);
+        redactedAttributes += 1;
+      }
+    }
+    for (const property of ['value', 'placeholder', 'title']) {
+      if (!(property in element) || typeof element[property] !== 'string') continue;
+      const masked = replaceSensitive(element[property]);
+      if (masked !== element[property]) {
+        mutations.push({ kind: 'property', node: element, name: property, value: element[property] });
+        element[property] = masked;
+        redactedAttributes += 1;
+      }
+    }
+  }
+
+  const remainingText = [
+    document.body.innerHTML,
+    ...[...document.querySelectorAll('input, textarea, select, option')].flatMap((element) => [
+      element.value,
+      element.placeholder,
+      element.title,
+    ]),
+  ].join('\n');
+  let remaining = sensitiveValues.filter((value) => remainingText.toLowerCase().includes(value.toLowerCase())).length;
+  remaining += (remainingText.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi) || []).length;
+  remaining += (remainingText.match(/\b[a-f\d]{8}-[a-f\d]{4}-[1-5][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}\b/gi) || []).length;
+  registry[token] = mutations;
+  return { privacyVerified: remaining === 0, redactedNodes, redactedAttributes, redactedRanges, remaining };
+}
+
+function restoreScreenshotPrivacyMaskInPage(token) {
+  const registry = window.__codeBuddyScreenshotPrivacyMasks;
+  const mutations = registry?.[token] || [];
+  for (let index = mutations.length - 1; index >= 0; index -= 1) {
+    const mutation = mutations[index];
+    if (mutation.kind === 'html') mutation.node.innerHTML = mutation.value;
+    else if (mutation.kind === 'text') mutation.node.nodeValue = mutation.value;
+    else if (mutation.kind === 'attribute') mutation.node.setAttribute(mutation.name, mutation.value);
+    else if (mutation.kind === 'property') mutation.node[mutation.name] = mutation.value;
+  }
+  if (registry) delete registry[token];
+  return true;
+}
+
 async function captureScreenshot(client, outputPath, options = {}) {
   if (!client || typeof client.send !== 'function') {
     throw new Error('captureScreenshot requires a CDP client with send(method, params)');
@@ -2187,13 +2607,40 @@ async function captureScreenshot(client, outputPath, options = {}) {
   if (!outputPath) throw new Error('captureScreenshot requires an output path');
   const signal = options.signal;
   throwIfAborted(signal, 'screenshot capture aborted');
+  const privacyOptions = options.privacy;
+  const privacyToken = privacyOptions
+    ? `mask-${crypto.randomBytes(16).toString('hex')}`
+    : null;
+  let privacy = null;
+  if (privacyToken) {
+    if (typeof client.evaluate !== 'function') {
+      throw new Error('privacy-preserving screenshot capture requires client.evaluate(expression)');
+    }
+    privacy = await client.evaluate(
+      `(${applyScreenshotPrivacyMaskInPage.toString()})(${JSON.stringify({
+        token: privacyToken,
+        sensitiveValues: privacyOptions.sensitiveValues || [],
+      })})`,
+    );
+    if (!privacy?.privacyVerified) {
+      await client.evaluate(`(${restoreScreenshotPrivacyMaskInPage.toString()})(${JSON.stringify(privacyToken)})`);
+      throw new Error(`screenshot privacy verification failed with ${privacy?.remaining ?? 'unknown'} remaining values`);
+    }
+  }
 
-  const response = await client.send('Page.captureScreenshot', {
-    format: options.format || 'png',
-    fromSurface: options.fromSurface !== false,
-    captureBeyondViewport: options.captureBeyondViewport !== false,
-    ...(options.quality == null ? {} : { quality: options.quality }),
-  });
+  let response;
+  try {
+    response = await client.send('Page.captureScreenshot', {
+      format: options.format || 'png',
+      fromSurface: options.fromSurface !== false,
+      captureBeyondViewport: options.captureBeyondViewport !== false,
+      ...(options.quality == null ? {} : { quality: options.quality }),
+    });
+  } finally {
+    if (privacyToken) {
+      await client.evaluate(`(${restoreScreenshotPrivacyMaskInPage.toString()})(${JSON.stringify(privacyToken)})`);
+    }
+  }
   throwIfAborted(signal, 'screenshot capture aborted');
   if (!response?.data) throw new Error('CDP Page.captureScreenshot returned no image data');
 
@@ -2205,6 +2652,7 @@ async function captureScreenshot(client, outputPath, options = {}) {
     path: outputPath,
     bytes: bytes.length,
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    ...(privacy ? { privacy } : {}),
   };
 }
 
