@@ -61,24 +61,55 @@ function normalizeProductState(value) {
 function createProductStateStore(userDataPath, logger = () => {}) {
   const stateFile = path.join(userDataPath, 'product-state.json');
 
+  function quarantineInvalid(filePath, label = '') {
+    if (!fs.existsSync(filePath)) return null;
+    const suffix = label ? `-${label}` : '';
+    const invalidFile = path.join(
+      userDataPath,
+      `product-state.invalid-${Date.now()}${suffix}.json`,
+    );
+    fs.renameSync(filePath, invalidFile);
+    logger(`Invalid product state moved to ${invalidFile}`);
+    return invalidFile;
+  }
+
   function load() {
-    try {
-      const backupFile = `${stateFile}.bak`;
-      if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
-        fs.renameSync(backupFile, stateFile);
+    const backupFile = `${stateFile}.bak`;
+    if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
+      try {
+        fs.copyFileSync(backupFile, stateFile);
+        logger(`Product state restored from backup because primary file was missing`);
+      } catch (error) {
+        logger(`Product state backup restore failed: ${error.message}`);
       }
-      if (!fs.existsSync(stateFile)) return emptyProductState();
+    }
+    if (!fs.existsSync(stateFile)) return emptyProductState();
+
+    try {
       return normalizeProductState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
     } catch (error) {
       logger(`Product state load failed: ${error.message}`);
-      try {
-        const invalidFile = path.join(
-          userDataPath,
-          `product-state.invalid-${Date.now()}.json`,
-        );
-        fs.renameSync(stateFile, invalidFile);
-        logger(`Invalid product state moved to ${invalidFile}`);
-      } catch (_) {}
+      try { quarantineInvalid(stateFile); } catch (moveError) {
+        logger(`Invalid product state quarantine failed: ${moveError.message}`);
+      }
+
+      if (fs.existsSync(backupFile)) {
+        try {
+          const recovered = normalizeProductState(JSON.parse(fs.readFileSync(backupFile, 'utf8')));
+          try {
+            fs.copyFileSync(backupFile, stateFile);
+            logger(`Product state recovered from ${backupFile}`);
+          } catch (copyError) {
+            logger(`Recovered product state could not be copied to primary file: ${copyError.message}`);
+          }
+          return recovered;
+        } catch (backupError) {
+          logger(`Product state backup load failed: ${backupError.message}`);
+          try { quarantineInvalid(backupFile, 'backup'); } catch (moveError) {
+            logger(`Invalid product state backup quarantine failed: ${moveError.message}`);
+          }
+        }
+      }
       return emptyProductState();
     }
   }
@@ -93,11 +124,10 @@ function createProductStateStore(userDataPath, logger = () => {}) {
       if (fs.existsSync(backupFile)) fs.rmSync(backupFile, { force: true });
       if (fs.existsSync(stateFile)) fs.renameSync(stateFile, backupFile);
       fs.renameSync(tempFile, stateFile);
-      if (fs.existsSync(backupFile)) fs.rmSync(backupFile, { force: true });
     } catch (error) {
       try {
         if (!fs.existsSync(stateFile) && fs.existsSync(backupFile)) {
-          fs.renameSync(backupFile, stateFile);
+          fs.copyFileSync(backupFile, stateFile);
         }
       } catch (_) {}
       try { fs.rmSync(tempFile, { force: true }); } catch (_) {}
