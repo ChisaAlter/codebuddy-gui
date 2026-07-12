@@ -94,6 +94,13 @@ function warningMessage(warning) {
 export default function ReplicaKeybindingsView() {
   const activeProjectId = useStore((state) => state.activeProjectId);
   const requestRef = useRef(0);
+  const projectGenerationRef = useRef(0);
+  const renderedProjectRef = useRef(activeProjectId);
+  if (renderedProjectRef.current !== activeProjectId) {
+    renderedProjectRef.current = activeProjectId;
+    projectGenerationRef.current += 1;
+    requestRef.current += 1;
+  }
   const [config, setConfig] = useState(() => normalizeConfig(null));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -128,12 +135,15 @@ export default function ReplicaKeybindingsView() {
 
   useEffect(() => {
     setConfig(normalizeConfig(null));
+    setLoading(true);
+    setSaving(false);
+    setError('');
     setEditor(null);
     setNotice('');
-    load();
     setResetDialogOpen(false);
     setResetError('');
-  }, [load]);
+    load();
+  }, [activeProjectId, load]);
 
   const contextDescriptions = useMemo(
     () => new Map(config.contexts.map((context) => [context.name, context.description])),
@@ -159,25 +169,33 @@ export default function ReplicaKeybindingsView() {
   const customCount = rows.filter((row) => row.custom).length;
 
   const persist = async (bindings, successMessage) => {
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current
+    );
     setSaving(true);
     setError('');
     setNotice('');
     try {
       const validation = await validateKeybindings(bindings);
+      if (!isCurrent()) return false;
       if (validation?.valid === false) {
         const details = (validation.warnings || []).map(warningMessage).filter(Boolean).join('；');
         throw new Error(details || '快捷键配置未通过校验');
       }
       await saveKeybindings(bindings);
+      if (!isCurrent()) return false;
       await load({ silent: true });
+      if (!isCurrent()) return false;
       const warningText = (validation?.warnings || []).map(warningMessage).filter(Boolean).join('；');
       setNotice(warningText ? `${successMessage}；${warningText}` : successMessage);
       return true;
     } catch (saveError) {
-      setError(saveError?.message || '保存快捷键失败');
+      if (isCurrent()) setError(saveError?.message || '保存快捷键失败');
       return false;
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
   };
 
@@ -223,20 +241,27 @@ export default function ReplicaKeybindingsView() {
   };
 
   const handleReset = async () => {
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current
+    );
     setSaving(true);
     setError('');
     setNotice('');
     setResetError('');
     try {
       await resetKeybindings();
+      if (!isCurrent()) return;
       await load({ silent: true });
+      if (!isCurrent()) return;
       setEditor(null);
       setNotice('已恢复默认快捷键');
       setResetDialogOpen(false);
     } catch (caughtError) {
-      setResetError(caughtError?.message || '恢复默认快捷键失败');
+      if (isCurrent()) setResetError(caughtError?.message || '恢复默认快捷键失败');
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
   };
 
