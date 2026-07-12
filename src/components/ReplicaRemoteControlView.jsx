@@ -3,13 +3,15 @@ import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
 
-function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
+function ChannelCard({ channel, onRefresh, onWechatQrRequested, onDeleted }) {
   const type = channel.clientType || 'unknown';
   const displayName = channel.displayName || `${type}:${channel.instanceId || ''}`;
   const status = channel.status || 'unknown';
   const color = status === 'connected' ? '#22c55e' : status === 'connecting' ? '#f59e0b' : '#8e8e93';
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
+  const [confirmAction, setConfirmAction] = useState('');
+  const [confirmError, setConfirmError] = useState('');
 
   // 当前后端契约仅提供 start/stop 两个连接状态动作。
   const pickToggleAction = (currentStatus) => currentStatus === 'connected' ? 'stop' : 'start';
@@ -32,12 +34,9 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
 
   const handleUnbind = async () => {
     if (!channel.instanceId) return;
-    const consequence = type === 'wechat'
-      ? '旧登录凭据会被清除，随后需要重新扫码。'
-      : '已保存的渠道凭据会被清除。';
-    if (!window.confirm(`确定解绑“${displayName}”吗？${consequence}`)) return;
     setBusy('unbind');
     setMessage('');
+    setConfirmError('');
     try {
       const result = await channelAction(type, channel.instanceId, 'unbind');
       if (type === 'wechat' && result?.needsQrScan) {
@@ -47,8 +46,10 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
         setMessage(result?.message || '已解绑');
       }
       await onRefresh();
+      return true;
     } catch (err) {
-      setMessage(err.message || '解绑失败');
+      setConfirmError(err.message || '解绑失败');
+      return false;
     } finally {
       setBusy('');
     }
@@ -56,20 +57,37 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
 
   const handleDelete = async () => {
     if (!channel.instanceId) return;
-    if (!window.confirm(`确定删除渠道“${displayName}”吗？此操作无法撤销。`)) return;
     setBusy('delete');
     setMessage('');
+    setConfirmError('');
     try {
       await deleteChannelInstance(type, channel.instanceId);
       setMessage('已删除');
+      onDeleted?.(channel.instanceId);
       await onRefresh();
+      return true;
     } catch (err) {
-      setMessage(err.message || '删除失败');
+      setConfirmError(err.message || '删除失败');
+      return false;
     } finally {
       setBusy('');
     }
   };
 
+  const closeConfirm = () => {
+    if (busy) return;
+    setConfirmAction('');
+    setConfirmError('');
+  };
+
+  const confirmDestructiveAction = async () => {
+    if (!confirmAction || busy) return;
+    const ok = confirmAction === 'unbind' ? await handleUnbind() : await handleDelete();
+    if (ok) {
+      setConfirmAction('');
+      setConfirmError('');
+    }
+  };
   return (
     <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -90,14 +108,54 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
         <button
           className="btn-ghost"
           disabled={!!busy}
-          onClick={handleUnbind}
+          onClick={() => { setConfirmAction('unbind'); setConfirmError(''); }}
           title={type === 'wechat' ? '清除旧凭据并重新扫码' : '清除已保存的渠道凭据'}
         >
           {busy === 'unbind' ? '处理中...' : '解绑'}
         </button>
-        <button className="btn-ghost" disabled={!!busy} onClick={handleDelete}>{busy === 'delete' ? '处理中...' : '删除'}</button>
+        <button className="btn-ghost" disabled={!!busy} onClick={() => { setConfirmAction('delete'); setConfirmError(''); }}>{busy === 'delete' ? '处理中...' : '删除'}</button>
       </div>
       {message ? <div className="mt-2 text-xs text-[var(--color-text-secondary)]">{message}</div> : null}
+
+      {confirmAction ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={confirmAction === 'unbind' ? '解绑渠道确认' : '删除渠道确认'}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeConfirm();
+          }}
+        >
+          <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+            <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+              {confirmAction === 'unbind' ? '解绑渠道？' : '删除渠道？'}
+            </div>
+            <div className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+              <div className="font-medium text-[var(--color-text-primary)]">{displayName}</div>
+              <p className="mt-2">
+                {confirmAction === 'unbind'
+                  ? type === 'wechat'
+                    ? '旧登录凭据会被清除，随后需要重新扫描二维码。'
+                    : '已保存的渠道凭据会被清除，后续需要重新配置。'
+                  : '该渠道实例会被永久删除，此操作无法撤销。'}
+              </p>
+            </div>
+            {confirmError ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{confirmError}</div> : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={!!busy} onClick={closeConfirm}>取消</button>
+              <button
+                className={confirmAction === 'delete' ? 'rounded-md px-3 py-1.5 text-xs font-medium text-white' : 'btn-primary px-3 py-1.5 text-xs'}
+                style={confirmAction === 'delete' ? { background: 'var(--color-accent-red)' } : undefined}
+                disabled={!!busy}
+                onClick={confirmDestructiveAction}
+              >
+                {busy ? '处理中...' : confirmAction === 'unbind' ? '确认解绑' : '删除渠道'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -117,6 +175,7 @@ export default function ReplicaRemoteControlView() {
   const [wechatQr, setWechatQr] = useState(null); // {qrImage} 或 null
   const [wechatQrLoading, setWechatQrLoading] = useState(false);
   const [wechatQrError, setWechatQrError] = useState(null);
+  const [wechatQrInstanceId, setWechatQrInstanceId] = useState('');
   const qrPollRef = useRef(null);
 
   // 企微创建表单
@@ -155,6 +214,7 @@ export default function ReplicaRemoteControlView() {
     setError('');
     setInfo('');
     setWechatQr(null);
+    setWechatQrInstanceId('');
     setWechatQrLoading(false);
     setWechatQrError(null);
     setWecomError(null);
@@ -199,6 +259,7 @@ export default function ReplicaRemoteControlView() {
   };
 
   const showWechatQr = (instanceId, message) => {
+    setWechatQrInstanceId(instanceId);
     setWechatQr(null);
     setWechatQrError(null);
     setWechatQrLoading(true);
@@ -207,9 +268,19 @@ export default function ReplicaRemoteControlView() {
     pollQr(instanceId);
   };
 
+  const handleChannelDeleted = (instanceId) => {
+    if (!instanceId || instanceId !== wechatQrInstanceId) return;
+    stopQrPoll();
+    setWechatQrInstanceId('');
+    setWechatQr(null);
+    setWechatQrLoading(false);
+    setWechatQrError(null);
+  };
+
   const handleCreateWechat = async () => {
     setWechatBusy(true);
     setWechatQr(null);
+    setWechatQrInstanceId('');
     setWechatQrError(null);
     setWechatQrLoading(true);
     stopQrPoll();
@@ -321,6 +392,7 @@ export default function ReplicaRemoteControlView() {
               channel={item}
               onRefresh={load}
               onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`)}
+              onDeleted={handleChannelDeleted}
             />
           )) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
         </section>
