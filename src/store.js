@@ -2350,10 +2350,11 @@ export const useStore = create((set, get) => ({
   },
 
   async loadWorkerLogs(workerPid, type = 'stdout', tail = 200) {
+    const projectId = get().activeProjectId;
     try {
       return await fetchWorkerLogsApi(workerPid, type, tail);
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId) set({ error: error.message });
       throw error;
     }
   },

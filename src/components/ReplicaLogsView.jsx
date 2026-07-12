@@ -30,47 +30,80 @@ export default function ReplicaLogsView() {
   const [initialWorkersLoad, setInitialWorkersLoad] = useState(true);
   const [logError, setLogError] = useState(null);
   const containerRef = useRef(null);
+  const logRequestIdRef = useRef(0);
+  const preferredWorkerPidRef = useRef('');
+  const preferredWorkerProjectRef = useRef(null);
 
   useEffect(() => {
     let active = true;
-    Promise.resolve(refreshWorkers()).finally(() => {
-      if (active) setInitialWorkersLoad(false);
-    });
-    try {
-      const preferredPid = sessionStorage.getItem('logs-preferred-worker-pid');
-      if (preferredPid) {
-        setWorkerPid(preferredPid);
-        sessionStorage.removeItem('logs-preferred-worker-pid');
-      }
-    } catch (_) {}
-    return () => { active = false; };
-  }, [refreshWorkers]);
-
-  useEffect(() => {
-    const currentExists = workerPid && workers.some((worker) => String(worker.pid) === String(workerPid));
-    if (!currentExists) setWorkerPid(workers.length ? String(workers[0].pid) : '');
-  }, [workers, workerPid]);
-
-  useEffect(() => {
+    const projectId = activeProjectId;
+    logRequestIdRef.current += 1;
+    setInitialWorkersLoad(true);
     setWorkerPid('');
     setLogs('');
     setLogPath('');
     setAvailableLogTypes(['stdout', 'stderr']);
     setAutoRefresh(false);
-  }, [activeProjectId]);
+    setLoading(false);
+    setLogError(null);
+    Promise.resolve(refreshWorkers()).finally(() => {
+      if (active && useStore.getState().activeProjectId === projectId) setInitialWorkersLoad(false);
+    });
+    try {
+      const preferredPid = sessionStorage.getItem('logs-preferred-worker-pid');
+      if (preferredPid) {
+        preferredWorkerPidRef.current = preferredPid;
+        preferredWorkerProjectRef.current = projectId;
+        setWorkerPid(preferredPid);
+        sessionStorage.removeItem('logs-preferred-worker-pid');
+      }
+    } catch (_) {}
+    return () => { active = false; };
+  }, [activeProjectId, refreshWorkers]);
 
   useEffect(() => {
+    const hasWorker = (pid) => workers.some((worker) => String(worker.pid) === String(pid));
+    if (workerPid && hasWorker(workerPid)) {
+      preferredWorkerPidRef.current = '';
+      preferredWorkerProjectRef.current = null;
+      return;
+    }
+    const preferredPid = preferredWorkerProjectRef.current === activeProjectId
+      ? preferredWorkerPidRef.current
+      : '';
+    if (!preferredPid) {
+      preferredWorkerPidRef.current = '';
+      preferredWorkerProjectRef.current = null;
+    }
+    if (preferredPid && hasWorker(preferredPid)) {
+      preferredWorkerPidRef.current = '';
+      preferredWorkerProjectRef.current = null;
+      setWorkerPid(preferredPid);
+    } else if (workers.length) {
+      preferredWorkerPidRef.current = '';
+      preferredWorkerProjectRef.current = null;
+      setWorkerPid(String(workers[0].pid));
+    }
+  }, [activeProjectId, workers, workerPid]);
+
+  useEffect(() => {
+    logRequestIdRef.current += 1;
     setLogs('');
     setLogPath('');
     setLogError(null);
+    setLoading(false);
   }, [workerPid]);
 
   const loadLogs = useCallback(async () => {
-    if (!workerPid) return;
+    if (!workerPid) return false;
+    const projectId = activeProjectId;
+    const requestedPid = workerPid;
+    const requestId = ++logRequestIdRef.current;
     setLoading(true);
     setLogError(null);
     try {
-      const result = await loadWorkerLogs(workerPid, logType, 200);
+      const result = await loadWorkerLogs(requestedPid, logType, 200);
+      if (requestId !== logRequestIdRef.current || useStore.getState().activeProjectId !== projectId) return false;
       const content = typeof result === 'string' ? result : result?.content;
       const resolvedType = typeof result === 'object' ? result?.type : logType;
       const types = typeof result === 'object' && Array.isArray(result?.availableTypes) ? result.availableTypes : [];
@@ -78,13 +111,25 @@ export default function ReplicaLogsView() {
       setLogPath(typeof result === 'object' ? result?.logPath || '' : '');
       if (types.length) setAvailableLogTypes(types);
       if (resolvedType && resolvedType !== logType) setLogType(resolvedType);
+      return true;
     } catch (err) {
+      if (requestId !== logRequestIdRef.current || useStore.getState().activeProjectId !== projectId) return false;
       setLogError('日志加载失败: ' + (err?.message || '未知错误'));
       setLogs('');
+      return false;
     } finally {
-      setLoading(false);
+      if (requestId === logRequestIdRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
     }
-  }, [workerPid, logType, loadWorkerLogs]);
+  }, [activeProjectId, workerPid, logType, loadWorkerLogs]);
+
+  const changeLogType = (nextType) => {
+    logRequestIdRef.current += 1;
+    setLoading(false);
+    setLogs('');
+    setLogPath('');
+    setLogError(null);
+    setLogType(nextType);
+  };
 
   useEffect(() => {
     if (!autoRefresh || !workerPid) return;
@@ -157,7 +202,7 @@ export default function ReplicaLogsView() {
         <select
           className="input-field max-w-[160px]"
           value={logType}
-          onChange={(e) => setLogType(e.target.value)}
+          onChange={(e) => changeLogType(e.target.value)}
         >
           {availableLogTypes.map((type) => <option key={type} value={type}>{type}</option>)}
         </select>
