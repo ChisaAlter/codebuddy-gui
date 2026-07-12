@@ -523,8 +523,10 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       signal: timeout.signal,
     });
     // SSE 流式：net.fetch 的 AbortSignal 对流读取不一定生效，这里改成主动读流 + 超 timeout 强切
-    const isSse = (response.headers.get('content-type') || '').includes('text/event-stream');
+    const contentType = response.headers.get('content-type') || '';
+    const isSse = contentType.includes('text/event-stream');
     let body = '';
+    let bodyBase64 = null;
     let truncated = false; // SSE 超时截断标记：前端据此识别"流中断"而非"流自然结束"
     if (isSse && response.body) {
       const reader = response.body.getReader();
@@ -554,6 +556,9 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
         }
       }
       body += decoder.decode();
+    } else if (contentType.startsWith('image/')) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      bodyBase64 = buffer.toString('base64');
     } else {
       body = await response.text();
     }
@@ -562,6 +567,7 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       status: response.status,
       statusText: response.statusText,
       body,
+      bodyBase64,
       truncated, // SSE 流被 timeout 截断时为 true；前端 parseEventStreamMessages 据此判中断
       headers: Object.fromEntries(response.headers.entries()),
     };

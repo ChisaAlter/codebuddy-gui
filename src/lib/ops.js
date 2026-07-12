@@ -169,13 +169,31 @@ export async function fetchWechatQr(instanceId) {
   try {
     const json = JSON.parse(text);
     const data = json?.data ?? json ?? {};
-    const directImage = data.qrImage || data.image || data.url || data.qrcode || (typeof data === 'string' ? data : null);
-    if (directImage) return { ok: true, qrImage: directImage, raw: data };
-    if (data.qrUrl) {
+    const directImage = data.qrImage || data.image || data.base64 || data.qrcode;
+    if (directImage) {
+      const imageValue = String(directImage).trim();
+      const qrImage = /^(data:image\/|blob:|https?:\/\/)/i.test(imageValue)
+        ? imageValue
+        : `data:image/png;base64,${imageValue.replace(/\s+/g, '')}`;
+      return { ok: true, qrImage, raw: data };
+    }
+    const qrContent = data.qrUrl || data.qrData || data.url || (typeof data === 'string' ? data : null);
+    if (qrContent) {
+      const contentValue = String(qrContent).trim();
+      if (/^(data:image\/|blob:)/i.test(contentValue)) {
+        return { ok: true, qrImage: contentValue, raw: data };
+      }
+      if (contentValue.length > 128 && /^[A-Za-z0-9+/=\s]+$/.test(contentValue)) {
+        return {
+          ok: true,
+          qrImage: `data:image/png;base64,${contentValue.replace(/\s+/g, '')}`,
+          raw: data,
+        };
+      }
       const { default: QRCode } = await import('qrcode');
       return {
         ok: true,
-        qrImage: await QRCode.toDataURL(data.qrUrl, { width: 240, margin: 1, errorCorrectionLevel: 'M' }),
+        qrImage: await QRCode.toDataURL(contentValue, { width: 240, margin: 1, errorCorrectionLevel: 'M' }),
         raw: data,
       };
     }

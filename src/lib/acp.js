@@ -92,13 +92,26 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
       if (controller.signal.aborted && !proxied?.ok) {
         throw new Error(`CodeBuddy request timeout: ${request.method || 'GET'} ${url}`);
       }
+      const headers = new Headers(proxied?.headers || {});
+      const bodyBytes = proxied?.bodyBase64
+        ? Uint8Array.from(atob(proxied.bodyBase64), (character) => character.charCodeAt(0))
+        : null;
+      const readText = () => bodyBytes
+        ? new TextDecoder().decode(bodyBytes)
+        : (proxied?.body || '');
+      const readArrayBuffer = () => {
+        const bytes = bodyBytes || new TextEncoder().encode(proxied?.body || '');
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      };
       return {
         ok: !!proxied?.ok,
         status: proxied?.status || 0,
         statusText: proxied?.statusText || 'CodeBuddy request failed',
-        headers: proxied?.headers || {},
-        text: async () => proxied?.body || '',
-        json: async () => proxied?.body ? JSON.parse(proxied.body) : null,
+        headers,
+        text: async () => readText(),
+        json: async () => readText() ? JSON.parse(readText()) : null,
+        blob: async () => new Blob([bodyBytes || proxied?.body || ''], { type: headers.get('content-type') || '' }),
+        arrayBuffer: async () => readArrayBuffer(),
       };
     } finally {
       cleanup();

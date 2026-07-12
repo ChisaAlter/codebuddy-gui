@@ -164,12 +164,17 @@ export default function ReplicaRemoteControlView() {
   const setRoute = useStore((state) => state.setRoute);
   const activeProjectId = useStore((state) => state.activeProjectId);
   const [channels, setChannels] = useState([]);
+  const [channelsProjectId, setChannelsProjectId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const mountedRef = useRef(true);
   const loadInFlightRef = useRef(null);
 
+  const viewGenerationRef = useRef(0);
+  const qrPollGenerationRef = useRef(0);
+  const wechatActionVersionRef = useRef(0);
+  const wecomActionVersionRef = useRef(0);
   // 微信创建 + 二维码态（对照源 POST /channels/wechat + GET /channels/wechat/{id}/qr）
   const [wechatBusy, setWechatBusy] = useState(false);
   const [wechatQr, setWechatQr] = useState(null); // {qrImage} 或 null
@@ -184,10 +189,18 @@ export default function ReplicaRemoteControlView() {
   const [wecomSecret, setWecomSecret] = useState('');
   const [wecomError, setWecomError] = useState(null);
 
+  const isScopeCurrent = useCallback((projectId, generation) => (
+    mountedRef.current &&
+    generation === viewGenerationRef.current &&
+    useStore.getState().activeProjectId === projectId
+  ), []);
+
   const load = useCallback(async ({ silent = false } = {}) => {
     const projectId = activeProjectId;
-    if (loadInFlightRef.current === projectId) return;
-    loadInFlightRef.current = projectId;
+    const generation = viewGenerationRef.current;
+    const requestKey = `${projectId || 'none'}:${generation}`;
+    if (loadInFlightRef.current === requestKey) return false;
+    loadInFlightRef.current = requestKey;
     if (!silent) {
       setLoading(true);
       setError('');
@@ -195,47 +208,76 @@ export default function ReplicaRemoteControlView() {
     try {
       const payload = await fetchJson('/api/v1/channels');
       const clients = payload?.data?.clients || payload?.clients || payload?.data?.channels || payload?.channels || [];
-      if (mountedRef.current && useStore.getState().activeProjectId === projectId) {
+      if (isScopeCurrent(projectId, generation)) {
         setChannels((Array.isArray(clients) ? clients : []).filter((item) => !item.hidden && !String(item.instanceId || '').startsWith('_pending')));
+        setChannelsProjectId(projectId);
         setError('');
       }
+      return true;
     } catch (err) {
-      if (mountedRef.current && useStore.getState().activeProjectId === projectId) setError(err.message || '加载失败');
+      if (isScopeCurrent(projectId, generation)) setError(err.message || '加载失败');
+      return false;
     } finally {
-      if (loadInFlightRef.current === projectId) loadInFlightRef.current = null;
-      if (!silent && mountedRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
+      if (loadInFlightRef.current === requestKey) loadInFlightRef.current = null;
+      if (!silent && isScopeCurrent(projectId, generation)) setLoading(false);
     }
-  }, [activeProjectId]);
+  }, [activeProjectId, isScopeCurrent]);
 
   useEffect(() => {
     mountedRef.current = true;
+    const generation = ++viewGenerationRef.current;
+    qrPollGenerationRef.current += 1;
+    wechatActionVersionRef.current += 1;
+    wecomActionVersionRef.current += 1;
+    if (qrPollRef.current) {
+      clearTimeout(qrPollRef.current);
+      qrPollRef.current = null;
+    }
     setChannels([]);
+    setChannelsProjectId(null);
     setLoading(true);
     setError('');
     setInfo('');
+    setWechatBusy(false);
     setWechatQr(null);
     setWechatQrInstanceId('');
     setWechatQrLoading(false);
     setWechatQrError(null);
+    setWecomBusy(false);
+    setWecomBotId('');
+    setWecomSecret('');
     setWecomError(null);
     load();
     const refreshTimer = setInterval(() => load({ silent: true }), 5000);
     return () => {
       mountedRef.current = false;
+      if (viewGenerationRef.current === generation) viewGenerationRef.current += 1;
+      qrPollGenerationRef.current += 1;
+      wechatActionVersionRef.current += 1;
+      wecomActionVersionRef.current += 1;
       clearInterval(refreshTimer);
-      if (qrPollRef.current) clearTimeout(qrPollRef.current);
+      if (qrPollRef.current) {
+        clearTimeout(qrPollRef.current);
+        qrPollRef.current = null;
+      }
     };
   }, [load]);
 
   // 微信：创建实例后轮询二维码（对照源 bundle 每 1s 拉，最长 180s）
   const stopQrPoll = () => {
+    qrPollGenerationRef.current += 1;
     if (qrPollRef.current) { clearTimeout(qrPollRef.current); qrPollRef.current = null; }
   };
-  const pollQr = (instanceId) => {
+  const pollQr = (instanceId, projectId, generation) => {
     const startedAt = Date.now();
     stopQrPoll();
+    const pollGeneration = qrPollGenerationRef.current;
+    const isCurrentPoll = () => (
+      pollGeneration === qrPollGenerationRef.current &&
+      isScopeCurrent(projectId, generation)
+    );
     const poll = async () => {
-      if (!mountedRef.current) return;
+      if (!isCurrentPoll()) return;
       if (Date.now() - startedAt > 180000) {
         stopQrPoll();
         setWechatQrError('二维码超时，请重新创建');
@@ -244,7 +286,7 @@ export default function ReplicaRemoteControlView() {
       }
       try {
         const r = await fetchWechatQr(instanceId);
-        if (!mountedRef.current) return;
+        if (!isCurrentPoll()) return;
         if (r.ok && r.qrImage) {
           setWechatQr({ qrImage: r.qrImage });
           setWechatQrLoading(false);
@@ -253,22 +295,25 @@ export default function ReplicaRemoteControlView() {
           return;
         }
       } catch (_) { /* 忽略瞬时网络错，继续轮询 */ }
-      if (mountedRef.current) qrPollRef.current = setTimeout(poll, 1000);
+      if (isCurrentPoll()) qrPollRef.current = setTimeout(poll, 1000);
     };
     qrPollRef.current = setTimeout(poll, 1000);
   };
 
-  const showWechatQr = (instanceId, message) => {
+  const showWechatQr = (instanceId, message, projectId = activeProjectId, generation = viewGenerationRef.current) => {
+    if (!isScopeCurrent(projectId, generation)) return false;
     setWechatQrInstanceId(instanceId);
     setWechatQr(null);
     setWechatQrError(null);
     setWechatQrLoading(true);
     stopQrPoll();
     if (message) setInfo(message);
-    pollQr(instanceId);
+    pollQr(instanceId, projectId, generation);
+    return true;
   };
 
-  const handleChannelDeleted = (instanceId) => {
+  const handleChannelDeleted = (instanceId, projectId = activeProjectId, generation = viewGenerationRef.current) => {
+    if (!isScopeCurrent(projectId, generation)) return;
     if (!instanceId || instanceId !== wechatQrInstanceId) return;
     stopQrPoll();
     setWechatQrInstanceId('');
@@ -278,6 +323,13 @@ export default function ReplicaRemoteControlView() {
   };
 
   const handleCreateWechat = async () => {
+    const projectId = activeProjectId;
+    const generation = viewGenerationRef.current;
+    const actionVersion = ++wechatActionVersionRef.current;
+    const isCurrentAction = () => (
+      actionVersion === wechatActionVersionRef.current &&
+      isScopeCurrent(projectId, generation)
+    );
     setWechatBusy(true);
     setWechatQr(null);
     setWechatQrInstanceId('');
@@ -286,38 +338,54 @@ export default function ReplicaRemoteControlView() {
     stopQrPoll();
     try {
       const result = await createWechatChannel();
+      if (!isCurrentAction()) return;
       const instanceId = result?.instanceId || result?.id;
       if (!instanceId) throw new Error('后端未返回 instanceId');
-      showWechatQr(instanceId, `微信实例已创建：${instanceId}`);
+      showWechatQr(instanceId, `微信实例已创建：${instanceId}`, projectId, generation);
       await load();
     } catch (err) {
-      setWechatQrError(err.message || '创建微信实例失败');
-      setWechatQrLoading(false);
+      if (isCurrentAction()) {
+        setWechatQrError(err.message || '创建微信实例失败');
+        setWechatQrLoading(false);
+      }
     } finally {
-      setWechatBusy(false);
+      if (isCurrentAction()) setWechatBusy(false);
     }
   };
 
   const handleCreateWecom = async () => {
     setWecomError(null);
-    if (!wecomBotId.trim() || !wecomSecret.trim()) { setWecomError('botId 与 secret 均不可为空'); return; }
+    const botId = wecomBotId.trim();
+    const secret = wecomSecret.trim();
+    if (!botId || !secret) { setWecomError('botId 与 secret 均不可为空'); return; }
+    const projectId = activeProjectId;
+    const generation = viewGenerationRef.current;
+    const actionVersion = ++wecomActionVersionRef.current;
+    const isCurrentAction = () => (
+      actionVersion === wecomActionVersionRef.current &&
+      isScopeCurrent(projectId, generation)
+    );
     setWecomBusy(true);
     try {
-      await createWecomChannel({ botId: wecomBotId, secret: wecomSecret });
-      setWecomBotId('');
-      setWecomSecret('');
+      await createWecomChannel({ botId, secret });
+      if (!isCurrentAction()) return;
+      setWecomBotId((current) => current.trim() === botId ? '' : current);
+      setWecomSecret((current) => current.trim() === secret ? '' : current);
       setInfo('企微实例已创建');
       await load();
     } catch (err) {
-      setWecomError(err.message || '创建企微实例失败');
+      if (isCurrentAction()) setWecomError(err.message || '创建企微实例失败');
     } finally {
-      setWecomBusy(false);
+      if (isCurrentAction()) setWecomBusy(false);
     }
   };
 
-  const wechat = channels.filter((item) => item.clientType === 'wechat');
-  const wecom = channels.filter((item) => item.clientType === 'wecom');
-  const others = channels.filter((item) => item.clientType !== 'wechat' && item.clientType !== 'wecom');
+  const scopedChannels = channelsProjectId === activeProjectId ? channels : [];
+  const wechat = scopedChannels.filter((item) => item.clientType === 'wechat');
+  const wecom = scopedChannels.filter((item) => item.clientType === 'wecom');
+  const others = scopedChannels.filter((item) => item.clientType !== 'wechat' && item.clientType !== 'wecom');
+  const renderProjectId = activeProjectId;
+  const renderGeneration = viewGenerationRef.current;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
@@ -391,8 +459,8 @@ export default function ReplicaRemoteControlView() {
               key={`${item.clientType}-${item.instanceId}`}
               channel={item}
               onRefresh={load}
-              onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`)}
-              onDeleted={handleChannelDeleted}
+              onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`, renderProjectId, renderGeneration)}
+              onDeleted={(instanceId) => handleChannelDeleted(instanceId, renderProjectId, renderGeneration)}
             />
           )) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
         </section>
