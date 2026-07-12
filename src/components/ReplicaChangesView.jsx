@@ -17,6 +17,7 @@ import {
   unstageFile,
 } from '../lib/git';
 import { useStore } from '../store';
+import { downloadFile } from '../lib/fs';
 
 function DiffBlock({ diff }) {
   if (!diff) {
@@ -40,6 +41,23 @@ function DiffBlock({ diff }) {
       })}
     </div>
   );
+}
+
+const UNTRACKED_PREVIEW_LIMIT = 500000;
+
+function formatUntrackedPreview(path, content) {
+  const text = String(content || '');
+  const replacementCount = (text.match(/�/g) || []).length;
+  if (text.includes('\0') || replacementCount > 20) {
+    return `UNTRACKED BINARY FILE\n${path}\n\n该文件可能是二进制内容，无法显示文本预览。`;
+  }
+  if (!text) {
+    return `UNTRACKED FILE\n+++ ${path}\n\n（空文件）`;
+  }
+  const clipped = text.slice(0, UNTRACKED_PREVIEW_LIMIT);
+  const body = clipped.split(/\r?\n/).map((line) => `+${line}`).join('\n');
+  const suffix = text.length > clipped.length ? `\n\n... 预览已截断，仅显示前 ${UNTRACKED_PREVIEW_LIMIT.toLocaleString()} 个字符` : '';
+  return `UNTRACKED FILE\n+++ ${path}\n${body}${suffix}`;
 }
 
 export default function ReplicaChangesView() {
@@ -116,7 +134,10 @@ export default function ReplicaChangesView() {
         return;
       }
       try {
-        const text = await getDiff(selected.path, cwd);
+        const untracked = selected.indexStatus === '?' && selected.worktreeStatus === '?';
+        const text = untracked
+          ? formatUntrackedPreview(selected.path, await downloadFile(selected.path))
+          : await getDiff(selected.path, cwd);
         if (requestId !== diffRequestRef.current || useStore.getState().workspacePath !== workspacePath) return;
         setDiff(text || '该文件当前无可显示 diff');
       } catch (error) {
