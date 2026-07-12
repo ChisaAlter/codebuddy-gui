@@ -111,7 +111,10 @@ function normalizeWorkers(payload) {
 
 function normalizePlugins(payload) {
   const data = payload?.data ?? payload ?? [];
-  return Array.isArray(data) ? data : [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.plugins)) return data.plugins;
+  if (data && typeof data === 'object' && data.name) return [data];
+  return [];
 }
 
 function normalizeModels(models = []) {
@@ -1941,7 +1944,7 @@ export const useStore = create((set, get) => ({
     try {
       const payload = await fetchJson('/api/v1/plugins');
       if (!isScopedRequestCurrent(request, get())) return false;
-      set({ plugins: normalizePlugins(payload) });
+      set({ plugins: normalizePlugins(payload), pluginError: null });
       return true;
     } catch (error) {
       if (!isScopedRequestCurrent(request, get())) return false;

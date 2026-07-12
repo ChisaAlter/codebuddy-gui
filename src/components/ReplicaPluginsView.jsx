@@ -48,10 +48,16 @@ export default function ReplicaPluginsView() {
     if (statusFilter === 'disabled' && (p.status === 'enabled' || p.enabled)) return false;
     if (!searchTerm.trim()) return true;
     const q = searchTerm.toLowerCase();
-    return (
-      (p.name || '').toLowerCase().includes(q) ||
-      (p.description || '').toLowerCase().includes(q)
-    );
+    const searchable = [
+      p.name,
+      p.description,
+      p.marketplace,
+      p.installScope || p.scope,
+      typeof p.author === 'string' ? p.author : p.author?.name,
+      ...(Array.isArray(p.keywords) ? p.keywords : []),
+      ...(Array.isArray(p.skills) ? p.skills.map((skill) => skill.name) : []),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return searchable.includes(q);
   });
 
   const isEnabled = (p) => p.status === 'enabled' || p.enabled;
@@ -171,6 +177,9 @@ export default function ReplicaPluginsView() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((p, idx) => {
               const enabled = isEnabled(p);
+              const scope = p.installScope || p.scope;
+              const author = typeof p.author === 'string' ? p.author : p.author?.name;
+              const skillCount = Array.isArray(p.skills) ? p.skills.length : 0;
               return (
                 <div
                   key={p.name || idx}
@@ -214,11 +223,15 @@ export default function ReplicaPluginsView() {
                   )}
 
                   {/* Meta info */}
-                  <div className="flex items-center gap-2 text-[10px] text-[var(--color-text-muted)] mb-3">
-                    {p.scope && <span className="rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5">{p.scope}</span>}
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+                    {scope && <span className="rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5">{scope}</span>}
                     {p.marketplace && <span>{p.marketplace}</span>}
                     {p.version && <span>v{p.version}</span>}
+                    {skillCount > 0 && <span>{skillCount} 个技能</span>}
+                    {p.license && <span>{p.license}</span>}
                   </div>
+                  {author ? <div className="mb-1 truncate text-[10px] text-[var(--color-text-muted)]" title={author}>作者：{author}</div> : null}
+                  {p.installedPath ? <div className="mb-3 truncate text-[10px] text-[var(--color-text-muted)]" title={p.installedPath}>安装位置：{p.installedPath}</div> : null}
 
                   {/* Uninstall */}
                   <div className="mt-auto pt-2 border-t border-[var(--color-border-muted)]">
@@ -388,8 +401,12 @@ export default function ReplicaPluginsView() {
                 return (
                   <div key={id} className="flex items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-3 py-2">
                     <div className="flex-1 min-w-0">
-                      <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{mkt.name || id}</div>
-                      {mkt.url && <div className="truncate text-[11px] text-[var(--color-text-muted)]">{mkt.url}</div>}
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{mkt.name || id}</div>
+                        {mkt.type && <span className="shrink-0 rounded bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">{mkt.type}</span>}
+                      </div>
+                      {mkt.description && <div className="mt-0.5 truncate text-[11px] text-[var(--color-text-muted)]" title={mkt.description}>{mkt.description}</div>}
+                      {(mkt.source || mkt.url) && <div className="truncate text-[11px] text-[var(--color-text-muted)]" title={mkt.source || mkt.url}>{mkt.source || mkt.url}</div>}
                     </div>
                     <button
                       disabled={busy}
