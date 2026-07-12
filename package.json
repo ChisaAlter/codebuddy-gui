@@ -1,7 +1,7 @@
 {
   "name": "codebuddy-gui",
   "version": "0.1.0",
-  "description": "Electron desktop wrapper for the real CodeBuddy Web UI",
+  "description": "Multi-project desktop client for CodeBuddy CLI",
   "main": "electron/main.cjs",
   "license": "MIT",
   "type": "module",

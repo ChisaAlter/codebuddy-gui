@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { loader } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
 import { useStore } from '../store';
 import { joinPath, normalizePathParts } from '../lib/fs';
+
+loader.config({ monaco });
 
 function EntryIcon({ type }) {
   if (type === 'directory') return <span>📁</span>;
@@ -249,9 +252,11 @@ export function EditorPane() {
 
 export default function ReplicaWorkspaceView() {
   const initializeWorkspace = useStore((s) => s.initializeWorkspace);
+  const runtimePort = useStore((s) => s.projectsById[s.activeProjectId]?.runtimePort || null);
   const fileCwd = useStore((s) => s.fileCwd);
   const fileLoading = useStore((s) => s.fileLoading);
   const openDirectory = useStore((s) => s.openDirectory);
+  const refreshFileEntries = useStore((s) => s.refreshFileEntries);
   const openFile = useStore((s) => s.openFile);
   const setSelectedFile = useStore((s) => s.setSelectedFile);
   const createFile = useStore((s) => s.fsWrite);
@@ -270,8 +275,8 @@ export default function ReplicaWorkspaceView() {
   const [workspaceError, setWorkspaceError] = useState(null);
 
   useEffect(() => {
-    initializeWorkspace();
-  }, [initializeWorkspace]);
+    if (runtimePort) initializeWorkspace();
+  }, [initializeWorkspace, runtimePort]);
 
   useEffect(() => {
     if (!workspaceError) return;
@@ -291,7 +296,7 @@ export default function ReplicaWorkspaceView() {
     setNewFolderName('');
   };
 
-  const handleRefresh = () => openDirectory(fileCwd || '.');
+  const handleRefresh = () => refreshFileEntries();
 
   const validateEntryName = (value) => {
     const name = String(value || '').trim();
@@ -337,9 +342,15 @@ export default function ReplicaWorkspaceView() {
     const source = pathForEntry(renameEntry);
     const destination = joinPath(fileCwd || '.', renameValue.trim());
     if (source === destination) { setRenameEntry(null); return; }
+    const state = useStore.getState();
+    if (state.selectedFile === source && state.fileDirty
+      && !window.confirm(`“${source}”有未保存修改。重命名将丢失这些修改，确定吗？`)) return;
     const moved = await moveEntry(source, destination);
     if (!moved) { setWorkspaceError('重命名失败'); return; }
-    if (useStore.getState().selectedFile === source) await openFile(destination);
+    if (state.selectedFile === source) {
+      state.setSelectedFile(null);
+      await openFile(destination);
+    }
     setStatusMessage(`已重命名为 ${renameValue.trim()}`);
     setRenameEntry(null);
   };

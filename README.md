@@ -1,25 +1,55 @@
 # CodeBuddy GUI
 
-> 详细开发指南见 [`CODEBUDDY.md`](./CODEBUDDY.md)（架构、IPC、协议、约束、对照参考文件等）。本 README 仅作快速入口。
+CodeBuddy GUI 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
 
-目标：在 Electron 桌面端内本地 1:1 复刻 CodeBuddy Web UI，而不是套壳加载真实网页。
+## 主要功能
 
-当前状态：
-- Electron 已恢复为加载本地前端
-- 开发模式：`http://127.0.0.1:5173`
-- 生产模式：加载 `out/dist/index.html`
-- 真实 CodeBuddy Web UI（端口 50943）仅作为布局、样式和协议对照源，不再作为正式运行路径。本项目后端端口每次启动由 CLI 随机分配，前端经 IPC 动态获取
+- 持久化管理多个本地项目，重启后恢复活动项目、对话、草稿和界面状态。
+- 同一项目内创建多个对话，并让不同项目和对话并行工作。
+- 支持文本、文件和图片附件；具体输入能力以当前 CodeBuddy 运行时声明为准。
+- 内置文件树和 Monaco 编辑器，支持创建、重命名、删除、编辑和保存文件，并保护未保存修改。
+- 内置项目级终端，多面板输出和布局随项目持久化。
+- 提供 Git 状态、diff、暂存、提交、拉取、推送和分支操作。
+- 提供真实的任务、插件、实例、Workers、统计、链路、指标、日志和运行监控页面。
+- 对不受当前 CodeBuddy 版本支持的操作显示明确的不可用或错误状态，不模拟成功。
 
-开发：
-1. 终端 1：`npm run dev`
-2. 终端 2：`npm run dev:electron`
+## 开发运行
 
-构建：
-- `npm run build`
+先确保本机可以直接运行 `codebuddy`，然后在两个终端中启动前端和 Electron：
 
-安装包产物：
-- `dist\\CodeBuddy GUI Setup 0.1.0.exe`
+```bash
+npm install
+npm run dev
+```
 
-说明：
-- 当前仓库仍在从壳层向真实 1:1 本地复刻重构中
-- 以真实 CodeBuddy Web UI 的布局、样式、交互、状态和协议为唯一标准
+```bash
+npm run dev:electron
+```
+
+开发页面默认位于 `http://localhost:5173`。Electron 会启动或复用项目对应的 `codebuddy --serve` 进程，并从 CLI 输出中获取实际端口。
+
+## 构建
+
+```bash
+npm run build
+```
+
+构建会生成：
+
+- 前端产物：`out/dist/`
+- Windows 安装包：`dist/CodeBuddy GUI Setup 0.1.0.exe`
+
+仅生成未打包目录可使用：
+
+```bash
+npm run build:dir
+```
+
+## 数据与运行时
+
+- 项目、对话、终端输出和恢复信息保存在 Electron `userData` 下的产品状态文件中。
+- 每个项目拥有独立的 CodeBuddy 进程、端口、认证信息和工作目录。
+- 渲染进程通过受限 preload API 与 Electron 主进程通信；CodeBuddy REST/SSE 请求由主进程代理。
+- Electron 内的终端输出使用 SSE，输入和尺寸调整使用 HTTP；非 Electron 环境保留 WebSocket 回退。
+
+开发架构和维护说明见 [`CODEBUDDY.md`](./CODEBUDDY.md)。

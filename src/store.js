@@ -27,6 +27,8 @@ let conversationEventsBound = false;
 let runtimeListenerBound = false;
 const threadTimelinePersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
+let fileDirectoryRequestId = 0;
+let filePreviewRequestId = 0;
 
 function emptyThreadRuntime() {
   return {
@@ -123,6 +125,27 @@ function terminalStateFromProject(project, resetSessions = false) {
     ? saved.activePaneId
     : panes[0].id;
   return { panes, activePaneId };
+}
+
+function confirmLeaveDirtyFile(state) {
+  if (!state.fileDirty || !state.selectedFile) return true;
+  return window.confirm(`“${state.selectedFile}”有未保存修改。继续将丢失这些修改，确定吗？`);
+}
+
+function resetFileWorkspace(path) {
+  fileDirectoryRequestId += 1;
+  filePreviewRequestId += 1;
+  return {
+    fileCwd: path || '.',
+    fileEntries: [],
+    fileLoading: false,
+    selectedFile: null,
+    filePreview: '',
+    fileSavedContent: '',
+    fileDirty: false,
+    fileSaving: false,
+    filePreviewLoading: false,
+  };
 }
 
 export const useStore = create((set, get) => ({
@@ -665,7 +688,6 @@ export const useStore = create((set, get) => ({
         sessionId: thread.sessionId,
         sessionTitle: thread.title,
         workspacePath: project.workspacePath,
-        fileCwd: project.workspacePath,
         connectionState: existingClient.connectionState,
       });
       await get().updateThreadRecord(thread.id, { unread: false, lastOpenedAt: new Date().toISOString() });
@@ -689,7 +711,6 @@ export const useStore = create((set, get) => ({
       usage: null,
       availableCommands: [],
       workspacePath: project.workspacePath,
-      fileCwd: project.workspacePath,
       connectionState: 'connecting',
     });
     get().patchThreadRuntime(thread.id, {
@@ -820,19 +841,20 @@ export const useStore = create((set, get) => ({
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project) return false;
     const projectChanged = thread.projectId !== get().activeProjectId;
+    if (projectChanged && !confirmLeaveDirtyFile(get())) return false;
     if (projectChanged) await get().persistActiveProjectTerminalState();
     set({
       activeProjectId: project.id,
       activeThreadId: thread.id,
       workspacePath: project.workspacePath,
-      fileCwd: project.workspacePath,
+      ...(projectChanged ? resetFileWorkspace(project.workspacePath) : {}),
     });
     if (projectChanged) get().loadProjectTerminalState(project.id);
     get().activateThreadRuntime(thread.id);
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(project.id);
     if (!runtime) return false;
-    await get().openDirectory(project.workspacePath);
+    if (projectChanged) await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
     if (initialized) await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
     return initialized;
@@ -970,6 +992,8 @@ export const useStore = create((set, get) => ({
 
   async setWorkspace(path) {
     if (!path) return false;
+    const currentProject = activeProject(get());
+    if (currentProject?.workspacePath?.toLowerCase() !== String(path).toLowerCase() && !confirmLeaveDirtyFile(get())) return false;
     await get().persistActiveProjectTerminalState();
     const normalizedPath = String(path);
     let project = Object.values(get().projectsById).find((item) => (
@@ -999,14 +1023,14 @@ export const useStore = create((set, get) => ({
       activeProjectId: project.id,
       activeThreadId: thread.id,
       workspacePath: normalizedPath,
-      fileCwd: normalizedPath,
+      ...resetFileWorkspace(normalizedPath),
     }));
     get().loadProjectTerminalState(project.id);
     try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(project.id);
     if (!runtime) return false;
-    await get().openDirectory(normalizedPath);
+    await get().openDirectory(normalizedPath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
     if (initialized) {
       await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
@@ -1017,6 +1041,7 @@ export const useStore = create((set, get) => ({
   async activateProject(projectId) {
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
+    if (!confirmLeaveDirtyFile(get())) return false;
     await get().persistActiveProjectTerminalState();
     let threadId = get().threadOrderByProject[projectId]?.[0] || null;
     let thread = threadId ? get().threadsById[threadId] : null;
@@ -1035,13 +1060,13 @@ export const useStore = create((set, get) => ({
       activeProjectId: projectId,
       activeThreadId: threadId,
       workspacePath: project.workspacePath,
-      fileCwd: project.workspacePath,
+      ...resetFileWorkspace(project.workspacePath),
     });
     get().loadProjectTerminalState(projectId);
     await get().persistProductState();
     const runtime = await get().ensureProjectRuntime(projectId);
     if (!runtime) return false;
-    await get().openDirectory(project.workspacePath);
+    await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
     if (initialized) {
       await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
@@ -1066,6 +1091,7 @@ export const useStore = create((set, get) => ({
   async removeProject(projectId) {
     const project = get().projectsById[projectId];
     if (!project) return false;
+    if (projectId === get().activeProjectId && !confirmLeaveDirtyFile(get())) return false;
     const threadIds = get().threadOrderByProject[projectId] || [];
     await get().stopProjectRuntime(projectId).catch(() => null);
     const wasActive = get().activeProjectId === projectId;
@@ -1092,7 +1118,7 @@ export const useStore = create((set, get) => ({
         activeProjectId: nextProjectId,
         activeThreadId: wasActive ? nextThreadId : state.activeThreadId,
         workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
-        fileCwd: wasActive ? (projectsById[nextProjectId]?.workspacePath || '.') : state.fileCwd,
+        ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
       };
     });
     await get().persistProductState();
@@ -1100,7 +1126,7 @@ export const useStore = create((set, get) => ({
       const nextProject = activeProject(get());
       const runtime = await get().ensureProjectRuntime(get().activeProjectId);
       if (runtime && nextProject) {
-        await get().openDirectory(nextProject.workspacePath);
+        await get().openDirectory(nextProject.workspacePath, { skipDirtyCheck: true });
         await get().initializeActiveThread(undefined);
       }
     }
@@ -1210,10 +1236,14 @@ export const useStore = create((set, get) => ({
   async initializeWorkspace() {
     const project = activeProject(get());
     if (!project?.workspacePath) return;
+    if (get().fileCwd === project.workspacePath && (get().fileEntries.length > 0 || get().selectedFile)) return;
     await get().openDirectory(project.workspacePath);
   },
 
-  async openDirectory(path) {
+  async openDirectory(path, options = {}) {
+    if (!options.skipDirtyCheck && !confirmLeaveDirtyFile(get())) return false;
+    const requestId = ++fileDirectoryRequestId;
+    const projectId = get().activeProjectId;
     set({
       fileLoading: true,
       fileCwd: path,
@@ -1226,13 +1256,20 @@ export const useStore = create((set, get) => ({
     });
     try {
       const entries = await fsList(path, 1);
+      if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
       set({ fileEntries: entries, fileLoading: false });
+      return true;
     } catch (error) {
+      if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
       set({ fileEntries: [], fileLoading: false, error: error.message });
+      return false;
     }
   },
 
   async openFile(path) {
+    if (path !== get().selectedFile && !confirmLeaveDirtyFile(get())) return false;
+    const requestId = ++filePreviewRequestId;
+    const projectId = get().activeProjectId;
     set({
       selectedFile: path,
       filePreviewLoading: true,
@@ -1243,9 +1280,13 @@ export const useStore = create((set, get) => ({
     });
     try {
       const content = await downloadFile(path);
+      if (requestId !== filePreviewRequestId || projectId !== get().activeProjectId) return false;
       set({ filePreview: content, fileSavedContent: content, fileDirty: false, filePreviewLoading: false });
+      return true;
     } catch (error) {
+      if (requestId !== filePreviewRequestId || projectId !== get().activeProjectId) return false;
       set({ filePreview: `读取失败: ${error.message}`, filePreviewLoading: false, error: error.message });
+      return false;
     }
   },
 
@@ -1568,6 +1609,7 @@ export const useStore = create((set, get) => ({
       if (querySessionId) await get().updateActiveThread({ sessionId: querySessionId });
       const initialized = await get().initializeActiveThread(querySessionId || undefined);
       if (!initialized) return;
+      await get().initializeWorkspace();
       // 非关键数据加载 - 任一个失败不影响会话状态
       await Promise.allSettled([
         get().refreshInfo(),
