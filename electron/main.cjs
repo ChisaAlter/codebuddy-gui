@@ -270,7 +270,7 @@ function showOrCreateMainWindow() {
 }
 
 const GIT_ALLOWED_COMMANDS = new Set([
-  'add', 'branch', 'checkout', 'commit', 'diff', 'fetch', 'init', 'log', 'pull', 'push', 'remote', 'reset', 'stash', 'status',
+  'add', 'branch', 'checkout', 'clean', 'commit', 'diff', 'fetch', 'init', 'log', 'pull', 'push', 'remote', 'reset', 'restore', 'rev-parse', 'stash', 'status',
 ]);
 
 // 二级子命令白名单：只校验出现在主命令后第一位置的子动词（非选项，即不以 - 开头）
