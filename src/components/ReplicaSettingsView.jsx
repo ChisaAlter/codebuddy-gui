@@ -368,6 +368,22 @@ export default function ReplicaSettingsView() {
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.version ? `v${appInfo.version}` : '开发模式'}</span>} />
             <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.packaged ? '安装版' : '开发版'}</span>} />
+            <SettingRow label="用户数据目录" desc="项目、对话、界面状态和诊断日志的本地保存位置" control={
+              <div className="flex min-w-0 items-center gap-1">
+                <span className="max-w-[180px] truncate text-xs text-[var(--color-text-secondary)]" title={appInfo?.userDataPath || ''}>{appInfo?.userDataPath || '-'}</span>
+                <button
+                  className="btn-icon ml-1 shrink-0"
+                  title="复制用户数据目录"
+                  disabled={!appInfo?.userDataPath}
+                  onClick={() => { navigator.clipboard.writeText(appInfo?.userDataPath || '').catch(() => {}); }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                  </svg>
+                </button>
+              </div>
+            } />
             <SettingRow label="工作目录" control={
               <div className="flex items-center gap-1">
                 <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[180px]">{info?.cwd || '-'}</span>

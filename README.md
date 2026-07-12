@@ -50,7 +50,7 @@ npm run build:dir
 
 ## 数据与运行时
 
-- 项目、对话、终端输出和恢复信息保存在 Electron `userData` 下的产品状态文件中；Windows 默认目录为 `%APPDATA%\\CodeBuddy GUI`。
+- 项目、对话、终端输出和恢复信息保存在 Electron `userData` 下的产品状态文件中；Windows 默认目录为 `%APPDATA%\\codebuddy-gui`。实际路径可在应用的“设置 → 系统信息 → 用户数据目录”中查看和复制。
 - 每个项目拥有独立的 CodeBuddy 进程、端口、认证信息和工作目录。
 - 渲染进程通过受限 preload API 与 Electron 主进程通信；CodeBuddy REST/SSE 请求由主进程代理。
 - Electron 内的终端输出使用 SSE，输入和尺寸调整使用 HTTP；非 Electron 环境保留 WebSocket 回退。
