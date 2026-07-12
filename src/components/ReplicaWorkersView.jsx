@@ -61,9 +61,12 @@ export default function ReplicaWorkersView() {
   const [actionError, setActionError] = React.useState('');
   const [pendingStopWorker, setPendingStopWorker] = React.useState(null);
   const [workerActionError, setWorkerActionError] = React.useState('');
+  const projectGenerationRef = React.useRef(0);
+  const refreshRequestRef = React.useRef(0);
 
   const handleRefresh = React.useCallback(async () => {
     const projectId = activeProjectId;
+    const requestId = ++refreshRequestRef.current;
     setRefreshing(true);
     setActionError('');
     try {
@@ -71,18 +74,18 @@ export default function ReplicaWorkersView() {
         refreshWorkers(),
         fetchDaemonStatus(),
       ]);
+      if (requestId !== refreshRequestRef.current || useStore.getState().activeProjectId !== projectId) return false;
       if (workersResult.status === 'rejected') {
         setActionError(workersResult.reason?.message || '加载 Worker 失败');
       }
       if (daemonResult.status === 'fulfilled') {
-        if (useStore.getState().activeProjectId === projectId) setDaemon(daemonResult.value);
+        setDaemon(daemonResult.value);
       } else {
-        if (useStore.getState().activeProjectId === projectId) {
-          setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
-        }
+        setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
       }
+      return workersResult.status === 'fulfilled' && workersResult.value !== false && daemonResult.status === 'fulfilled';
     } finally {
-      if (useStore.getState().activeProjectId === projectId) {
+      if (requestId === refreshRequestRef.current && useStore.getState().activeProjectId === projectId) {
         setRefreshing(false);
         setLoading(false);
       }
@@ -90,23 +93,35 @@ export default function ReplicaWorkersView() {
   }, [activeProjectId, refreshWorkers]);
 
   React.useEffect(() => {
+    projectGenerationRef.current += 1;
+    refreshRequestRef.current += 1;
     setDaemon(null);
     setLoading(true);
+    setRefreshing(false);
+    setDaemonBusy(false);
+    setWorkerBusyPid(null);
+    setExpandedPid(null);
+    setActionError('');
     setPendingStopWorker(null);
     setWorkerActionError('');
     handleRefresh();
-  }, [handleRefresh]);
+  }, [activeProjectId, handleRefresh]);
 
   const runDaemonAction = async (action, fallbackMessage) => {
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
     setDaemonBusy(true);
     setActionError('');
     try {
       await action();
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
       await handleRefresh();
     } catch (error) {
-      setActionError(error?.message || fallbackMessage);
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+        setActionError(error?.message || fallbackMessage);
+      }
     } finally {
-      setDaemonBusy(false);
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setDaemonBusy(false);
     }
   };
 
@@ -129,16 +144,21 @@ export default function ReplicaWorkersView() {
   const confirmStopWorker = async () => {
     const worker = pendingStopWorker;
     if (!worker?.pid || workerBusyPid) return;
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
     setWorkerBusyPid(worker.pid);
     setWorkerActionError('');
     try {
       await stopWorker(worker.pid);
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
       await refreshWorkers();
-      setPendingStopWorker(null);
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setPendingStopWorker(null);
     } catch (error) {
-      setWorkerActionError(error?.message || '终止 Worker 失败');
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+        setWorkerActionError(error?.message || '终止 Worker 失败');
+      }
     } finally {
-      setWorkerBusyPid(null);
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setWorkerBusyPid(null);
     }
   };
 
