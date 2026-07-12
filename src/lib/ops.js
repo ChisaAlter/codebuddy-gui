@@ -363,16 +363,25 @@ export async function searchTraces(params = {}) {
  * @param {string} key - 设置项 key，如 "theme" 或 "memory.enabled"
  * @param {*} value - 设置值，对象类型会按 key 路径嵌套合并
  * @param {string} [scope='user'] - 命名空间，对照源固定 user
+ * @param {string} [baseUrl=''] - 固定写入的项目运行时地址
+ * @param {{authToken?: string|null, acpSessionToken?: string|null}} [requestContext] - 写入发起时的认证上下文
  * @returns {Promise<object>}
  */
-export async function updateSettingByKey(key, value, scope = 'user') {
+export async function updateSettingByKey(key, value, scope = 'user', baseUrl = '', requestContext = {}) {
   if (!key) throw new Error('setting key 不能为空');
   const params = new URLSearchParams();
   if (scope) params.set('scope', scope);
   const qs = params.toString();
-  const payload = await fetchJson(`/api/v1/settings/${encodeURIComponent(key)}${qs ? '?' + qs : ''}`, {
+  const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
+  const payload = await fetchJson(`${normalizedBase}/api/v1/settings/${encodeURIComponent(key)}${qs ? '?' + qs : ''}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(requestContext.authToken ? { Authorization: `Bearer ${requestContext.authToken}` } : {}),
+      ...(requestContext.acpSessionToken ? { 'acp-session-token': requestContext.acpSessionToken } : {}),
+    },
+    omitAuthToken: true,
+    omitAcpSessionToken: true,
     body: JSON.stringify({ value }),
   });
   return payload?.data || payload || null;

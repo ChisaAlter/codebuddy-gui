@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 
 function Toggle({ value, onChange }) {
@@ -73,11 +73,12 @@ function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56' 
   );
 }
 
-function Select({ value, options, onChange }) {
+function Select({ value, options, onChange, disabled = false }) {
   return (
     <select
-      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)]"
+      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
       value={value || ''}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
     >
       {options.map((opt) => (
@@ -199,33 +200,80 @@ export default function ReplicaSettingsView() {
   const [refreshing, setRefreshing] = useState(false);
   const [appInfo, setAppInfo] = useState(null);
   const [saveError, setSaveError] = useState('');
+  const [selectionStatus, setSelectionStatus] = useState(null);
+  const activeProjectId = useStore((state) => state.activeProjectId);
+  const activeThreadId = useStore((state) => state.activeThreadId);
+  const reloadRequestIdRef = useRef(0);
+  const saveFeedbackVersionRef = useRef(0);
+  const mountedRef = useRef(true);
 
-  const updateSetting = async (key, value) => {
+  const updateSetting = useCallback(async (key, value) => {
+    const projectId = activeProjectId;
+    const feedbackVersion = ++saveFeedbackVersionRef.current;
     setSaveError('');
     const saved = await persistSetting(key, value);
-    if (saved === false) {
+    if (saved === false && mountedRef.current && projectId === useStore.getState().activeProjectId && feedbackVersion === saveFeedbackVersionRef.current) {
       setSaveError(useStore.getState().error || `设置“${key}”保存失败，已恢复原值`);
     }
     return saved;
-  };
+  }, [activeProjectId, persistSetting]);
 
-  const isLoading = connectionState !== 'error' && (!infoLoaded || !settingsLoaded);
-
-  const reload = async () => {
+  const reload = useCallback(async () => {
+    const projectId = activeProjectId;
+    const requestId = ++reloadRequestIdRef.current;
     setRefreshing(true);
     setLoadError('');
     try {
-      await Promise.all([refreshInfo(), refreshSettings()]);
-    } catch (error) {
-      setLoadError(error.message || '设置加载失败');
+      const [infoResult, settingsResult] = await Promise.allSettled([refreshInfo(), refreshSettings()]);
+      if (!mountedRef.current || requestId !== reloadRequestIdRef.current || projectId !== useStore.getState().activeProjectId) return false;
+      const current = useStore.getState();
+      const failures = [];
+      if (infoResult.status === 'rejected') failures.push(`系统信息：${infoResult.reason?.message || '加载失败'}`);
+      else if (infoResult.value === false && !current.infoLoaded) failures.push('系统信息：请求未完成');
+      if (settingsResult.status === 'rejected') failures.push(`设置：${settingsResult.reason?.message || '加载失败'}`);
+      else if (settingsResult.value === false && !current.settingsLoaded) failures.push('设置：请求未完成');
+      if (failures.length) {
+        setLoadError(failures.join('；'));
+        return false;
+      }
+      setLoadError('');
+      return true;
     } finally {
-      setRefreshing(false);
+      if (mountedRef.current && requestId === reloadRequestIdRef.current && projectId === useStore.getState().activeProjectId) {
+        setRefreshing(false);
+      }
     }
-  };
+  }, [activeProjectId, refreshInfo, refreshSettings]);
+
+  const isLoading = !loadError && (!infoLoaded || !settingsLoaded);
 
   useEffect(() => {
-    if (!infoLoaded || !settingsLoaded) reload();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reloadRequestIdRef.current += 1;
+      saveFeedbackVersionRef.current += 1;
+    };
   }, []);
+
+  useEffect(() => {
+    reloadRequestIdRef.current += 1;
+    saveFeedbackVersionRef.current += 1;
+    setLoadError('');
+    setSaveError('');
+    setSelectionStatus(null);
+    reload();
+  }, [activeProjectId, reload]);
+
+  useEffect(() => {
+    setSelectionStatus(null);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (selectionStatus?.type !== 'success') return undefined;
+    const timer = setTimeout(() => setSelectionStatus(null), 3000);
+    return () => clearTimeout(timer);
+  }, [selectionStatus]);
 
   useEffect(() => {
     let active = true;
@@ -244,6 +292,26 @@ export default function ReplicaSettingsView() {
     value: m.id || m.modeId,
     label: m.name || m.id || m.modeId,
   }));
+
+  const changeSessionSetting = async (kind, value) => {
+    if (selectionStatus?.type === 'busy') return;
+    const threadId = activeThreadId;
+    const label = kind === 'model' ? '模型' : '模式';
+    setSelectionStatus({ type: 'busy', message: `正在切换${label}...` });
+    const changed = kind === 'model' ? await setModel(value) : await setMode(value);
+    if (!mountedRef.current || threadId !== useStore.getState().activeThreadId) return;
+    if (changed) {
+      setSelectionStatus({ type: 'success', message: `${label}已切换` });
+    } else {
+      setSelectionStatus({
+        type: 'error',
+        message: useStore.getState().error || `${label}切换失败`,
+      });
+    }
+  };
+
+  const selectionBusy = selectionStatus?.type === 'busy';
+  const selectionDisabled = selectionBusy || !sessionId || connectionState !== 'connected';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
@@ -338,18 +406,25 @@ export default function ReplicaSettingsView() {
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="当前模型" control={
               modelOptions.length > 0 ? (
-                <Select value={currentModel} options={modelOptions} onChange={setModel} />
+                <Select value={currentModel} options={modelOptions} disabled={selectionDisabled} onChange={(value) => changeSessionSetting('model', value)} />
               ) : (
                 <span className="text-xs text-[var(--color-text-secondary)]">{currentModelName || currentModel || '加载中...'}</span>
               )
             } />
             <SettingRow label="当前模式" control={
               modeOptions.length > 0 ? (
-                <Select value={currentMode} options={modeOptions} onChange={setMode} />
+                <Select value={currentMode} options={modeOptions} disabled={selectionDisabled} onChange={(value) => changeSessionSetting('mode', value)} />
               ) : (
                 <span className="text-xs text-[var(--color-text-secondary)]">{currentMode || 'Default'}</span>
               )
             } />
+            {selectionStatus ? (
+              <div className={`border-t border-[var(--color-border-muted)] px-4 py-2 text-xs ${
+                selectionStatus.type === 'error' ? 'text-[var(--color-accent-red)]' :
+                selectionStatus.type === 'success' ? 'text-[var(--color-accent-green)]' :
+                'text-[var(--color-text-muted)]'
+              }`}>{selectionStatus.message}</div>
+            ) : null}
           </div>
         </div>
 

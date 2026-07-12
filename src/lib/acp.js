@@ -40,7 +40,7 @@ export function getAuthToken() {
 }
 export function clearAuthToken() { setAuthToken(null); }
 
-function makeHeaders(extra = {}, includeAcpSessionToken = true) {
+function makeHeaders(extra = {}, includeAcpSessionToken = true, includeAuthToken = true) {
   const headers = {
     'X-CodeBuddy-Request': '1',
     ...extra,
@@ -48,7 +48,7 @@ function makeHeaders(extra = {}, includeAcpSessionToken = true) {
   if (includeAcpSessionToken && _acpSessionToken) {
     headers['acp-session-token'] = _acpSessionToken;
   }
-  const bearer = getAuthToken();
+  const bearer = includeAuthToken ? getAuthToken() : null;
   if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
   return headers;
 }
@@ -61,12 +61,13 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
     ...init,
     signal,
     headers: {
-      ...makeHeaders({}, !init.omitAcpSessionToken),
+      ...makeHeaders({}, !init.omitAcpSessionToken, !init.omitAuthToken),
       ...(init.headers || {}),
     },
   };
   delete request.timeoutMs;
   delete request.omitAcpSessionToken;
+  delete request.omitAuthToken;
 
   const controller = new AbortController();
   // 走 IPC 代理通道时由主进程统一管超时（避免前端 30s 抢盖主进程 120s 长响应）

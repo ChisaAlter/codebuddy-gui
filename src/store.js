@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
+import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, getAcpSessionToken, getAuthToken, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
@@ -153,6 +153,10 @@ function normalizeWorkers(payload) {
   return Array.isArray(data) ? data : [];
 }
 
+function settingScopeKey(projectId, key) {
+  return `${projectId || 'global'}:${key}`;
+}
+
 function normalizePlugins(payload) {
   const data = payload?.data ?? payload ?? [];
   if (Array.isArray(data)) return data;
@@ -268,6 +272,8 @@ function resetProjectRuntimeViews() {
   return {
     info: null,
     infoLoaded: false,
+    settings: null,
+    settingsLoaded: false,
     sessions: [],
     workers: [],
     workersError: null,
@@ -1161,34 +1167,48 @@ export const useStore = create((set, get) => ({
   },
 
   async setModel(modelId) {
+    const state = get();
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
     try {
-      const client = get().getThreadClient();
+      const client = get().getThreadClient(threadId);
       if (!client) throw new Error('当前会话未连接');
       await client.request('session/set_model', {
-        sessionId: get().sessionId,
+        sessionId,
         modelId,
       });
-      set({ currentModel: modelId });
-      get().patchThreadRuntime(get().activeThreadId, { currentModel: modelId });
-      await get().updateActiveThread({ modelId });
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.sessionId !== sessionId) return false;
+      get().patchThreadRuntime(threadId, { currentModel: modelId });
+      if (get().activeThreadId === threadId) set({ currentModel: modelId });
+      await get().updateThreadRecord(threadId, { modelId });
+      return true;
     } catch (error) {
-      set({ error: error.message });
+      if (get().activeThreadId === threadId) set({ error: error.message });
+      return false;
     }
   },
 
   async setMode(modeId) {
+    const state = get();
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
     try {
-      const client = get().getThreadClient();
+      const client = get().getThreadClient(threadId);
       if (!client) throw new Error('当前会话未连接');
       await client.request('session/set_mode', {
-        sessionId: get().sessionId,
+        sessionId,
         modeId,
       });
-      set({ currentMode: modeId });
-      get().patchThreadRuntime(get().activeThreadId, { currentMode: modeId });
-      await get().updateActiveThread({ modeId });
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.sessionId !== sessionId) return false;
+      get().patchThreadRuntime(threadId, { currentMode: modeId });
+      if (get().activeThreadId === threadId) set({ currentMode: modeId });
+      await get().updateThreadRecord(threadId, { modeId });
+      return true;
     } catch (error) {
-      set({ error: error.message });
+      if (get().activeThreadId === threadId) set({ error: error.message });
+      return false;
     }
   },
 
@@ -1958,8 +1978,13 @@ export const useStore = create((set, get) => ({
     const payload = await fetchJson('/api/v1/settings');
     if (!isScopedRequestCurrent(request, get())) return false;
     const loaded = payload.data || payload;
-    confirmedSettingValues.clear();
-    for (const [key, value] of Object.entries(loaded || {})) confirmedSettingValues.set(key, value);
+    const projectPrefix = `${request.projectId || 'global'}:`;
+    for (const storedKey of confirmedSettingValues.keys()) {
+      if (storedKey.startsWith(projectPrefix)) confirmedSettingValues.delete(storedKey);
+    }
+    for (const [key, value] of Object.entries(loaded || {})) {
+      confirmedSettingValues.set(settingScopeKey(request.projectId, key), value);
+    }
     try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(loaded)); } catch (_) {}
     set({ settings: loaded, settingsLoaded: true });
     return true;
@@ -1977,10 +2002,18 @@ export const useStore = create((set, get) => ({
 
   // 乐观更新 UI，后端失败时回滚到最后一次确认值。版本号避免迟到响应覆盖更新的操作。
   async updateSetting(key, value) {
-    const version = (settingWriteVersions.get(key) || 0) + 1;
-    settingWriteVersions.set(key, version);
-    if (!confirmedSettingValues.has(key)) {
-      confirmedSettingValues.set(key, readSettingPath(get().settings, key));
+    const state = get();
+    const projectId = state.activeProjectId;
+    const apiBase = state.apiBase;
+    const requestContext = {
+      authToken: getAuthToken(),
+      acpSessionToken: getAcpSessionToken(),
+    };
+    const writeKey = settingScopeKey(projectId, key);
+    const version = (settingWriteVersions.get(writeKey) || 0) + 1;
+    settingWriteVersions.set(writeKey, version);
+    if (!confirmedSettingValues.has(writeKey)) {
+      confirmedSettingValues.set(writeKey, readSettingPath(state.settings, key));
     }
 
     set((state) => {
@@ -1989,15 +2022,22 @@ export const useStore = create((set, get) => ({
       return { settings: next, settingsLoaded: true };
     });
 
-    const previousWrite = settingWriteChains.get(key) || Promise.resolve();
+    const previousWrite = settingWriteChains.get(writeKey) || Promise.resolve();
     const operation = previousWrite.catch(() => {}).then(async () => {
       try {
-        await updateSettingByKeyApi(key, value, 'user');
-        confirmedSettingValues.set(key, value);
+        await updateSettingByKeyApi(key, value, 'user', apiBase, requestContext);
+        confirmedSettingValues.set(writeKey, value);
+        if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
+          set((current) => {
+            const next = writeSettingPath(current.settings, key, value);
+            try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
+            return { settings: next, settingsLoaded: true };
+          });
+        }
         return true;
       } catch (err) {
-        if (settingWriteVersions.get(key) === version) {
-          const confirmedValue = confirmedSettingValues.get(key);
+        if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
+          const confirmedValue = confirmedSettingValues.get(writeKey);
           set((state) => {
             const next = writeSettingPath(state.settings, key, confirmedValue, confirmedValue === undefined);
             try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
@@ -2011,13 +2051,13 @@ export const useStore = create((set, get) => ({
         return false;
       }
     });
-    settingWriteChains.set(key, operation);
+    settingWriteChains.set(writeKey, operation);
 
     try {
       return await operation;
     } finally {
-      if (settingWriteChains.get(key) === operation) settingWriteChains.delete(key);
-      if (settingWriteVersions.get(key) === version) settingWriteVersions.delete(key);
+      if (settingWriteChains.get(writeKey) === operation) settingWriteChains.delete(writeKey);
+      if (settingWriteVersions.get(writeKey) === version) settingWriteVersions.delete(writeKey);
     }
   },
 
