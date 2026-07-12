@@ -20,7 +20,7 @@ export async function fetchSessionStats(sessionId) {
   return payload.data || payload;
 }
 
-/** 全局统计（对照源 GET /api/v1/stats），含 tokenUsageByModel/fileChangeStats/apiDuration/runningTime/totalDays/toolUsage 等 */
+/** 全局统计（GET /api/v1/stats），当前契约含会话、活跃、modelUsage、toolUsage 和 dailyActivity 等数据。 */
 export async function fetchStats() {
   const payload = await fetchJson('/api/v1/stats');
   return payload.data || payload || null;
