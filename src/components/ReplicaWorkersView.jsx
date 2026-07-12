@@ -6,9 +6,46 @@ const STATUS_CONFIG = {
   running: { klass: 'tag-green', label: '运行中' },
   active: { klass: 'tag-green', label: '运行中' },
   stopped: { klass: 'tag-red', label: '已停止' },
+  stale: { klass: 'tag-yellow', label: '心跳过期' },
   error: { klass: 'tag-red', label: '错误' },
   failed: { klass: 'tag-red', label: '失败' },
 };
+
+const HEARTBEAT_STALE_MS = 60_000;
+
+function toTimestamp(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return number < 1_000_000_000_000 ? number * 1000 : number;
+}
+
+function resolveWorkerStatus(worker) {
+  const explicit = String(worker.status || worker.state || '').toLowerCase();
+  if (explicit) return explicit;
+  const heartbeat = toTimestamp(worker.lastHeartbeat || worker.updatedAt);
+  if (heartbeat && Date.now() - heartbeat > HEARTBEAT_STALE_MS) return 'stale';
+  return 'active';
+}
+
+function formatRelativeTime(value) {
+  const timestamp = toTimestamp(value);
+  if (!timestamp) return '-';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 5) return '刚刚';
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+function formatDateTime(value) {
+  const timestamp = toTimestamp(value);
+  if (!timestamp) return '-';
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN');
+}
 
 export default function ReplicaWorkersView() {
   const { workers, refreshWorkers, workersError, setRoute } = useStore();
@@ -70,6 +107,10 @@ export default function ReplicaWorkersView() {
 
   const handleStopWorker = async (worker) => {
     if (!worker?.pid) return;
+    if (worker.isCurrent) {
+      setActionError('当前 Worker 正在为此项目提供服务，请在“项目运行时”页面停止或重启。');
+      return;
+    }
     if (!window.confirm(`确定终止 Worker PID ${worker.pid} 吗？正在执行的任务会中断。`)) return;
     setWorkerBusyPid(worker.pid);
     setActionError('');
@@ -83,7 +124,12 @@ export default function ReplicaWorkersView() {
     }
   };
 
-  const workersList = Array.isArray(workers) ? workers : [];
+  const workersList = Array.isArray(workers)
+    ? [...workers].sort(
+        (left, right) => Number(Boolean(right.isCurrent)) - Number(Boolean(left.isCurrent)) ||
+          Number(right.lastHeartbeat || right.updatedAt || 0) - Number(left.lastHeartbeat || left.updatedAt || 0),
+      )
+    : [];
 
   // Search filter
   const term = searchTerm.trim().toLowerCase();
@@ -92,13 +138,17 @@ export default function ReplicaWorkersView() {
         (w) =>
           (w.kind || '').toLowerCase().includes(term) ||
           String(w.pid || '').includes(term) ||
-          (w.sessionId || '').toLowerCase().includes(term)
+          (w.sessionId || '').toLowerCase().includes(term) ||
+          (w.cwd || '').toLowerCase().includes(term) ||
+          (w.endpoint || w.url || '').toLowerCase().includes(term) ||
+          (w.hostname || '').toLowerCase().includes(term) ||
+          (w.mode || '').toLowerCase().includes(term)
       )
     : workersList;
 
   const getStatusTag = (w) => {
-    const status = (w.status || w.state || 'running').toLowerCase();
-    const cfg = STATUS_CONFIG[status] || { klass: 'tag-green', label: w.status || w.state || '运行中' };
+    const status = resolveWorkerStatus(w);
+    const cfg = STATUS_CONFIG[status] || { klass: 'tag-green', label: w.status || w.state || status };
     return <span className={`tag ${cfg.klass}`}>{cfg.label}</span>;
   };
 
@@ -114,7 +164,10 @@ export default function ReplicaWorkersView() {
       <div className="mx-auto w-full max-w-5xl px-8 py-8">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Workers</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Workers</h1>
+            {!loading ? <span className="rounded bg-[var(--color-bg-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-muted)]">{workersList.length}</span> : null}
+          </div>
           <button
             onClick={handleRefresh}
             disabled={refreshing}
@@ -162,7 +215,7 @@ export default function ReplicaWorkersView() {
           <input
             className="input-field max-w-[320px]"
             type="text"
-            placeholder="搜索 Worker（kind / PID / sessionId）..."
+            placeholder="搜索 Worker、目录、Endpoint 或主机..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -211,6 +264,7 @@ export default function ReplicaWorkersView() {
           <div className="space-y-3">
             {filtered.map((w, idx) => {
               const isExpanded = expandedPid === w.pid;
+              const resolvedStatus = resolveWorkerStatus(w);
               return (
                 <div
                   key={w.pid || idx}
@@ -226,7 +280,8 @@ export default function ReplicaWorkersView() {
                         {w.kind || 'Worker'}
                       </span>
                       {getStatusTag(w)}
-                      <span className="text-[10px] text-[var(--color-text-muted)] ml-auto">
+                      {w.isCurrent ? <span className="rounded bg-[rgba(59,130,246,0.12)] px-2 py-0.5 text-[10px] text-[var(--color-accent-blue)]">当前运行时</span> : null}
+                      <span className="ml-auto text-[10px] text-[var(--color-text-muted)]">
                         PID {w.pid || '-'}
                       </span>
                     </div>
@@ -234,6 +289,9 @@ export default function ReplicaWorkersView() {
                       <div className="truncate">Session: {w.sessionId || '-'}</div>
                       <div className="truncate">CWD: {w.cwd || '-'}</div>
                       <div>Version: {w.version || '-'}　OS: {w.os || '-'}</div>
+                      <div className="truncate" title={w.endpoint || w.url || ''}>Endpoint: {w.endpoint || w.url || '-'}</div>
+                      <div>Mode: {w.mode || '-'}　Host: {w.hostname || w.host || '-'}</div>
+                      <div>Heartbeat: {formatRelativeTime(w.lastHeartbeat || w.updatedAt)}</div>
                     </div>
 
                     {/* Action buttons */}
@@ -247,10 +305,10 @@ export default function ReplicaWorkersView() {
                       <button
                         className="btn-ghost text-xs text-[var(--color-error)]"
                         onClick={(e) => { e.stopPropagation(); handleStopWorker(w); }}
-                        disabled={workerBusyPid === w.pid}
-                        title="终止这个 Worker"
+                        disabled={w.isCurrent || workerBusyPid === w.pid}
+                        title={w.isCurrent ? '当前 Worker 请在项目运行时页面管理' : '终止这个 Worker'}
                       >
-                        {workerBusyPid === w.pid ? '终止中...' : '终止'}
+                        {w.isCurrent ? '当前运行时' : (workerBusyPid === w.pid ? '终止中...' : '终止')}
                       </button>
                       <span className="ml-auto text-[10px] text-[var(--color-text-muted)]">
                         {isExpanded ? '收起' : '展开详情'}
@@ -269,18 +327,23 @@ export default function ReplicaWorkersView() {
                       <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
                         <Field label="PID" value={w.pid} />
                         <Field label="Kind" value={w.kind} />
+                        <Field label="Current" value={w.isCurrent ? '是' : '否'} />
+                        <Field label="Status" value={STATUS_CONFIG[resolvedStatus]?.label || resolvedStatus} />
                         <Field label="Session ID" value={w.sessionId} />
-                        <Field label="Status" value={w.status || w.state || 'running'} />
+                        <Field label="Mode" value={w.mode} />
                         <Field label="CWD" value={w.cwd} />
+                        <Field label="Endpoint" value={w.endpoint || w.url} />
                         <Field label="Version" value={w.version} />
                         <Field label="OS" value={w.os} />
                         <Field label="Arch" value={w.arch || w.architecture} />
+                        <Field label="Host" value={w.host || w.hostname} />
+                        <Field label="Started" value={formatDateTime(w.startedAt || w.createdAt || w.startTime)} />
+                        <Field label="Heartbeat" value={formatRelativeTime(w.lastHeartbeat || w.updatedAt)} />
+                        <Field label="Updated" value={formatDateTime(w.updatedAt || w.lastHeartbeat)} />
+                        <Field label="Port" value={w.port} />
                         <Field label="Command" value={w.command || w.cmd} />
                         <Field label="CPU" value={w.cpu != null ? `${w.cpu}%` : null} />
                         <Field label="Memory" value={w.memory || w.mem} />
-                        <Field label="Started" value={w.startedAt || w.createdAt || w.startTime} />
-                        <Field label="Port" value={w.port} />
-                        <Field label="Host" value={w.host || w.hostname} />
                       </div>
                       {w.args && w.args.length > 0 && (
                         <div className="mt-3">
@@ -314,9 +377,9 @@ export default function ReplicaWorkersView() {
 
 function Field({ label, value }) {
   return (
-    <div className="flex items-baseline gap-2">
+    <div className="flex min-w-0 items-baseline gap-2">
       <span className="text-[var(--color-text-muted)] shrink-0 min-w-[80px]">{label}</span>
-      <span className="text-[var(--color-text-secondary)] truncate">{value ?? '-'}</span>
+      <span className="truncate text-[var(--color-text-secondary)]" title={String(value ?? '-')}>{value ?? '-'}</span>
     </div>
   );
 }
