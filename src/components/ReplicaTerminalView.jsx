@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useStore } from '../store';
 import { PtySocket } from '../lib/pty';
 
-function TerminalPane({ pane, active, canSplit, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
+function TerminalPane({ pane, active, canSplit, canClose, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -165,10 +165,17 @@ function TerminalPane({ pane, active, canSplit, onFocus, onSplitRight, onSplitDo
               <div>Ctrl+Shift+W 关闭终端</div>
               <div>Ctrl+Shift+→ 右分屏</div>
               <div>Ctrl+Shift+↓ 下分屏</div>
-              <div>Alt+1/2/3 切换终端</div>
+              <div>Alt+1/2 切换终端</div>
             </div>
           </div>
-          <button className="btn-ghost" onClick={(e) => { e.stopPropagation(); onClose(); }}>关闭</button>
+          <button
+            className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!canClose}
+            title={canClose ? '关闭终端' : '至少保留一个终端'}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+          >
+            关闭
+          </button>
         </div>
       </div>
       <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden" />
@@ -190,6 +197,8 @@ export default function ReplicaTerminalView() {
   const setPaneStatus = useStore((s) => s.setPaneStatus);
   const bindPtyToPane = useStore((s) => s.bindPtyToPane);
   const initializeTerminal = useStore((s) => s.initializeTerminal);
+  const restartProjectRuntime = useStore((s) => s.restartProjectRuntime);
+  const [runtimeRetrying, setRuntimeRetrying] = useState(false);
 
   useEffect(() => {
     initializeTerminal();
@@ -202,6 +211,19 @@ export default function ReplicaTerminalView() {
     && apiBase === `http://127.0.0.1:${activeProject.runtimePort}`
   );
 
+  const runtimeStatus = activeProject?.runtimeStatus || 'idle';
+  const runtimeUnavailable = runtimeStatus === 'error' || runtimeStatus === 'stopped';
+
+  const recoverRuntime = async () => {
+    if (!activeProjectId || runtimeRetrying) return;
+    setRuntimeRetrying(true);
+    try {
+      await restartProjectRuntime(activeProjectId);
+    } finally {
+      setRuntimeRetrying(false);
+    }
+  };
+
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'N') {
@@ -211,7 +233,7 @@ export default function ReplicaTerminalView() {
       if (e.ctrlKey && e.shiftKey && e.key === 'W') {
         e.preventDefault();
         const active = panes.find(p => p.id === activePaneId);
-        if (active) closePane(active.id);
+        if (active && panes.length > 1) closePane(active.id);
       }
       if (e.ctrlKey && e.shiftKey && e.key === 'ArrowRight') {
         e.preventDefault();
@@ -221,7 +243,7 @@ export default function ReplicaTerminalView() {
         e.preventDefault();
         splitPane(activePaneId, 'down');
       }
-      if (e.altKey && /^[1-3]$/.test(e.key)) {
+      if (e.altKey && /^[1-2]$/.test(e.key)) {
         const pane = panes[Number(e.key) - 1];
         if (pane) {
           e.preventDefault();
@@ -264,7 +286,26 @@ export default function ReplicaTerminalView() {
         <div className="text-sm">Terminal</div>
         <div className="text-xs text-[#9ca3af]">项目级 PTY 实时连接</div>
       </div>
-      {!runtimeReady ? (
+      {runtimeUnavailable ? (
+        <div className="flex flex-1 items-center justify-center bg-[var(--color-bg-primary)] px-6">
+          <div className="max-w-lg text-center">
+            <div className={`mb-2 text-sm font-medium ${runtimeStatus === 'error' ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-primary)]'}`}>
+              {runtimeStatus === 'error' ? '项目运行时启动失败' : '项目运行时已停止'}
+            </div>
+            <div className="mb-4 break-words text-xs leading-5 text-[var(--color-text-muted)]">
+              {activeProject?.runtimeError || '终端需要运行中的 CodeBuddy 项目实例。'}
+            </div>
+            <button
+              type="button"
+              className="btn-primary px-4 py-2 text-xs"
+              disabled={runtimeRetrying}
+              onClick={recoverRuntime}
+            >
+              {runtimeRetrying ? '正在重新启动...' : '重新启动运行时'}
+            </button>
+          </div>
+        </div>
+      ) : !runtimeReady ? (
         <div className="flex-1 flex items-center justify-center bg-[var(--color-bg-primary)]">
           <div className="text-center">
             <div className="mb-2 text-sm text-[var(--color-text-secondary)]">正在连接项目运行时</div>
@@ -288,6 +329,7 @@ export default function ReplicaTerminalView() {
               active={pane.id === activePaneId}
               canSplit={panes.length < 2}
               onFocus={() => setActivePane(pane.id)}
+              canClose={panes.length > 1}
               onSplitRight={() => splitPane(pane.id, 'right')}
               onSplitDown={() => splitPane(pane.id, 'down')}
               onClose={() => closePane(pane.id)}
