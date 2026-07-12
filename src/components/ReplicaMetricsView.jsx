@@ -9,6 +9,11 @@ function clampPercent(v) {
   return Math.max(0, Math.min(100, n));
 }
 
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function formatUptime(seconds) {
   if (!seconds || seconds < 0) return '--';
   const d = Math.floor(seconds / 86400);
@@ -28,6 +33,12 @@ function formatBytes(mib) {
   if (!Number.isFinite(n)) return '--';
   if (n >= 1024) return `${(n / 1024).toFixed(1)} GiB`;
   return `${n.toFixed(1)} MiB`;
+}
+
+function formatGiB(gib) {
+  const n = Number(gib);
+  if (!Number.isFinite(n)) return '--';
+  return `${n.toFixed(1)} GiB`;
 }
 
 // ── 内部子组件 ──
@@ -50,7 +61,7 @@ function LoadingState() {
   );
 }
 
-function StatCard({ label, value, unit, percent, max, colorClass }) {
+function StatCard({ label, value, unit, percent, max, colorClass, valueFormatter = formatBytes }) {
   const pct = clampPercent(percent);
   const displayValue = value ?? '--';
   const barColor = colorClass || 'bg-[var(--color-accent-blue)]';
@@ -63,7 +74,7 @@ function StatCard({ label, value, unit, percent, max, colorClass }) {
         </span>
         {max != null && (
           <span className="text-[11px] text-[var(--color-text-tertiary)] tabular-nums">
-            {formatBytes(value)} / {formatBytes(max)}
+            {valueFormatter(value)} / {valueFormatter(max)}
           </span>
         )}
       </div>
@@ -221,7 +232,10 @@ export default function ReplicaMetricsView() {
     try {
       setRefreshing(true);
       setError(null);
-      await refreshMetrics();
+      const ok = await refreshMetrics();
+      if (ok === false) {
+        setError(useStore.getState().metricsError || '请求失败');
+      }
     } catch (e) {
       setError(e?.message || '请求失败');
     } finally {
@@ -267,12 +281,16 @@ export default function ReplicaMetricsView() {
 
   // ── 从 metrics 提取字段 ──
 
-  const cpuPct = metrics?.cpuUsedPct ?? 0;
-  const memUsed = metrics?.memUsedMib ?? 0;
-  const memTotal = metrics?.memTotalMib ?? 1;
-  const diskUsed = metrics?.diskUsedGiB ?? metrics?.diskUsed ?? 0;
-  const diskTotal = metrics?.diskTotalGiB ?? metrics?.diskTotal ?? 1;
-  const loadAvg = Array.isArray(metrics?.loadAverage) ? metrics.loadAverage : [];
+  const cpuPct = finiteNumber(metrics?.cpuUsedPct);
+  const memUsed = finiteNumber(metrics?.memUsedMib);
+  const memTotal = finiteNumber(metrics?.memTotalMib);
+  const diskUsed = metrics?.diskUsedGiB != null
+    ? finiteNumber(metrics.diskUsedGiB)
+    : finiteNumber(metrics?.diskUsed) / 1024 / 1024 / 1024;
+  const diskTotal = metrics?.diskTotalGiB != null
+    ? finiteNumber(metrics.diskTotalGiB)
+    : finiteNumber(metrics?.diskTotal) / 1024 / 1024 / 1024;
+  const loadAvg = Array.isArray(metrics?.loadAverage) ? metrics.loadAverage.map((value) => finiteNumber(value)) : [];
   const loadDisplay = loadAvg.length > 0 ? loadAvg.map((v) => v.toFixed(2)).join(' / ') : '--';
 
   const memPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
@@ -322,6 +340,7 @@ export default function ReplicaMetricsView() {
             unit="GiB"
             percent={diskPercent}
             max={diskTotal}
+            valueFormatter={formatGiB}
             colorClass="bg-[var(--color-accent-green)]"
           />
           <StatCard

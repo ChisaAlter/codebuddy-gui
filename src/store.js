@@ -202,6 +202,7 @@ export const useStore = create((set, get) => ({
   activePaneId: null,
   traces: [],
   metrics: null,
+  metricsError: null,
   stats: null,        // 全局 stats（对照源 GET /api/v1/stats）
   sessionStats: null, // 当前会话 stats（对照源 GET /api/v1/stats/session?sessionId=）
   statsError: null,
@@ -1743,22 +1744,30 @@ export const useStore = create((set, get) => ({
       set({ workers: normalizeWorkers(payload), workersError: null });
       return true;
     } catch (error) {
-      set({ workers: [], workersError: error.message || '加载 Worker 失败' });
+      set({ workersError: error.message || '加载 Worker 失败' });
       return false;
     }
   },
 
   async refreshPlugins() {
-    const payload = await fetchJson('/api/v1/plugins');
-    set({ plugins: normalizePlugins(payload) });
+    try {
+      const payload = await fetchJson('/api/v1/plugins');
+      set({ plugins: normalizePlugins(payload) });
+      return true;
+    } catch (error) {
+      set({ pluginError: error?.message || '加载插件失败' });
+      return false;
+    }
   },
 
   async refreshMarketplaces() {
     try {
       const list = await apiFetchMarketplaces();
       set({ marketplaces: Array.isArray(list) ? list : [] });
-    } catch (_) {
-      set({ marketplaces: [] });
+      return true;
+    } catch (error) {
+      set({ pluginError: error?.message || '加载插件市场失败' });
+      return false;
     }
   },
 
@@ -1831,9 +1840,11 @@ export const useStore = create((set, get) => ({
   async refreshMetrics() {
     try {
       const payload = await fetchJson('/api/v1/metrics');
-      set({ metrics: payload.data || payload });
-    } catch (_) {
-      set({ metrics: null });
+      set({ metrics: payload.data || payload, metricsError: null });
+      return true;
+    } catch (error) {
+      set({ metricsError: error?.message || '加载监控数据失败' });
+      return false;
     }
   },
 

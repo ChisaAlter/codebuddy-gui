@@ -16,6 +16,7 @@ function highlightText(text, term) {
 export default function ReplicaLogsView() {
   const workers = useStore((s) => s.workers);
   const refreshWorkers = useStore((s) => s.refreshWorkers);
+  const workersError = useStore((s) => s.workersError);
   const loadWorkerLogs = useStore((s) => s.loadWorkerLogs);
   const [workerPid, setWorkerPid] = useState('');
   const [logType, setLogType] = useState('stdout');
@@ -28,7 +29,10 @@ export default function ReplicaLogsView() {
   const containerRef = useRef(null);
 
   useEffect(() => {
-    refreshWorkers();
+    let active = true;
+    Promise.resolve(refreshWorkers()).finally(() => {
+      if (active) setInitialWorkersLoad(false);
+    });
     try {
       const preferredPid = sessionStorage.getItem('logs-preferred-worker-pid');
       if (preferredPid) {
@@ -36,12 +40,10 @@ export default function ReplicaLogsView() {
         sessionStorage.removeItem('logs-preferred-worker-pid');
       }
     } catch (_) {}
+    return () => { active = false; };
   }, [refreshWorkers]);
 
   useEffect(() => {
-    if (workers.length > 0) {
-      setInitialWorkersLoad(false);
-    }
     if (!workerPid && workers.length) {
       setWorkerPid(String(workers[0].pid));
     }
@@ -152,12 +154,16 @@ export default function ReplicaLogsView() {
         )}
 
         <span className="text-xs text-[var(--color-text-muted)] ml-1">自动刷新</span>
-        <div
+        <button
+          type="button"
+          role="switch"
+          aria-checked={autoRefresh}
+          aria-label="自动刷新日志"
           className={`toggle-switch ${autoRefresh ? 'toggle-switch-on' : 'toggle-switch-off'}`}
           onClick={() => setAutoRefresh((v) => !v)}
         >
           <div className={`toggle-knob ${autoRefresh ? 'toggle-knob-on' : ''}`} />
-        </div>
+        </button>
 
         <input
           className="input-field max-w-[200px]"
@@ -173,6 +179,20 @@ export default function ReplicaLogsView() {
              style={{ background: 'var(--color-error-bg, rgba(248,113,113,0.1))', border: '1px solid var(--color-accent-red)', color: 'var(--color-accent-red)' }}>
           <span>{logError}</span>
           <button className="underline" onClick={() => setLogError(null)}>关闭</button>
+        </div>
+      )}
+      {workersError && !initialWorkersLoad && (
+        <div className="mx-6 mb-2 rounded border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] p-2 text-xs text-[var(--color-error)]">
+          Worker 列表加载失败：{workersError}
+          <button
+            className="ml-3 underline"
+            onClick={() => {
+              setInitialWorkersLoad(true);
+              Promise.resolve(refreshWorkers()).finally(() => setInitialWorkersLoad(false));
+            }}
+          >
+            重试
+          </button>
         </div>
       )}
       <div className="flex-1 overflow-hidden relative">

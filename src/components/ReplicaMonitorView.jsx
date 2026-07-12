@@ -30,6 +30,22 @@ function WorkerCard({ worker }) {
   );
 }
 
+function unwrapPayload(payload) {
+  return payload?.data ?? payload ?? null;
+}
+
+function formatDiskUsage(metrics) {
+  if (!metrics) return '-';
+  const usedGiB = Number.isFinite(Number(metrics.diskUsedGiB))
+    ? Number(metrics.diskUsedGiB)
+    : Number(metrics.diskUsed) / 1024 / 1024 / 1024;
+  const totalGiB = Number.isFinite(Number(metrics.diskTotalGiB))
+    ? Number(metrics.diskTotalGiB)
+    : Number(metrics.diskTotal) / 1024 / 1024 / 1024;
+  if (!Number.isFinite(usedGiB) || !Number.isFinite(totalGiB)) return '-';
+  return `${usedGiB.toFixed(1)} / ${totalGiB.toFixed(1)} GiB`;
+}
+
 export default function ReplicaMonitorView() {
   const [auth, setAuth] = useState(null);
   const [info, setInfo] = useState(null);
@@ -44,7 +60,7 @@ export default function ReplicaMonitorView() {
     setLoading(true);
     setError('');
     try {
-      const [authPayload, infoPayload, daemonPayload, metricsPayload, workersPayload, channelsPayload] = await Promise.all([
+      const results = await Promise.allSettled([
         fetchJson('/api/v1/auth/status'),
         fetchJson('/api/v1/info'),
         fetchJson('/api/v1/daemon/status'),
@@ -52,22 +68,28 @@ export default function ReplicaMonitorView() {
         fetchJson('/api/v1/workers'),
         fetchJson('/api/v1/channels'),
       ]);
-      setAuth(authPayload || null);
-      setInfo(infoPayload?.data || infoPayload || null);
-      setDaemon(daemonPayload?.data || daemonPayload || null);
-      setMetrics(metricsPayload?.data || metricsPayload || null);
-      const workerList = workersPayload?.data?.workers || workersPayload?.workers || workersPayload?.data || workersPayload || [];
-      const channelList = channelsPayload?.data?.clients || channelsPayload?.clients || channelsPayload?.data?.channels || channelsPayload?.channels || [];
-      setWorkers(Array.isArray(workerList) ? workerList : []);
-      setChannels((Array.isArray(channelList) ? channelList : []).filter((item) => !item.hidden));
+      const failed = [];
+      const read = (index, label, apply) => {
+        const result = results[index];
+        if (result.status === 'fulfilled') apply(result.value);
+        else failed.push(label);
+      };
+
+      read(0, '认证状态', (payload) => setAuth(unwrapPayload(payload)));
+      read(1, '环境信息', (payload) => setInfo(unwrapPayload(payload)));
+      read(2, 'Daemon 状态', (payload) => setDaemon(unwrapPayload(payload)));
+      read(3, '系统指标', (payload) => setMetrics(unwrapPayload(payload)));
+      read(4, 'Worker 列表', (payload) => {
+        const workerList = payload?.data?.workers || payload?.workers || payload?.data || payload || [];
+        setWorkers(Array.isArray(workerList) ? workerList : []);
+      });
+      read(5, '渠道列表', (payload) => {
+        const channelList = payload?.data?.clients || payload?.clients || payload?.data?.channels || payload?.channels || [];
+        setChannels((Array.isArray(channelList) ? channelList : []).filter((item) => !item.hidden));
+      });
+      if (failed.length) setError(`部分数据暂时不可用：${failed.join('、')}`);
     } catch (err) {
       setError(err.message || '加载失败');
-      setAuth(null);
-      setInfo(null);
-      setDaemon(null);
-      setMetrics(null);
-      setWorkers([]);
-      setChannels([]);
     } finally {
       setLoading(false);
     }
@@ -77,7 +99,7 @@ export default function ReplicaMonitorView() {
     load();
   }, []);
 
-  const diskGiB = metrics ? `${(metrics.diskUsed / 1024 / 1024 / 1024).toFixed(1)} / ${(metrics.diskTotal / 1024 / 1024 / 1024).toFixed(1)} GiB` : '-';
+  const diskGiB = formatDiskUsage(metrics);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
@@ -91,7 +113,7 @@ export default function ReplicaMonitorView() {
         </div>
 
         <div className="flex gap-3">
-          <button className="btn-primary" onClick={load}>刷新</button>
+          <button className="btn-primary" onClick={load} disabled={loading}>{loading ? '刷新中...' : '刷新'}</button>
         </div>
 
         {loading ? (
@@ -108,7 +130,7 @@ export default function ReplicaMonitorView() {
         {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300 flex items-center gap-2"><span>{error}</span><button className="btn-ghost text-sm underline" onClick={load}>重试</button></div> : null}
 
         <div className="grid grid-cols-2 gap-4">
-          <StatCard title="认证" value={auth?.authenticated ? 'authenticated' : 'unauthenticated'} subtitle={`authEnabled: ${String(!!auth?.authEnabled)}`} />
+          <StatCard title="认证" value={auth ? (auth.authenticated ? 'authenticated' : 'unauthenticated') : '-'} subtitle={auth ? `authEnabled: ${String(!!auth.authEnabled)}` : '状态不可用'} />
           <StatCard title="Daemon" value={daemon?.status || '-'} subtitle={`PID ${daemon?.pid || '-'}`} />
           <StatCard title="CPU" value={metrics?.cpuUsedPct ?? '-'} subtitle="CPU Used %" />
           <StatCard title="Memory" value={metrics?.memUsedMib ?? '-'} subtitle={`Total ${metrics?.memTotalMib ?? '-'} MiB`} />

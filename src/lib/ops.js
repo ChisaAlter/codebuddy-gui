@@ -181,7 +181,17 @@ export async function fetchWechatQr(instanceId) {
   try {
     const json = JSON.parse(text);
     const data = json?.data ?? json ?? {};
-    return { ok: true, qrImage: data.qrImage || data.image || data.url || data.qrcode || (typeof data === 'string' ? data : null), raw: data };
+    const directImage = data.qrImage || data.image || data.url || data.qrcode || (typeof data === 'string' ? data : null);
+    if (directImage) return { ok: true, qrImage: directImage, raw: data };
+    if (data.qrUrl) {
+      const { default: QRCode } = await import('qrcode');
+      return {
+        ok: true,
+        qrImage: await QRCode.toDataURL(data.qrUrl, { width: 240, margin: 1, errorCorrectionLevel: 'M' }),
+        raw: data,
+      };
+    }
+    return { ok: false, error: data.message || '二维码尚未就绪', raw: data };
   } catch (_) {
     return { ok: false, error: '二维码响应格式无法识别', raw: text };
   }

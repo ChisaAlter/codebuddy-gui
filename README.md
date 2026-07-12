@@ -40,6 +40,8 @@ npm run build
 - 前端产物：`out/dist/`
 - Windows 安装包：`dist/CodeBuddy GUI Setup 0.1.0.exe`
 
+安装器支持选择安装目录，并会创建桌面和开始菜单快捷方式。安装新版本时可直接覆盖原有版本；项目、对话和界面状态保存在用户数据目录中，卸载应用默认不会删除这些数据。
+
 仅生成未打包目录可使用：
 
 ```bash
@@ -54,3 +56,5 @@ npm run build:dir
 - Electron 内的终端输出使用 SSE，输入和尺寸调整使用 HTTP；非 Electron 环境保留 WebSocket 回退。
 
 开发架构和维护说明见 [`CODEBUDDY.md`](./CODEBUDDY.md)。
+
+当前版本的用户可见变更见 [`RELEASE_NOTES.md`](./RELEASE_NOTES.md)。

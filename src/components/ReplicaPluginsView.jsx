@@ -19,12 +19,26 @@ export default function ReplicaPluginsView() {
   const [mktBusy, setMktBusy] = React.useState(false);
   const [mktMsg, setMktMsg] = React.useState(null);
 
-  const handleRefresh = async () => {
+  const handleRefresh = React.useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([refreshPlugins(), refreshMarketplaces?.()]);
-    setRefreshing(false);
-    setLoading(false);
-  };
+    setActionError(null);
+    useStore.setState({ pluginError: null });
+    try {
+      const results = await Promise.all([refreshPlugins(), refreshMarketplaces?.()]);
+      if (results.some((ok) => ok === false)) {
+        setActionError(useStore.getState().pluginError || '部分插件数据加载失败');
+      }
+    } catch (error) {
+      setActionError(error?.message || '插件数据加载失败');
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+    }
+  }, [refreshMarketplaces, refreshPlugins]);
+
+  React.useEffect(() => {
+    handleRefresh();
+  }, [handleRefresh]);
 
   const pluginsList = Array.isArray(plugins) ? plugins : [];
 
@@ -176,8 +190,13 @@ export default function ReplicaPluginsView() {
                     >
                       {enabled ? '已启用' : '已禁用'}
                     </span>
-                    <div
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={`${enabled ? '禁用' : '启用'}插件 ${p.name}`}
                       className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginBusy === `toggle:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
+                      disabled={pluginBusy === `toggle:${p.name}`}
                       onClick={async () => {
                         setActionError(null);
                         const ok = await togglePluginByName(p.name, !enabled);
@@ -186,7 +205,7 @@ export default function ReplicaPluginsView() {
                       title={enabled ? '点击禁用' : '点击启用'}
                     >
                       <div className={`toggle-knob ${enabled ? 'toggle-knob-on' : ''}`} />
-                    </div>
+                    </button>
                   </div>
 
                   {/* Description */}
@@ -294,7 +313,19 @@ export default function ReplicaPluginsView() {
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">插件市场</h2>
             <button
-              onClick={() => { refreshMarketplaces?.(); }}
+              onClick={async () => {
+                setMktBusy(true);
+                setMktMsg(null);
+                useStore.setState({ pluginError: null });
+                try {
+                  const ok = await refreshMarketplaces?.();
+                  if (ok === false) setMktMsg(useStore.getState().pluginError || '刷新市场失败');
+                } catch (error) {
+                  setMktMsg(error?.message || '刷新市场失败');
+                } finally {
+                  setMktBusy(false);
+                }
+              }}
               disabled={mktBusy}
               className="btn-ghost text-xs"
               title="刷新市场列表"
@@ -327,11 +358,15 @@ export default function ReplicaPluginsView() {
               className="btn-primary text-xs"
               disabled={mktBusy || !newMktId.trim() || !newMktUrl.trim()}
               onClick={async () => {
-                setMktBusy(true); setMktMsg(null);
-                const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});
-                setMktBusy(false);
-                if (ok) { setNewMktId(''); setNewMktUrl(''); }
-                else setMktMsg(useStore.getState().pluginError || '新增市场失败');
+                setMktBusy(true);
+                setMktMsg(null);
+                try {
+                  const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});
+                  if (ok) { setNewMktId(''); setNewMktUrl(''); }
+                  else setMktMsg(useStore.getState().pluginError || '新增市场失败');
+                } finally {
+                  setMktBusy(false);
+                }
               }}
             >
               {mktBusy && pluginBusy?.startsWith('addMkt:') ? '添加中...' : '添加市场'}
@@ -361,7 +396,9 @@ export default function ReplicaPluginsView() {
                       className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
                       onClick={async () => {
                         if (!window.confirm(`确定删除市场 "${id}" 吗？`)) return;
-                        await removeMarketplaceById(id);
+                        setMktMsg(null);
+                        const ok = await removeMarketplaceById(id);
+                        if (!ok) setMktMsg(useStore.getState().pluginError || '删除市场失败');
                       }}
                     >
                       {busy ? '删除中...' : '删除'}

@@ -4,6 +4,9 @@ import { useStore } from '../store';
 function Toggle({ value, onChange }) {
   return (
     <button
+      type="button"
+      role="switch"
+      aria-checked={value}
       className={`toggle-switch ${value ? 'toggle-switch-on' : 'toggle-switch-off'}`}
       onClick={() => onChange(!value)}
     >
@@ -128,6 +131,7 @@ export default function ReplicaSettingsView() {
   } = useStore();
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [appInfo, setAppInfo] = useState(null);
 
   const isLoading = connectionState !== 'error' && (!infoLoaded || !settingsLoaded);
 
@@ -145,6 +149,14 @@ export default function ReplicaSettingsView() {
 
   useEffect(() => {
     if (!infoLoaded || !settingsLoaded) reload();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    window.electronAPI?.getAppInfo?.()
+      .then((value) => { if (active) setAppInfo(value); })
+      .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   const modelOptions = (models || []).map((m) => ({
@@ -354,6 +366,8 @@ export default function ReplicaSettingsView() {
         <div className="settings-group">
           <h2 className="settings-heading">系统信息</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
+            <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.version ? `v${appInfo.version}` : '开发模式'}</span>} />
+            <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.packaged ? '安装版' : '开发版'}</span>} />
             <SettingRow label="工作目录" control={
               <div className="flex items-center gap-1">
                 <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[180px]">{info?.cwd || '-'}</span>

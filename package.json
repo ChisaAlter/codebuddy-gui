@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "Multi-project desktop client for CodeBuddy CLI",
   "author": "ChisaAlter",
+  "copyright": "Copyright 2026 ChisaAlter",
+  "homepage": "https://github.com/ChisaAlter/codebuddy-gui",
   "repository": {
     "type": "git",
     "url": "https://github.com/ChisaAlter/codebuddy-gui.git"
@@ -38,6 +40,7 @@
     "express": "^4.21.2",
     "monaco-editor": "^0.55.1",
     "node-fetch": "^2.7.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
@@ -67,13 +70,18 @@
     "win": {
       "target": "nsis",
       "icon": "build/icon.png",
-      "signAndEditExecutable": false
+      "artifactName": "${productName} Setup ${version}.${ext}"
     },
     "nsis": {
       "packElevateHelper": false,
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CodeBuddy GUI",
+      "uninstallDisplayName": "CodeBuddy GUI",
+      "deleteAppDataOnUninstall": false
     },
     "files": [
       "out/**/*",

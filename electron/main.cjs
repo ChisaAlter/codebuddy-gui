@@ -81,6 +81,11 @@ ipcMain.handle('runtime:ensure', (_event, request = {}) => runtimeManager.ensure
 ipcMain.handle('runtime:list', () => runtimeManager.list());
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
 ipcMain.handle('runtime:restart', (_event, request = {}) => runtimeManager.restart(request.projectId, request.cwd));
+ipcMain.handle('app:getInfo', () => ({
+  name: app.getName(),
+  version: app.getVersion(),
+  packaged: app.isPackaged,
+}));
 
 function getRendererEntry() {
   if (isDev) return 'http://localhost:5173';

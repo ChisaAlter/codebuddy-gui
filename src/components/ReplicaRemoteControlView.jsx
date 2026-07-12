@@ -1,25 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { fetchJson, requestCodeBuddy } from '../lib/acp';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
+import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
-
-async function postJson(path, method = 'POST') {
-  const response = await requestCodeBuddy(path, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch (_) {}
-  if (!response.ok) {
-    throw new Error(payload?.error || payload?.message || `${response.status} ${response.statusText}`);
-  }
-  return payload;
-}
 
 function ChannelCard({ channel, onRefresh }) {
   const type = channel.clientType || 'unknown';
@@ -73,6 +55,7 @@ function ChannelCard({ channel, onRefresh }) {
 
   const handleDelete = async () => {
     if (!channel.instanceId) return;
+    if (!window.confirm(`确定删除渠道“${displayName}”吗？此操作无法撤销。`)) return;
     setBusy('delete');
     setMessage('');
     try {
@@ -140,6 +123,8 @@ export default function ReplicaRemoteControlView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const mountedRef = useRef(true);
+  const loadInFlightRef = useRef(false);
 
   // 微信创建 + 二维码态（对照源 POST /channels/wechat + GET /channels/wechat/{id}/qr）
   const [wechatBusy, setWechatBusy] = useState(false);
@@ -154,42 +139,68 @@ export default function ReplicaRemoteControlView() {
   const [wecomSecret, setWecomSecret] = useState('');
   const [wecomError, setWecomError] = useState(null);
 
-  async function load() {
-    setLoading(true);
-    setError('');
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (loadInFlightRef.current) return;
+    loadInFlightRef.current = true;
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const payload = await fetchJson('/api/v1/channels');
-      const clients = Array.isArray(payload?.clients) ? payload.clients : [];
-      setChannels(clients.filter((item) => !item.hidden));
+      const clients = payload?.data?.clients || payload?.clients || payload?.data?.channels || payload?.channels || [];
+      if (mountedRef.current) {
+        setChannels((Array.isArray(clients) ? clients : []).filter((item) => !item.hidden && !String(item.instanceId || '').startsWith('_pending')));
+        setError('');
+      }
     } catch (err) {
-      setError(err.message || '加载失败');
-      setChannels([]);
+      if (mountedRef.current) setError(err.message || '加载失败');
     } finally {
-      setLoading(false);
+      loadInFlightRef.current = false;
+      if (!silent && mountedRef.current) setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     load();
-    return () => { if (qrPollRef.current) clearInterval(qrPollRef.current); };
-  }, []);
+    const refreshTimer = setInterval(() => load({ silent: true }), 5000);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(refreshTimer);
+      if (qrPollRef.current) clearTimeout(qrPollRef.current);
+    };
+  }, [load]);
 
   // 微信：创建实例后轮询二维码（对照源 bundle 每 1s 拉，最长 180s）
   const stopQrPoll = () => {
-    if (qrPollRef.current) { clearInterval(qrPollRef.current); qrPollRef.current = null; }
+    if (qrPollRef.current) { clearTimeout(qrPollRef.current); qrPollRef.current = null; }
   };
   const pollQr = (instanceId) => {
-    let elapsed = 0;
+    const startedAt = Date.now();
     stopQrPoll();
-    qrPollRef.current = setInterval(async () => {
-      elapsed += 1;
-      if (elapsed > 180) { stopQrPoll(); setWechatQrError('二维码超时，请重新创建'); setWechatQrLoading(false); return; }
+    const poll = async () => {
+      if (!mountedRef.current) return;
+      if (Date.now() - startedAt > 180000) {
+        stopQrPoll();
+        setWechatQrError('二维码超时，请重新创建');
+        setWechatQrLoading(false);
+        return;
+      }
       try {
         const r = await fetchWechatQr(instanceId);
-        if (r.ok && r.qrImage) { setWechatQr({ qrImage: r.qrImage }); setWechatQrLoading(false); setWechatQrError(null); stopQrPoll(); }
-        else if (r.error && !r.error.includes('not ready') && !r.error.includes('404')) { /* 忽略未就绪/未扫码，继续轮询 */ }
+        if (!mountedRef.current) return;
+        if (r.ok && r.qrImage) {
+          setWechatQr({ qrImage: r.qrImage });
+          setWechatQrLoading(false);
+          setWechatQrError(null);
+          stopQrPoll();
+          return;
+        }
       } catch (_) { /* 忽略瞬时网络错，继续轮询 */ }
-    }, 1000);
+      if (mountedRef.current) qrPollRef.current = setTimeout(poll, 1000);
+    };
+    qrPollRef.current = setTimeout(poll, 1000);
   };
 
   const handleCreateWechat = async () => {
@@ -197,9 +208,10 @@ export default function ReplicaRemoteControlView() {
     setWechatQr(null);
     setWechatQrError(null);
     setWechatQrLoading(true);
+    stopQrPoll();
     try {
       const result = await createWechatChannel();
-      const instanceId = result?.instanceId || result?.id || result?.instanceId;
+      const instanceId = result?.instanceId || result?.id;
       if (!instanceId) throw new Error('后端未返回 instanceId');
       setInfo(`微信实例已创建：${instanceId}`);
       pollQr(instanceId);
@@ -291,10 +303,11 @@ export default function ReplicaRemoteControlView() {
         </div>
 
         <div className="flex gap-3">
-          <button className="btn-ghost" onClick={load}>刷新</button>
+          <button className="btn-ghost" onClick={() => load()} disabled={loading}>{loading ? '刷新中...' : '刷新'}</button>
         </div>
 
         {loading ? <div className="text-sm text-[var(--color-text-muted)]">加载中...</div> : null}
+        {info ? <div className="rounded-lg border border-[rgba(34,197,94,0.25)] bg-[rgba(34,197,94,0.08)] px-4 py-3 text-sm text-green-300 flex items-center justify-between gap-3"><span>{info}</span><button className="btn-ghost text-xs" onClick={() => setInfo('')}>关闭</button></div> : null}
         {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300 flex items-center gap-2"><span>{error}</span><button className="btn-ghost text-sm underline" onClick={load}>重试</button></div> : null}
 
         <section className="space-y-3">

@@ -16,17 +16,19 @@ export default function ReplicaWorkersView() {
   const [searchTerm, setSearchTerm] = React.useState('');
   const [loading, setLoading] = React.useState(true);
 
-  React.useEffect(() => {
-    if (workers != null) {
+  const handleRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshWorkers();
+    } finally {
+      setRefreshing(false);
       setLoading(false);
     }
-  }, [workers]);
+  }, [refreshWorkers]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await refreshWorkers();
-    setRefreshing(false);
-  };
+  React.useEffect(() => {
+    handleRefresh();
+  }, [handleRefresh]);
 
   const workersList = Array.isArray(workers) ? workers : [];
 
