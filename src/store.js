@@ -1082,7 +1082,6 @@ export const useStore = create((set, get) => ({
   async deleteThread(threadId) {
     const thread = get().threadsById[threadId];
     if (!thread) return false;
-    await conversations.dispose(threadId);
     if (thread.sessionId) {
       try {
         await apiDeleteSession(thread.sessionId);
@@ -1091,6 +1090,7 @@ export const useStore = create((set, get) => ({
         return false;
       }
     }
+    await conversations.dispose(threadId);
     const wasActive = get().activeThreadId === threadId;
     set((state) => {
       const threadsById = { ...state.threadsById };

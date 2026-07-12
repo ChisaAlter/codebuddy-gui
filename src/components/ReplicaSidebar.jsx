@@ -1,4 +1,5 @@
 import React from 'react';
+import ActionConfirmDialog from './ActionConfirmDialog';
 import { useStore } from '../store';
 import { NAV_GROUPS } from '../lib/codebuddy-schema';
 import appIconUrl from '../../build/icon.svg';
@@ -119,6 +120,8 @@ export default function ReplicaSidebar() {
   const [renamingId, setRenamingId] = React.useState(null);
   const [renameValue, setRenameValue] = React.useState('');
   const [pendingDelete, setPendingDelete] = React.useState(null);
+  const [threadDeleteBusy, setThreadDeleteBusy] = React.useState(false);
+  const [threadDeleteError, setThreadDeleteError] = React.useState('');
   const [menuOpenId, setMenuOpenId] = React.useState(null);
   const [projectMenuOpenId, setProjectMenuOpenId] = React.useState(null);
   const [projectDialog, setProjectDialog] = React.useState(null);
@@ -135,13 +138,24 @@ export default function ReplicaSidebar() {
   const submitRename = async (id) => {
     const ok = await renameThread(id, renameValue);
     if (ok) setRenamingId(null);
-    else setRenameValue(''); // 失败保留 renaming 态让用户改
   };
 
   const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setPendingDelete(null);
-    await deleteThread(pendingDelete.id);
+    if (!pendingDelete || threadDeleteBusy) return;
+    setThreadDeleteBusy(true);
+    setThreadDeleteError('');
+    try {
+      const deleted = await deleteThread(pendingDelete.id);
+      if (!deleted) {
+        setThreadDeleteError(useStore.getState().error || '删除会话失败，请重试');
+        return;
+      }
+      setPendingDelete(null);
+    } catch (error) {
+      setThreadDeleteError(error?.message || '删除会话失败，请重试');
+    } finally {
+      setThreadDeleteBusy(false);
+    }
   };
 
   const openProjectDialog = (mode, project) => {
@@ -446,7 +460,7 @@ export default function ReplicaSidebar() {
                                 重命名
                               </button>
                               <button
-                                onClick={() => { setMenuOpenId(null); setPendingDelete(thread); }}
+                                onClick={() => { setMenuOpenId(null); setThreadDeleteError(''); setPendingDelete(thread); }}
                                 className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
                               >
                                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4h10M5 4V2h6v2M4 4v9h8V4" /></svg>
@@ -527,28 +541,16 @@ export default function ReplicaSidebar() {
         </div>
       )}
 
-      {/* 删除会话确认弹窗 */}
-      {pendingDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog" aria-modal="true" aria-label="删除会话确认">
-          <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl w-80">
-            <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">删除会话？</div>
-            <div className="mb-4 text-xs text-[var(--color-text-secondary)]">
-              将永久删除会话「{pendingDelete.title || pendingDelete.id}」及其全部消息，不可恢复。
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setPendingDelete(null)}
-                className="btn-ghost rounded-md px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-              >取消</button>
-              <button
-                onClick={confirmDelete}
-                className="rounded-md px-3 py-1.5 text-xs font-medium text-white"
-                style={{ background: 'var(--color-accent-red)' }}
-              >删除</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ActionConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="删除会话？"
+        description={pendingDelete ? `将永久删除会话“${pendingDelete.title || pendingDelete.id}”及其全部消息，此操作无法撤销。` : null}
+        confirmLabel="删除会话"
+        busy={threadDeleteBusy}
+        error={threadDeleteError}
+        onCancel={() => { if (!threadDeleteBusy) setPendingDelete(null); }}
+        onConfirm={confirmDelete}
+      />
 
       {/* User section at bottom */}
       <div className="shrink-0 border-t border-[var(--color-border-default)] p-2">
