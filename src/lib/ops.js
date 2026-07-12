@@ -96,37 +96,13 @@ export async function deleteScheduledTask(taskId, sessionId) {
 
 // ===== Channels 管理 =====
 
-/** 获取 channels 列表 */
-export async function fetchChannels() {
-  const payload = await fetchJson('/api/v1/channels');
-  return payload.data?.channels || payload.channels || [];
-}
-
-/** Toggle channel 状态（启用/禁用） */
-export async function toggleChannel(channelId, enabled) {
-  const payload = await fetchJson(`/api/v1/channels/${encodeURIComponent(channelId)}/toggle`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
-  });
-  return payload.data || payload;
-}
-
-/** 删除 channel */
-export async function deleteChannel(channelId) {
-  return requestOptionalJson(`/api/v1/channels/${encodeURIComponent(channelId)}`, {
-    method: 'DELETE',
-  });
-}
 
 /**
- * 通用 channel 实例 action（对照源 bundle：POST /channels/{type}/{instance}/{action}）
- * - action 由调用方透传，非硬集；对照源真实 UI 即此设计（_ 是运行时字符串）
- * - 特例：action="unbind" && type="wechat" && 返回 needsQrScan=true → 触发 rebind 二维码流程
+ * Channel 实例动作。当前 CodeBuddy 契约支持 start、stop 和 unbind。
  * @param {string} type - channel 类型，如 'wechat'|'wecom'|'discord'
  * @param {string} instanceId - 实例 id
- * @param {string} action - 动作名，如 'start'|'stop'|'unbind'|'rebind'|'sync'
- * @returns {Promise<object>} 后端响应，可能含 {needsQrScan, qrUrl, message, type, ...}
+ * @param {'start'|'stop'|'unbind'} action - 后端支持的动作名
+ * @returns {Promise<object>} 后端响应；微信解绑会返回 needsQrScan=true
  */
 export async function channelAction(type, instanceId, action) {
   if (!type || !instanceId || !action) throw new Error('type/instanceId/action 均不可为空');

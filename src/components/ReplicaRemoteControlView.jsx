@@ -3,7 +3,7 @@ import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
 
-function ChannelCard({ channel, onRefresh }) {
+function ChannelCard({ channel, onRefresh, onWechatQrRequested }) {
   const type = channel.clientType || 'unknown';
   const displayName = channel.displayName || `${type}:${channel.instanceId || ''}`;
   const status = channel.status || 'unknown';
@@ -11,8 +11,7 @@ function ChannelCard({ channel, onRefresh }) {
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
 
-  // 按状态选 action 名（对照源真实 UI 由调用方透传 action，非硬集）
-  // connected → stop 断开；其他 → start 连接；保留 disconnect/connect 作别名兜底
+  // 当前后端契约仅提供 start/stop 两个连接状态动作。
   const pickToggleAction = (currentStatus) => currentStatus === 'connected' ? 'stop' : 'start';
 
   const handleToggle = async () => {
@@ -22,13 +21,7 @@ function ChannelCard({ channel, onRefresh }) {
     try {
       const action = pickToggleAction(status);
       const result = await channelAction(type, channel.instanceId, action);
-      // 对照源特例：unbind wechat 返回 needsQrScan=true → 触发 rebind 二维码流程
-      if (result?.needsQrScan && type === 'wechat') {
-        setMessage('需重新扫码，正在拉二维码...');
-        // 复用主组件的 wechat 二维码态：通过 onRefresh 回流让主组件轮询
-      } else {
-        setMessage(action === 'start' ? '已发起连接' : (result?.message || '已断开'));
-      }
+      setMessage(result?.message || (action === 'start' ? '已发起连接' : '已断开'));
       await onRefresh();
     } catch (err) {
       setMessage(err.message || '操作失败');
@@ -37,17 +30,25 @@ function ChannelCard({ channel, onRefresh }) {
     }
   };
 
-  // 通用 action 透传：对照源真实 UI 即此设计（action 由按钮语义决定，非硬集）
-  const handleAction = async (actionName, label) => {
-    if (!channel.instanceId || !actionName) return;
-    setBusy(actionName);
+  const handleUnbind = async () => {
+    if (!channel.instanceId) return;
+    const consequence = type === 'wechat'
+      ? '旧登录凭据会被清除，随后需要重新扫码。'
+      : '已保存的渠道凭据会被清除。';
+    if (!window.confirm(`确定解绑“${displayName}”吗？${consequence}`)) return;
+    setBusy('unbind');
     setMessage('');
     try {
-      const result = await channelAction(type, channel.instanceId, actionName);
-      setMessage(result?.message || `${label}已发起`);
+      const result = await channelAction(type, channel.instanceId, 'unbind');
+      if (type === 'wechat' && result?.needsQrScan) {
+        setMessage('旧凭据已清除，请重新扫码');
+        onWechatQrRequested?.(channel.instanceId, displayName);
+      } else {
+        setMessage(result?.message || '已解绑');
+      }
       await onRefresh();
     } catch (err) {
-      setMessage(err.message || `${label}失败`);
+      setMessage(err.message || '解绑失败');
     } finally {
       setBusy('');
     }
@@ -89,26 +90,10 @@ function ChannelCard({ channel, onRefresh }) {
         <button
           className="btn-ghost"
           disabled={!!busy}
-          onClick={() => handleAction('unbind', '解绑')}
-          title="解除绑定关系，wechat 会触发重新扫码"
+          onClick={handleUnbind}
+          title={type === 'wechat' ? '清除旧凭据并重新扫码' : '清除已保存的渠道凭据'}
         >
           {busy === 'unbind' ? '处理中...' : '解绑'}
-        </button>
-        <button
-          className="btn-ghost"
-          disabled={!!busy}
-          onClick={() => handleAction('rebind', '重绑')}
-          title="重新绑定，wechat 会拉新二维码"
-        >
-          {busy === 'rebind' ? '处理中...' : '重绑'}
-        </button>
-        <button
-          className="btn-ghost"
-          disabled={!!busy}
-          onClick={() => handleAction('sync', '同步')}
-          title="同步 channel 状态与后端"
-        >
-          {busy === 'sync' ? '处理中...' : '同步'}
         </button>
         <button className="btn-ghost" disabled={!!busy} onClick={handleDelete}>{busy === 'delete' ? '处理中...' : '删除'}</button>
       </div>
@@ -213,6 +198,15 @@ export default function ReplicaRemoteControlView() {
     qrPollRef.current = setTimeout(poll, 1000);
   };
 
+  const showWechatQr = (instanceId, message) => {
+    setWechatQr(null);
+    setWechatQrError(null);
+    setWechatQrLoading(true);
+    stopQrPoll();
+    if (message) setInfo(message);
+    pollQr(instanceId);
+  };
+
   const handleCreateWechat = async () => {
     setWechatBusy(true);
     setWechatQr(null);
@@ -223,8 +217,7 @@ export default function ReplicaRemoteControlView() {
       const result = await createWechatChannel();
       const instanceId = result?.instanceId || result?.id;
       if (!instanceId) throw new Error('后端未返回 instanceId');
-      setInfo(`微信实例已创建：${instanceId}`);
-      pollQr(instanceId);
+      showWechatQr(instanceId, `微信实例已创建：${instanceId}`);
       await load();
     } catch (err) {
       setWechatQrError(err.message || '创建微信实例失败');
@@ -322,7 +315,14 @@ export default function ReplicaRemoteControlView() {
 
         <section className="space-y-3">
           <div className="text-sm font-medium text-[var(--color-text-secondary)]">微信机器人</div>
-          {wechat.length ? wechat.map((item) => <ChannelCard key={`${item.clientType}-${item.instanceId}`} channel={item} onRefresh={load} />) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
+          {wechat.length ? wechat.map((item) => (
+            <ChannelCard
+              key={`${item.clientType}-${item.instanceId}`}
+              channel={item}
+              onRefresh={load}
+              onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`)}
+            />
+          )) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
         </section>
 
         <section className="space-y-3">
