@@ -128,6 +128,7 @@ function StatusBar() {
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
   const connectionState = useStore((s) => s.connectionState);
   const apiBase = useStore((s) => s.apiBase);
+  const activeProjectId = useStore((s) => s.activeProjectId);
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
@@ -160,7 +161,7 @@ function StatusBar() {
             connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' :
             connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'
           }`} />
-          {connectionState === 'connected' ? '已连接' : connectionState === 'error' ? '连接失败' : '连接中...'}
+          {!activeProjectId ? '未选择项目' : connectionState === 'connected' ? '已连接' : connectionState === 'error' ? '连接失败' : connectionState === 'disconnected' ? '未连接' : '连接中...'}
         </span>
         {currentModel ? (
           <span className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-[var(--color-text-secondary)] max-w-[180px] truncate">
@@ -187,6 +188,33 @@ function StatusBar() {
 
 function MainContent() {
   const route = useStore((s) => s.route);
+  const productStateLoaded = useStore((s) => s.productStateLoaded);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const chooseWorkspace = useStore((s) => s.chooseWorkspace);
+
+  if (!productStateLoaded) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
+        <div className="text-sm text-[var(--color-text-muted)]">正在恢复项目...</div>
+      </div>
+    );
+  }
+
+  if (!activeProjectId) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] px-6">
+        <div className="w-full max-w-md text-center">
+          <div className="mb-2 text-xl font-semibold text-[var(--color-text-primary)]">打开一个代码项目</div>
+          <div className="mb-5 text-sm leading-6 text-[var(--color-text-secondary)]">
+            选择本地文件夹后，CodeBuddy 会为它保存独立的对话、草稿和工作区状态。
+          </div>
+          <button className="btn-primary px-4 py-2 text-sm" onClick={chooseWorkspace}>
+            打开文件夹
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   switch (route) {
     case 'chat': return <ReplicaChatView />;
@@ -210,7 +238,7 @@ function MainContent() {
     default:
       return (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
-          <div className="text-sm text-[var(--color-text-muted)]">{route}: 正在向真实 Web UI 对齐</div>
+          <button className="btn-primary px-4 py-2 text-sm" onClick={() => useStore.getState().setRoute('chat')}>返回对话</button>
         </div>
       );
   }

@@ -1,4 +1,4 @@
-// 消��级 content-hash 去重��SSE 通知流 + POST 内联 SSE ��通道推送同一 chunk
+// 消息级 content-hash 去重：SSE 通知流和 POST 内联 SSE 可能推送同一 chunk。
 const _seenContent = new Map();
 export function resetSeenContent() { _seenContent.clear(); }
 

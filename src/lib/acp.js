@@ -1,5 +1,5 @@
 // 后端基址兜底值：仅当 Electron 主进程 IPC 不可达时使用。
-// 正常运行时 store.bootstrap() 会调 window.electronAPI.getCodeBuddyPort() 拿主进程从 stdout 解析出的真实随机端口并 setApiBase 覆盖此值。
+// 正常运行时 store.bootstrap() 会按活动项目请求 Electron 运行时管理器，并用该项目的随机端口覆盖此值。
 let _apiBase = 'http://127.0.0.1:63918';
 
 const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt']);
@@ -38,12 +38,12 @@ export function getAuthToken() {
 }
 export function clearAuthToken() { setAuthToken(null); }
 
-function makeHeaders(extra = {}) {
+function makeHeaders(extra = {}, includeAcpSessionToken = true) {
   const headers = {
     'X-CodeBuddy-Request': '1',
     ...extra,
   };
-  if (_acpSessionToken) {
+  if (includeAcpSessionToken && _acpSessionToken) {
     headers['acp-session-token'] = _acpSessionToken;
   }
   const bearer = getAuthToken();
@@ -59,11 +59,12 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
     ...init,
     signal,
     headers: {
-      ...makeHeaders(),
+      ...makeHeaders({}, !init.omitAcpSessionToken),
       ...(init.headers || {}),
     },
   };
   delete request.timeoutMs;
+  delete request.omitAcpSessionToken;
 
   const controller = new AbortController();
   // 走 IPC 代理通道时由主进程统一管超时（避免前端 30s 抢盖主进程 120s 长响应）
@@ -130,7 +131,8 @@ export function parseEventStreamMessages(text) {
 }
 
 export class AcpClient {
-  constructor() {
+  constructor(options = {}) {
+    this.apiBase = options.apiBase || getApiBase();
     this.connectionId = null;
     this.sessionToken = null;
     this.eventTarget = new EventTarget();
@@ -152,8 +154,7 @@ export class AcpClient {
     this._maxHeartbeatFailures = 3;
     this._heartbeatInterval = 30000;
 
-    // GET SSE 通知流：真实 Web UI 在 connect 后保持 /api/v1/acp 长连接，session/update 主要从这里推送
-    // GET SSE 通知流——通知流��� POST 响应内联 SSE ��推送同一事件，去重防止双写
+    // GET SSE 通知流：连接后保持 /api/v1/acp 长连接；通知流和 POST 内联 SSE 可能推送同一事件。
     this._sseAbortController = null;
     this._sseRetryAttempt = 0;
     this._sseBuffer = '';
@@ -166,6 +167,28 @@ export class AcpClient {
     if (this.connected) return 'connected';
     if (this._connectionError) return 'error';
     return 'disconnected';
+  }
+
+  setApiBase(base) {
+    if (base) this.apiBase = base;
+  }
+
+  requestHttp(pathOrUrl, init = {}) {
+    const url = /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : `${this.apiBase}${pathOrUrl}`;
+    return requestCodeBuddy(url, {
+      ...init,
+      omitAcpSessionToken: true,
+      headers: {
+        ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+        ...(init.headers || {}),
+      },
+    });
+  }
+
+  async fetchJson(path, init = {}) {
+    const response = await this.requestHttp(path, init);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.json();
   }
 
   on(type, listener) {
@@ -212,7 +235,7 @@ export class AcpClient {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await requestCodeBuddy('/api/v1/acp/connect', {
+      const response = await this.requestHttp('/api/v1/acp/connect', {
         method: 'POST',
         headers: makeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({}),
@@ -326,7 +349,7 @@ export class AcpClient {
     this._heartbeatFailures = 0;
     this._heartbeatTimer = setInterval(async () => {
       try {
-        await fetchJson('/api/v1/health');
+        await this.fetchJson('/api/v1/health');
         this._heartbeatFailures = 0;
       } catch (_) {
         this._heartbeatFailures++;
@@ -358,7 +381,7 @@ export class AcpClient {
 
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
       this._sseIpcStream = window.electronAPI.openCodeBuddyStream({
-        url: `${_apiBase}/api/v1/acp`,
+        url: `${this.apiBase}/api/v1/acp`,
         headers: makeHeaders({
           Accept: 'text/event-stream',
           'acp-connection-id': this.connectionId,
@@ -400,7 +423,7 @@ export class AcpClient {
   }
 
   async _openFetchNotificationStream(onMessage, onError) {
-    const response = await fetch(`${_apiBase}/api/v1/acp`, {
+    const response = await fetch(`${this.apiBase}/api/v1/acp`, {
       headers: makeHeaders({
         Accept: 'text/event-stream',
         'acp-connection-id': this.connectionId,
@@ -501,7 +524,7 @@ export class AcpClient {
 
   async releaseConnection(connectionId) {
     if (!connectionId) return;
-    await requestCodeBuddy(`/api/v1/acp/connect/${encodeURIComponent(connectionId)}`, {
+    await this.requestHttp(`/api/v1/acp/connect/${encodeURIComponent(connectionId)}`, {
       method: 'DELETE',
       timeoutMs: 5000,
     }).catch(() => null);
@@ -526,7 +549,7 @@ export class AcpClient {
     armTimeout();
 
     try {
-      const response = await requestCodeBuddy('/api/v1/acp', {
+      const response = await this.requestHttp('/api/v1/acp', {
         method: 'POST',
         headers: makeHeaders({
           Accept: 'application/json, text/event-stream',

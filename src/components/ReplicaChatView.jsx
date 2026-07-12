@@ -276,12 +276,16 @@ export default function ReplicaChatView() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
+  const activeThreadId = useStore((s) => s.activeThreadId);
+  const promptQueue = useStore((s) => s.promptQueue || []);
+  const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
   const models = useStore((s) => s.models);
   const modes = useStore((s) => s.modes);
   const setModel = useStore((s) => s.setModel);
   const setMode = useStore((s) => s.setMode);
   const currentModelName = useStore((s) => s.models.find(m => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '');
-  const [input, setInput] = useState('');
+  const input = useStore((s) => s.threadsById[s.activeThreadId]?.draft || '');
+  const setInput = useStore((s) => s.setThreadDraft);
   const [chatError, setChatError] = useState(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
@@ -320,6 +324,13 @@ export default function ReplicaChatView() {
   })();
 
   const isStreaming = useMemo(() => timeline.some(item => item.streaming === true) || isAwaitingResponse, [timeline, isAwaitingResponse]);
+  const slashSuggestions = useMemo(() => {
+    if (!input.startsWith('/') || input.includes(' ')) return [];
+    const query = input.slice(1).toLowerCase();
+    return availableCommands
+      .filter((command) => !query || String(command.name || '').toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [availableCommands, input]);
 
   // Auto-scroll to bottom when timeline changes (new messages arrive)
   useEffect(() => {
@@ -350,7 +361,7 @@ export default function ReplicaChatView() {
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !isStreaming) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       onSubmit();
     }
@@ -435,7 +446,42 @@ export default function ReplicaChatView() {
       {/* Input area */}
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto max-w-3xl">
+          {promptQueue.length > 0 ? (
+            <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">待发送 {promptQueue.length}</div>
+              <div className="space-y-1">
+                {promptQueue.map((item, index) => (
+                  <div key={item.id} className="flex items-center gap-2 text-xs">
+                    <span className="text-[var(--color-text-muted)]">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]" title={item.text}>{item.text}</span>
+                    <button
+                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                      onClick={() => removeQueuedPrompt(activeThreadId, item.id)}
+                      title="移除待发送提示"
+                      aria-label="移除待发送提示"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 3l10 10M13 3L3 13" /></svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="relative rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-sm transition-all focus-within:shadow-md focus-within:border-[var(--color-border-focus)]">
+            {slashSuggestions.length > 0 ? (
+              <div className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl">
+                {slashSuggestions.map((command) => (
+                  <button
+                    key={command.name}
+                    className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-[var(--color-bg-hover)]"
+                    onClick={() => setInput(`/${command.name} `)}
+                  >
+                    <span className="shrink-0 font-mono text-xs text-[var(--color-accent-blue)]">/{command.name}</span>
+                    <span className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">{command.description || ''}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <textarea
               rows={2}
               value={input}
@@ -446,6 +492,15 @@ export default function ReplicaChatView() {
             />
             <div className="flex items-center justify-between px-3 pb-3">
               <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled
+                  className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] opacity-50"
+                  title="当前运行时未声明文件或图片附件能力"
+                  aria-label="添加附件（当前不可用）"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" /></svg>
+                </button>
                 <div className="relative">
                   <button
                     className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
@@ -530,17 +585,17 @@ export default function ReplicaChatView() {
                       <rect x="3" y="3" width="10" height="10" rx="1" />
                     </svg>
                   </button>
-                ) : (
-                  <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
-                    onClick={onSubmit}
-                    disabled={!input.trim()}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
-                    </svg>
-                  </button>
-                )}
+                ) : null}
+                <button
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
+                  onClick={onSubmit}
+                  disabled={!input.trim()}
+                  title={isStreaming ? '加入待发送队列' : '发送'}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
+                  </svg>
+                </button>
               </div>
             </div>
           </div>

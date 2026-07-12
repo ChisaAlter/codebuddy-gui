@@ -47,18 +47,6 @@ export default function ReplicaWorkersView() {
     return <span className={`tag ${cfg.klass}`}>{cfg.label}</span>;
   };
 
-  const handleStopWorker = (w) => {
-    if (window.confirm(`确定要停止 Worker PID ${w.pid} 吗？`)) {
-      window.alert('功能开发中');
-    }
-  };
-
-  const handleRestartWorker = (w) => {
-    if (window.confirm(`确定要重启 Worker PID ${w.pid} 吗？`)) {
-      window.alert('功能开发中');
-    }
-  };
-
   const handleViewLogs = (w) => {
     try {
       sessionStorage.setItem('logs-preferred-worker-pid', String(w.pid));
@@ -181,14 +169,18 @@ export default function ReplicaWorkersView() {
                         日志
                       </button>
                       <button
-                        className="btn-ghost text-xs text-[var(--color-accent-yellow)]"
-                        onClick={(e) => { e.stopPropagation(); handleRestartWorker(w); }}
+                        className="btn-ghost text-xs text-[var(--color-text-muted)] opacity-50"
+                        onClick={(e) => e.stopPropagation()}
+                        disabled
+                        title="当前 CodeBuddy 运行时未提供单 Worker 重启接口"
                       >
                         重启
                       </button>
                       <button
-                        className="btn-ghost text-xs text-[var(--color-error)]"
-                        onClick={(e) => { e.stopPropagation(); handleStopWorker(w); }}
+                        className="btn-ghost text-xs text-[var(--color-text-muted)] opacity-50"
+                        onClick={(e) => e.stopPropagation()}
+                        disabled
+                        title="当前 CodeBuddy 运行时未提供单 Worker 停止接口"
                       >
                         停止
                       </button>

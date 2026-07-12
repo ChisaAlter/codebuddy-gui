@@ -1,9 +1,11 @@
-const { app, BrowserWindow, ipcMain, shell, net, safeStorage, dialog, session, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net, dialog, session, Tray, Menu } = require('electron');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const express = require('express');
+const { createProductStateStore } = require('./product-state.cjs');
+const { createCodeBuddyRuntimeManager } = require('./codebuddy-runtime-manager.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -18,6 +20,7 @@ const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
 
 // 窗口状态持久化文件（P0-3）
 const WINDOW_STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
+const productStateStore = createProductStateStore(app.getPath('userData'), logStartup);
 
 function readWindowState() {
   try {
@@ -33,71 +36,9 @@ function writeWindowState(state) {
   try { fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state)); } catch (_) { /* 写失败不阻塞 */ }
 }
 
-// CodeBuddy 后端端口由 CLI --port 默认 auto-assign 随机分配，从 stdout 解析
-let codebuddyProc = null;
-let codebuddyPortPromise = null;
-let codebuddyPort = null;
-let codebuddyPassword = null;
-const PASSWORD_FILE = path.join(app.getPath('userData'), 'codebuddy-password.txt');
-
 // 真退出标志：tray 点"退出"或 Cmd/Q 时为 true，window-all-closed 看到 true 才 quit
 // 普通 X 关窗口不设它，window-all-closed 改 hide 不 quit
 let reallyQuitting = false;
-
-function canEncryptPassword() {
-  try {
-    return safeStorage.isEncryptionAvailable();
-  } catch (_) {
-    return false;
-  }
-}
-
-function readSavedPassword() {
-  try {
-    if (!fs.existsSync(PASSWORD_FILE)) return null;
-    const saved = fs.readFileSync(PASSWORD_FILE, 'utf8').trim();
-    if (!saved) {
-      // 空文件 = stale，清掉避免 userData 目录累积
-      try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
-      return null;
-    }
-    if (saved.startsWith('enc:')) {
-      try {
-        const encrypted = Buffer.from(saved.slice(4), 'base64');
-        return safeStorage.decryptString(encrypted);
-      } catch (decErr) {
-        // 解密失败 = stale（换过 OS keychain / 换过密码），清掉不累积
-        logStartup(`Saved password decrypt failed, removing stale: ${decErr.message}`);
-        try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
-        return null;
-      }
-    }
-    // 明文（无 enc: 前缀）= 历史遗留或被外部明文写入，视为泄露：不回读使用，立即清除
-    // 安全理由：明文已落盘就无法保证未被其他进程读取过，回读继续使用会让明文价值延续到本轮会话
-    logStartup('Saved password is plaintext, removing as stale (not read back)');
-    try { fs.rmSync(PASSWORD_FILE); } catch (_) {}
-    return null;
-  } catch (error) {
-    logStartup(`Saved password read failed: ${error.message}`);
-    return null;
-  }
-}
-
-function savePassword(password) {
-  if (!password) return;
-  // 不支持加密（Linux 无 keyring / CI headless）时绝不写明文文件，仅内存使用本轮会话
-  // 下次启动靠重新 spawn codebuddy --serve 从 stdout 解析新密码，不跨会话残留
-  if (!canEncryptPassword()) {
-    logStartup('Password not persisted: safeStorage unavailable, in-memory only for this session');
-    return;
-  }
-  try {
-    const value = `enc:${safeStorage.encryptString(password).toString('base64')}`;
-    fs.writeFileSync(PASSWORD_FILE, value, { encoding: 'utf8', mode: 0o600 });
-  } catch (error) {
-    logStartup(`Password save failed: ${error.message}`);
-  }
-}
 
 function redactSecrets(text) {
   return String(text || '')
@@ -109,8 +50,6 @@ function redactSecrets(text) {
     // URL query 形态：?password=xxx / &password=xxx
     .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]');
 }
-
-codebuddyPassword = readSavedPassword();
 
 function logStartup(message) {
   try {
@@ -128,132 +67,20 @@ function logStartup(message) {
 
 logStartup('main.cjs loaded');
 
-// ====== CodeBuddy 生命周期管理 ======
-
-async function authenticateCodeBuddy(port, password) {
-  logStartup(`Authenticating with CodeBuddy on port ${port}...`);
-  try {
-    const authUrl = `http://127.0.0.1:${port}/?password=${encodeURIComponent(password)}`;
-    // 用主进程 net.fetch 访问认证 URL，cookie 写入默认 session
-    await net.fetch(authUrl, { headers: { 'X-CodeBuddy-Request': '1' } });
-    logStartup('CodeBuddy auth successful');
-    return true;
-  } catch (e) {
-    logStartup(`CodeBuddy auth failed: ${e.message}`);
-    return false;
-  }
-}
-
-async function startCodeBuddy() {
-  // 复用：若已有本应用 spawn 的后端进程仍活着且端口已解析，直接返回
-  if (codebuddyProc && !codebuddyProc.killed && codebuddyPort && codebuddyPassword) {
-    logStartup(`CodeBuddy already running on port ${codebuddyPort} (reuse)`);
-    return codebuddyPort;
-  }
-
-  logStartup('Starting codebuddy --serve (random port)...');
-
-  return new Promise((resolve, reject) => {
-    // shell:true 让 Windows cmd.exe 解析 npm 全局 shim 文件（codebuddy 是 node 脚本 + .cmd wrapper）
-    // 否则 spawn 直接找 'codebuddy' executable 会 ENOENT（Electron 主进程不继承 Git Bash PATH）
-    const proc = spawn('codebuddy', ['--serve'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: true,
-    });
-
-    codebuddyProc = proc;
-    let resolved = false;
-    const finish = (err, port) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      if (err) reject(err);
-      else resolve(port);
-    };
-    // 总超时 30s，避免 stdout 不吐端口时永久挂起
-    const timer = setTimeout(() => {
-      logStartup('CodeBuddy start timeout (no port parsed from stdout)');
-      finish(new Error('CodeBuddy start timeout: port not announced in stdout'));
-    }, 30000);
-
-    proc.stdout.on('data', (data) => {
-      const text = data.toString();
-      if (text.trim()) logStartup(`codebuddy stdout: ${redactSecrets(text)}`);
-      // 解析端口（CLI 输出形如 "http://127.0.0.1:52066"）
-      if (!codebuddyPort) {
-        const portMatch = text.match(/http:\/\/127\.0\.0\.1:(\d+)/);
-        if (portMatch) {
-          codebuddyPort = Number(portMatch[1]);
-          logStartup(`Parsed CodeBuddy port from stdout: ${codebuddyPort}`);
-        }
-      }
-      // 解析密码（匹配 "Password    xxx" 行 或 ?password=xxx URL）
-      if (!codebuddyPassword) {
-        const pwMatch = text.match(/Password\s+([\w-]+)/);
-        if (pwMatch) {
-          codebuddyPassword = pwMatch[1];
-          logStartup('Parsed CodeBuddy password from stdout');
-          savePassword(codebuddyPassword);
-        } else {
-          const urlMatch = text.match(/\?password=([\w-]+)/);
-          if (urlMatch) {
-            codebuddyPassword = urlMatch[1];
-            logStartup('Parsed CodeBuddy password from URL');
-            savePassword(codebuddyPassword);
-          }
-        }
-      }
-      // 端口和密码都拿到即完成（认证稍后异步做，不阻塞 resolve）
-      if (codebuddyPort && codebuddyPassword) {
-        authenticateCodeBuddy(codebuddyPort, codebuddyPassword).catch(e =>
-          logStartup(`Auth failed: ${e.message}`)
-        );
-        finish(null, codebuddyPort);
-      }
-    });
-
-    proc.stderr.on('data', (data) => {
-      const text = data.toString().trim();
-      if (text) logStartup(`codebuddy stderr: ${redactSecrets(text)}`);
-    });
-
-    proc.on('error', (err) => {
-      logStartup(`codebuddy spawn error: ${err.message}`);
-      codebuddyProc = null;
-      finish(err);
-    });
-
-    proc.on('exit', (code, signal) => {
-      logStartup(`codebuddy exited code=${code} signal=${signal}`);
-      codebuddyProc = null;
-      codebuddyPort = null;
-      finish(new Error(`CodeBuddy exited before announcing port (code=${code})`));
-    });
-  });
-}
-
-// IPC: 渲染进程获取端口和密码
-function ensureCodeBuddyPortPromise() {
-  if (codebuddyPortPromise) return codebuddyPortPromise;
-  codebuddyPortPromise = startCodeBuddy().then((port) => {
-    codebuddyPort = port;
-    logStartup(`CodeBuddy port ready: ${port}`);
+const runtimeManager = createCodeBuddyRuntimeManager({
+  net,
+  logger: (message) => logStartup(redactSecrets(message)),
+  onStatus: (runtime) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('codebuddy:portReady', port);
+      mainWindow.webContents.send('runtime:status', runtime);
     }
-    return { port, password: codebuddyPassword };
-  }).catch((err) => {
-    logStartup(`CodeBuddy start failed: ${err.message}`);
-    codebuddyPortPromise = null;
-    throw err;
-  });
-  return codebuddyPortPromise;
-}
-
-ipcMain.handle('codebuddy:getPort', async () => {
-  if (codebuddyPort && codebuddyPassword) return { port: codebuddyPort, password: codebuddyPassword };
-  return ensureCodeBuddyPortPromise();
+  },
 });
+
+ipcMain.handle('runtime:ensure', (_event, request = {}) => runtimeManager.ensure(request.projectId, request.cwd));
+ipcMain.handle('runtime:list', () => runtimeManager.list());
+ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
+ipcMain.handle('runtime:restart', (_event, request = {}) => runtimeManager.restart(request.projectId, request.cwd));
 
 function getRendererEntry() {
   if (isDev) return 'http://localhost:5173';
@@ -598,7 +425,7 @@ ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
 });
 
 ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
-  // timeoutMs 由前端透传：session/prompt 等 SSE �请求传 120000，普通 REST 30s
+  // timeoutMs 由前端透传：session/prompt 等 SSE 长请求使用 120000ms，普通 REST 使用 30000ms。
   const timeoutMs = Number.isFinite(Number(request.timeoutMs)) ? Number(request.timeoutMs) : CODEBUDDY_REQUEST_TIMEOUT_MS;
   const timeout = createTimeoutSignal(timeoutMs);
   try {
@@ -621,11 +448,28 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const tMax = Date.now() + timeoutMs;
+      let rpcId = null;
+      let inspectionBuffer = '';
+      try {
+        if (method === 'POST' && /\/api\/v1\/acp$/.test(url) && request.body) {
+          rpcId = JSON.parse(request.body)?.id ?? null;
+        }
+      } catch (_) {}
       while (true) {
         if (Date.now() > tMax) { truncated = true; try { reader.cancel(); } catch(_) {} break; }
         const { done, value } = await reader.read();
         if (done) break;
-        body += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        body += chunk;
+        if (rpcId != null) {
+          inspectionBuffer += chunk;
+          const parsed = parseSseMessagesFromBuffer(inspectionBuffer);
+          inspectionBuffer = parsed.rest;
+          if (parsed.messages.some((message) => String(message?.id) === String(rpcId))) {
+            try { await reader.cancel(); } catch (_) {}
+            break;
+          }
+        }
       }
       body += decoder.decode();
     } else {
@@ -670,6 +514,8 @@ ipcMain.handle('workspace:choose', async () => {
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
 });
+ipcMain.handle('productState:load', () => productStateStore.load());
+ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));
 ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' }); });
 
 // 未捕获异常处理（P0-4）：写 crash log 到 userData，dialog 提示用户
@@ -755,9 +601,7 @@ app.whenReady().then(async () => {
   prodServerPort = staticServer.address().port;
   logStartup(`Static server on http://127.0.0.1:${prodServerPort}`);
 
-  ensureCodeBuddyPortPromise();
-
-  // 立即创建窗口（渲染进程会等待端口就绪）
+  // 立即创建窗口；CodeBuddy 运行时由渲染进程按当前项目惰性启动。
   createWindow();
 
   // Tray 图标：关窗口不退出，最小化到系统托盘，用户从托盘右键退出才真 quit
@@ -805,30 +649,7 @@ app.on('before-quit', () => {
     try { controller.abort(); } catch (_) {}
   }
   codebuddyStreams.clear();
-  if (codebuddyProc && !codebuddyProc.killed) {
-    try {
-      // Windows shell:true spawn 出来的 codebuddy 是 node.exe 包装，taskkill /T 树杀
-      // 包括它 spawn 出的任何子进程
-      execSync(`taskkill /T /F /PID ${codebuddyProc.pid}`, { stdio: 'ignore' });
-      logStartup(`Tree-killed codebuddy PID ${codebuddyProc.pid}`);
-    } catch (e) {
-      // taskkill 失败兜底走 proc.kill
-      try { codebuddyProc.kill('SIGKILL'); } catch (_) {}
-      logStartup(`Tree-kill failed, fallback SIGKILL: ${e.message}`);
-      // 终兜底：cmd.exe 已退出时 PID 指向死进程，taskkill/proc.kill 都漏杀 node.exe
-      // 按 image name 树杀（/IM codebuddy.exe /IM node.exe /T），抓孤儿 node.exe 占端口的残留
-      // 实测残留过 PID 42940/18192；此处多杀范围可控（仅本机同名 image），代价远小于端口冲突
-      if (process.platform === 'win32') {
-        for (const imageName of ['codebuddy.exe', 'node.exe']) {
-          try {
-            execSync(`taskkill /T /F /IM ${imageName}`, { stdio: 'ignore' });
-            logStartup(`Killed orphan processes by image: ${imageName}`);
-          } catch (_) { /* 该 image 无进程 = 正常，吞 */ }
-        }
-      }
-    }
-    codebuddyProc = null;
-  }
+  runtimeManager.stopAll().catch((error) => logStartup(`Runtime shutdown failed: ${error.message}`));
   if (tray) { try { tray.destroy(); } catch (_) {} tray = null; }
 });
 

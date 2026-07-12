@@ -98,46 +98,71 @@ const ITEM_ICONS = {
 export default function ReplicaSidebar() {
   const {
     route, setRoute, sidebarCollapsed,
-    sessions, info, currentModel, currentMode, models, modes,
-    connectionState, changeSession, newSession, setModel, setMode, changesCount,
-    workspacePath,
+    info, currentModel, currentMode, models, modes,
+    connectionState, newSession, setModel, setMode, changesCount,
+    workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId,
+    threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
   } = useStore();
+  const projectThreads = (threadOrderByProject[activeProjectId] || [])
+    .map((id) => threadsById[id])
+    .filter(Boolean);
+  const threadStatusLabel = (status) => ({
+    connecting: '连接中',
+    running: '运行中',
+    waiting: '等待输入',
+    error: '出错',
+    cancelled: '已取消',
+  }[status] || '');
 
   // 会话项菜单态：renameingId=正在内联重命名的会话 id；pendingDelete=待确认删除的会话对象
   const [renamingId, setRenamingId] = React.useState(null);
   const [renameValue, setRenameValue] = React.useState('');
   const [pendingDelete, setPendingDelete] = React.useState(null);
   const [menuOpenId, setMenuOpenId] = React.useState(null);
+  const [projectMenuOpenId, setProjectMenuOpenId] = React.useState(null);
 
-  const startRename = (session) => {
-    const id = session.id || session.sessionId;
-    setRenamingId(id);
-    setRenameValue(session.name || id || '');
+  const startRename = (thread) => {
+    setRenamingId(thread.id);
+    setRenameValue(thread.title || '新对话');
     setMenuOpenId(null);
   };
 
   const submitRename = async (id) => {
-    const ok = await useStore.getState().renameSession(id, renameValue);
+    const ok = await renameThread(id, renameValue);
     if (ok) setRenamingId(null);
     else setRenameValue(''); // 失败保留 renaming 态让用户改
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
-    const id = pendingDelete.id || pendingDelete.sessionId;
     setPendingDelete(null);
-    await useStore.getState().deleteSession(id);
+    await deleteThread(pendingDelete.id);
+  };
+
+  const handleRenameProject = async (project) => {
+    setProjectMenuOpenId(null);
+    const name = window.prompt('项目名称', project.name || '');
+    if (name?.trim()) await renameProject(project.id, name);
+  };
+
+  const handleRemoveProject = async (project) => {
+    setProjectMenuOpenId(null);
+    if (!window.confirm(`从 CodeBuddy GUI 移除“${project.name}”吗？磁盘中的项目文件不会被删除。`)) return;
+    await removeProject(project.id);
   };
 
   // 点击外部关菜单
   React.useEffect(() => {
-    if (menuOpenId === null) return;
+    if (menuOpenId === null && projectMenuOpenId === null) return;
     const onDoc = (e) => {
-      if (!e.target.closest?.('[data-session-menu]')) setMenuOpenId(null);
+      if (!e.target.closest?.('[data-session-menu]') && !e.target.closest?.('[data-project-menu]')) {
+        setMenuOpenId(null);
+        setProjectMenuOpenId(null);
+      }
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
-  }, [menuOpenId]);
+  }, [menuOpenId, projectMenuOpenId]);
 
   return (
     <aside
@@ -166,6 +191,57 @@ export default function ReplicaSidebar() {
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 2v12M2 8h12" /></svg>
               新对话
             </button>
+          </div>
+        )}
+
+        {!sidebarCollapsed && (
+          <div className="mb-2 px-3">
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">项目</div>
+              <button
+                className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                onClick={() => useStore.getState().chooseWorkspace()}
+                title="添加项目"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 2v12M2 8h12" /></svg>
+              </button>
+            </div>
+            <div className="space-y-0.5">
+              {projectOrder.length === 0 ? (
+                <div className="py-1 text-xs text-[var(--color-text-muted)]">尚未打开项目</div>
+              ) : projectOrder.map((projectId) => {
+                const project = projectsById[projectId];
+                if (!project) return null;
+                const selected = projectId === activeProjectId;
+                const projectMenuOpen = projectMenuOpenId === projectId;
+                return (
+                  <div key={projectId} className="relative flex items-center">
+                    <button
+                      className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${selected ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'}`}
+                      onClick={() => activateProject(projectId)}
+                      title={project.workspacePath}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 4h5l1.2 1.5h6.8v7.5h-13V4z" /></svg>
+                      <span className="truncate">{project.name}</span>
+                      <span className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${project.runtimeStatus === 'running' ? 'bg-[var(--color-accent-green)]' : project.runtimeStatus === 'error' ? 'bg-[var(--color-accent-red)]' : project.runtimeStatus === 'starting' ? 'bg-[var(--color-accent-yellow)]' : 'bg-[var(--color-text-muted)]'}`} title={project.runtimeError || project.runtimeStatus || 'idle'} />
+                    </button>
+                    <button
+                      className="ml-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                      onClick={() => setProjectMenuOpenId(projectMenuOpen ? null : projectId)}
+                      title="项目操作"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3" /><circle cx="8" cy="8" r="1.3" /><circle cx="13" cy="8" r="1.3" /></svg>
+                    </button>
+                    {projectMenuOpen ? (
+                      <div data-project-menu className="absolute right-0 top-7 z-40 w-32 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-lg">
+                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]" onClick={() => handleRenameProject(project)}>重命名</button>
+                        <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]" onClick={() => handleRemoveProject(project)}>移除项目</button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -221,7 +297,7 @@ export default function ReplicaSidebar() {
               </button>
             </div>
             <div className="truncate text-[var(--color-text-secondary)]" title={workspacePath || info?.cwd || ''}>
-              {workspacePath || info?.cwd || '加载中...'}
+              {workspacePath || '未选择项目'}
             </div>
             <div className="text-[var(--color-text-muted)] mt-0.5">{info?.os || '-'} | {info?.version || '-'}</div>
           </div>
@@ -263,21 +339,21 @@ export default function ReplicaSidebar() {
           <div>
             <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)] mb-1">会话历史</div>
             <div className="max-h-40 overflow-y-auto space-y-0.5">
-              {connectionState !== 'connected' && sessions.length === 0 ? (
+              {connectionState === 'connecting' && projectThreads.length === 0 ? (
                 <>
                   <div className="skeleton animate-pulse h-6 w-full rounded" style={{background:'var(--color-bg-hover)'}} />
                   <div className="skeleton animate-pulse h-6 w-4/5 rounded mt-1" style={{background:'var(--color-bg-hover)'}} />
                   <div className="skeleton animate-pulse h-6 w-3/5 rounded mt-1" style={{background:'var(--color-bg-hover)'}} />
                 </>
-              ) : sessions.length === 0 ? (
+              ) : projectThreads.length === 0 ? (
                 <div className="px-2 py-1 text-xs text-[var(--color-text-muted)]">暂无历史会话</div>
               ) : (
-                sessions.slice(0, 10).map((session) => {
-                  const sessionId = session.id || session.sessionId;
-                  const isRenaming = renamingId === sessionId;
-                  const isMenuOpen = menuOpenId === sessionId;
+                projectThreads.slice(0, 20).map((thread) => {
+                  const threadId = thread.id;
+                  const isRenaming = renamingId === threadId;
+                  const isMenuOpen = menuOpenId === threadId;
                   return (
-                    <div key={sessionId} className="relative flex items-center rounded-md transition-colors hover:bg-[var(--color-bg-hover)]">
+                    <div key={threadId} className={`relative flex items-center rounded-md transition-colors hover:bg-[var(--color-bg-hover)] ${threadId === activeThreadId ? 'bg-[var(--color-bg-hover)]' : ''}`}>
                       {isRenaming ? (
                         <div className="flex w-full items-center gap-1 px-2 py-1">
                           <input
@@ -285,15 +361,15 @@ export default function ReplicaSidebar() {
                             value={renameValue}
                             onChange={(e) => setRenameValue(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') { e.preventDefault(); submitRename(sessionId); }
+                              if (e.key === 'Enter') { e.preventDefault(); submitRename(threadId); }
                               else if (e.key === 'Escape') { setRenamingId(null); }
                             }}
-                            onBlur={() => { if (renamingId === sessionId) submitRename(sessionId); }}
+                            onBlur={() => { if (renamingId === threadId) submitRename(threadId); }}
                             className="w-full rounded border border-[var(--color-accent-brand)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none"
                             aria-label="会话新名称"
                           />
                           <button
-                            onClick={() => submitRename(sessionId)}
+                            onClick={() => submitRename(threadId)}
                             className="text-xs text-[var(--color-accent-green)] hover:text-[var(--color-text-primary)]"
                             title="确认"
                           >✓</button>
@@ -307,16 +383,21 @@ export default function ReplicaSidebar() {
                         <>
                           <button
                             className="block flex-1 min-w-0 rounded-md px-2 py-1 text-left transition-colors"
-                            onClick={() => changeSession(sessionId)}
-                            title={sessionId}
+                            onClick={() => activateThread(threadId)}
+                            title={thread.sessionId || thread.title}
                           >
-                            <div className="truncate text-xs text-[var(--color-text-primary)]">{session.name || sessionId}</div>
-                            {session.messageCount != null && (
-                              <div className="text-[10px] text-[var(--color-text-muted)]">{session.messageCount} 条消息</div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="truncate text-xs text-[var(--color-text-primary)]">{thread.title || '新对话'}</div>
+                              {thread.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent-blue)]" title="未读更新" /> : null}
+                            </div>
+                            {thread.status && thread.status !== 'idle' && (
+                              <div className={`text-[10px] ${thread.status === 'error' ? 'text-[var(--color-accent-red)]' : thread.status === 'running' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-text-muted)]'}`}>
+                                {threadStatusLabel(thread.status)}
+                              </div>
                             )}
                           </button>
                           <button
-                            onClick={() => setMenuOpenId(isMenuOpen ? null : sessionId)}
+                            onClick={() => setMenuOpenId(isMenuOpen ? null : threadId)}
                             className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
                             title="会话操作"
                             aria-label="会话操作菜单"
@@ -330,14 +411,14 @@ export default function ReplicaSidebar() {
                               onMouseDown={(e) => e.stopPropagation()}
                             >
                               <button
-                                onClick={() => startRename(session)}
+                                onClick={() => startRename(thread)}
                                 className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
                               >
                                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M11 1l4 4-8 8H3v-4l8-8z" /></svg>
                                 重命名
                               </button>
                               <button
-                                onClick={() => { setMenuOpenId(null); setPendingDelete(session); }}
+                                onClick={() => { setMenuOpenId(null); setPendingDelete(thread); }}
                                 className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
                               >
                                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4h10M5 4V2h6v2M4 4v9h8V4" /></svg>
@@ -362,7 +443,7 @@ export default function ReplicaSidebar() {
           <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl w-80">
             <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">删除会话？</div>
             <div className="mb-4 text-xs text-[var(--color-text-secondary)]">
-              将永久删除会话「{pendingDelete.name || (pendingDelete.id || pendingDelete.sessionId)}」及其全部消息，不可恢复。
+              将永久删除会话「{pendingDelete.title || pendingDelete.id}」及其全部消息，不可恢复。
             </div>
             <div className="flex justify-end gap-2">
               <button

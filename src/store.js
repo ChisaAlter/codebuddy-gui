@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AcpClient, getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
+import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
 import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
@@ -10,8 +10,58 @@ import {
   reduceAcpEvent,
   resetSeenContent,
 } from './lib/timeline';
+import {
+  activeProject,
+  activeThread,
+  createProjectRecord,
+  createThreadRecord,
+  emptyProductState,
+  normalizeProductState,
+  productStateSnapshot,
+} from './lib/product-state';
+import { ConversationManager } from './lib/conversation-manager';
 
-const acp = new AcpClient();
+const conversations = new ConversationManager();
+let routeListenerBound = false;
+let conversationEventsBound = false;
+let runtimeListenerBound = false;
+const threadTimelinePersistTimers = new Map();
+
+function emptyThreadRuntime() {
+  return {
+    connectionState: 'disconnected',
+    timeline: [],
+    permissionRequests: [],
+    questions: [],
+    usage: null,
+    availableCommands: [],
+    isAwaitingResponse: false,
+    promptQueue: [],
+    promptSuggestion: null,
+    teamState: null,
+    models: [],
+    modes: [],
+    currentModel: null,
+    currentMode: 'default',
+  };
+}
+
+const ACTIVE_THREAD_RUNTIME_KEYS = [
+  'connectionState',
+  'timeline',
+  'permissionRequests',
+  'questions',
+  'usage',
+  'availableCommands',
+  'isAwaitingResponse',
+  'promptQueue',
+  'promptSuggestion',
+  'teamState',
+  'models',
+  'modes',
+  'currentModel',
+  'currentMode',
+];
 
 function normalizeSessions(payload) {
   const data = payload?.data ?? payload ?? {};
@@ -54,6 +104,9 @@ function makePane(title = 'Terminal') {
 }
 
 export const useStore = create((set, get) => ({
+  ...emptyProductState(),
+  productStateLoaded: false,
+  threadRuntimeById: {},
   apiBase: getApiBase(),
   route: typeof window === 'undefined' ? 'chat' : parseHashRoute(),
   connectionState: 'connecting',
@@ -127,6 +180,202 @@ export const useStore = create((set, get) => ({
   fileSaving: false,
   filePreviewLoading: false,
 
+  getThreadClient(threadId = get().activeThreadId) {
+    const thread = get().threadsById[threadId];
+    const project = thread ? get().projectsById[thread.projectId] : null;
+    if (!thread || !project?.runtimePort) return null;
+    return conversations.getClient(threadId, `http://127.0.0.1:${project.runtimePort}`);
+  },
+
+  patchThreadRuntime(threadId, patch) {
+    if (!threadId) return;
+    set((state) => {
+      const nextRuntime = {
+        ...emptyThreadRuntime(),
+        ...(state.threadRuntimeById[threadId] || {}),
+        ...patch,
+      };
+      const result = {
+        threadRuntimeById: { ...state.threadRuntimeById, [threadId]: nextRuntime },
+      };
+      if (state.activeThreadId === threadId) {
+        for (const key of ACTIVE_THREAD_RUNTIME_KEYS) result[key] = nextRuntime[key];
+      }
+      return result;
+    });
+  },
+
+  activateThreadRuntime(threadId) {
+    const runtime = { ...emptyThreadRuntime(), ...(get().threadRuntimeById[threadId] || {}) };
+    const patch = {};
+    for (const key of ACTIVE_THREAD_RUNTIME_KEYS) patch[key] = runtime[key];
+    const client = conversations.peek(threadId);
+    patch.sessionToken = client?.sessionToken || null;
+    setAcpSessionToken(patch.sessionToken);
+    set(patch);
+  },
+
+  async updateThreadRecord(threadId, patch) {
+    if (!threadId || !get().threadsById[threadId]) return;
+    set((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        [threadId]: {
+          ...state.threadsById[threadId],
+          ...patch,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    await get().persistProductState();
+  },
+
+  appendThreadTimelineEvent(threadId, eventType, payload) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    get().patchThreadRuntime(threadId, {
+      timeline: reduceAcpEvent(runtime.timeline, eventType, payload),
+      isAwaitingResponse: eventType === 'agent_message_chunk'
+        || eventType === 'agent_thought_chunk'
+        || eventType === 'tool_call'
+        ? false
+        : runtime.isAwaitingResponse,
+    });
+    get().scheduleThreadTimelinePersist(threadId);
+  },
+
+  scheduleThreadTimelinePersist(threadId) {
+    if (!threadId) return;
+    const existing = threadTimelinePersistTimers.get(threadId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(async () => {
+      threadTimelinePersistTimers.delete(threadId);
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const thread = get().threadsById[threadId];
+      if (!thread) return;
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...state.threadsById[threadId],
+            timeline: runtime.timeline.slice(-300),
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }));
+      await get().persistProductState();
+    }, 600);
+    threadTimelinePersistTimers.set(threadId, timer);
+  },
+
+  async persistProductState() {
+    if (!window.electronAPI?.saveProductState) return;
+    try {
+      const saved = await window.electronAPI.saveProductState(productStateSnapshot(get()));
+      const normalized = normalizeProductState(saved);
+      set({
+        projectsById: normalized.projectsById,
+        projectOrder: normalized.projectOrder,
+        threadsById: normalized.threadsById,
+        threadOrderByProject: normalized.threadOrderByProject,
+        activeProjectId: normalized.activeProjectId,
+        activeThreadId: normalized.activeThreadId,
+      });
+    } catch (error) {
+      set({ error: `保存项目状态失败: ${error.message}` });
+    }
+  },
+
+  async hydrateProductState() {
+    let loaded = emptyProductState();
+    try {
+      if (window.electronAPI?.loadProductState) {
+        loaded = normalizeProductState(await window.electronAPI.loadProductState());
+      }
+    } catch (error) {
+      set({ error: `加载项目状态失败: ${error.message}` });
+    }
+
+    let legacyWorkspace = null;
+    if (loaded.projectOrder.length === 0) {
+      try { legacyWorkspace = localStorage.getItem('codebuddy-gui-workspace'); } catch (_) {}
+      if (legacyWorkspace) {
+        const project = createProjectRecord(legacyWorkspace);
+        const thread = createThreadRecord(project.id);
+        loaded = {
+          ...emptyProductState(),
+          projectsById: { [project.id]: project },
+          projectOrder: [project.id],
+          threadsById: { [thread.id]: thread },
+          threadOrderByProject: { [project.id]: [thread.id] },
+          activeProjectId: project.id,
+          activeThreadId: thread.id,
+        };
+      }
+    }
+
+    const project = activeProject(loaded);
+    const thread = activeThread(loaded);
+    const restoredProjects = Object.fromEntries(Object.entries(loaded.projectsById).map(([id, item]) => [
+      id,
+      {
+        ...item,
+        runtimeStatus: 'idle',
+        runtimePort: null,
+        runtimePid: null,
+        runtimeError: null,
+      },
+    ]));
+    const restoredThreadRuntime = Object.fromEntries(Object.entries(loaded.threadsById).map(([id, item]) => [
+      id,
+      {
+        ...emptyThreadRuntime(),
+        timeline: Array.isArray(item.timeline) ? item.timeline : [],
+        currentModel: item.modelId || null,
+        currentMode: item.modeId || 'default',
+      },
+    ]));
+    set({
+      projectsById: restoredProjects,
+      projectOrder: loaded.projectOrder,
+      threadsById: loaded.threadsById,
+      threadOrderByProject: loaded.threadOrderByProject,
+      activeProjectId: loaded.activeProjectId,
+      activeThreadId: loaded.activeThreadId,
+      threadRuntimeById: restoredThreadRuntime,
+      workspacePath: project?.workspacePath || null,
+      fileCwd: project?.workspacePath || '.',
+      sessionId: thread?.sessionId || null,
+      sessionTitle: thread?.title || null,
+      currentModel: thread?.modelId || null,
+      currentMode: thread?.modeId || 'default',
+      productStateLoaded: true,
+    });
+
+    if (legacyWorkspace && window.electronAPI?.saveProductState) {
+      await get().persistProductState();
+    }
+  },
+
+  async updateActiveThread(patch) {
+    return get().updateThreadRecord(get().activeThreadId, patch);
+  },
+
+  setThreadDraft(value) {
+    const threadId = get().activeThreadId;
+    if (!threadId) return;
+    set((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        [threadId]: {
+          ...state.threadsById[threadId],
+          draft: String(value || ''),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    get().persistProductState();
+  },
+
   setRoute(route) {
     setHashRoute(route);
     set({ route });
@@ -173,11 +422,17 @@ export const useStore = create((set, get) => ({
     if (su === 'config_option_update') {
       const patch = get().applySessionConfigUpdate(update.configOptions || []);
       set(patch);
+      get().updateActiveThread({
+        ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
+        ...(patch.currentMode ? { modeId: patch.currentMode } : {}),
+      });
       return;
     }
 
     if (su === 'session_info_update') {
-      set({ sessionTitle: update.title || get().sessionTitle });
+      const title = update.title || get().sessionTitle;
+      set({ sessionTitle: title });
+      if (title) get().updateActiveThread({ title });
       return;
     }
 
@@ -207,55 +462,373 @@ export const useStore = create((set, get) => ({
     get().appendTimelineEvent(su || 'session/update', update);
   },
 
-  async changeSession(sessionId) {
-    resetSeenContent();
-    try {
-      set({
-        sessionId,
-        timeline: [],
-        permissionRequests: [],
-        questions: [],
-        sessionTitle: null,
-        usage: null,
-        availableCommands: [],
+  handleThreadSessionUpdate(threadId, update) {
+    const su = update.sessionUpdate || update.session_update || update.type;
+    if (!su) return;
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+
+    if (su === 'config_option_update') {
+      const patch = get().applySessionConfigUpdate(update.configOptions || []);
+      get().patchThreadRuntime(threadId, patch);
+      get().updateThreadRecord(threadId, {
+        ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
+        ...(patch.currentMode ? { modeId: patch.currentMode } : {}),
       });
-      // cwd 用当前 workspacePath（切工作区后 load 旧会话仍带它，CLI 会尊重 load 的 cwd 用于工具调用）
-      const { init, loaded } = await acp.initializeSession(sessionId, get().workspacePath || '.');
+      return;
+    }
+    if (su === 'session_info_update') {
+      if (update.title) get().updateThreadRecord(threadId, { title: update.title });
+      if (get().activeThreadId === threadId) set({ sessionTitle: update.title || get().sessionTitle });
+      return;
+    }
+    if (su === 'usage_update') {
+      get().patchThreadRuntime(threadId, { usage: { used: update.used, size: update.size, meta: update._meta || null } });
+      return;
+    }
+    if (su === 'available_commands_update') {
+      get().patchThreadRuntime(threadId, { availableCommands: update.availableCommands || [] });
+      return;
+    }
+    if (su === 'interruption_request') {
+      get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
+      get().appendThreadTimelineEvent(threadId, su, update);
+      get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
+      return;
+    }
+    if (su === 'question_request') {
+      get().patchThreadRuntime(threadId, { questions: [...runtime.questions, update] });
+      get().appendThreadTimelineEvent(threadId, su, update);
+      get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
+      return;
+    }
+    if (su === 'status_change') {
+      const rawStatus = update.status || update.state || '';
+      const normalizedStatus = ['completed', 'complete', 'idle', 'ready'].includes(rawStatus)
+        ? 'idle'
+        : ['cancelled', 'canceled'].includes(rawStatus)
+          ? 'cancelled'
+          : ['error', 'failed'].includes(rawStatus)
+            ? 'error'
+            : rawStatus || 'running';
+      get().updateThreadRecord(threadId, {
+        status: normalizedStatus,
+        unread: get().activeThreadId !== threadId && ['idle', 'error', 'cancelled'].includes(normalizedStatus),
+      });
+    }
+    get().appendThreadTimelineEvent(threadId, su, update);
+  },
+
+  handleConversationEvent({ threadId, type, detail }) {
+    const client = conversations.peek(threadId);
+    if (type === 'connected') {
+      get().patchThreadRuntime(threadId, { connectionState: 'connected' });
+      if (get().activeThreadId === threadId) {
+        set({ sessionToken: client?.sessionToken || null, error: null });
+        setAcpSessionToken(client?.sessionToken || null);
+      }
+      return;
+    }
+    if (type === 'reconnecting') {
+      get().patchThreadRuntime(threadId, { connectionState: 'reconnecting' });
+      return;
+    }
+    if (type === 'reconnected') {
+      get().patchThreadRuntime(threadId, { connectionState: 'connected' });
+      return;
+    }
+    if (type === 'reconnect_failed') {
+      get().patchThreadRuntime(threadId, { connectionState: 'error' });
+      get().updateThreadRecord(threadId, { status: 'error', unread: get().activeThreadId !== threadId });
+      return;
+    }
+    if (type === 'session/update') {
+      get().handleThreadSessionUpdate(threadId, (detail || {}).update || {});
+      return;
+    }
+    if (type === 'model_update') {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        models: normalizeModels(detail?.availableModels || runtime.models),
+        currentModel: detail?.currentModelId || runtime.currentModel,
+      });
+      get().updateThreadRecord(threadId, { modelId: detail?.currentModelId || runtime.currentModel });
+      return;
+    }
+    if (type === 'mode_update' || type === 'current_mode_update') {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        ...(type === 'mode_update' ? { modes: normalizeModes(detail?.availableModes || runtime.modes) } : {}),
+        currentMode: detail?.currentModeId || runtime.currentMode,
+      });
+      get().updateThreadRecord(threadId, { modeId: detail?.currentModeId || runtime.currentMode });
+      return;
+    }
+    if (type === 'promptSuggestion') {
+      get().patchThreadRuntime(threadId, { promptSuggestion: detail });
+      return;
+    }
+    if (type === 'teamUpdate') {
+      get().patchThreadRuntime(threadId, { teamState: detail });
+      get().appendThreadTimelineEvent(threadId, type, detail);
+      return;
+    }
+    get().appendThreadTimelineEvent(threadId, type === '_codebuddy.ai/artifact' ? 'artifact' : type, detail);
+  },
+
+  async initializeActiveThread(sessionIdOverride) {
+    const project = activeProject(get());
+    const thread = activeThread(get());
+    if (!project || !thread) {
+      set({ connectionState: 'disconnected' });
+      return false;
+    }
+
+    const existingClient = conversations.peek(thread.id);
+    if (existingClient?.connected && thread.sessionId) {
+      get().activateThreadRuntime(thread.id);
+      set({
+        sessionId: thread.sessionId,
+        sessionTitle: thread.title,
+        workspacePath: project.workspacePath,
+        fileCwd: project.workspacePath,
+        connectionState: existingClient.connectionState,
+      });
+      await get().updateThreadRecord(thread.id, { unread: false, lastOpenedAt: new Date().toISOString() });
+      return true;
+    }
+
+    const client = get().getThreadClient(thread.id);
+    if (!client) {
+      set({ connectionState: 'error', error: '项目运行时尚未就绪' });
+      return false;
+    }
+
+    resetSeenContent();
+    const requestedSessionId = sessionIdOverride === undefined ? thread.sessionId : sessionIdOverride;
+    set({
+      sessionId: requestedSessionId || null,
+      timeline: Array.isArray(thread.timeline) ? thread.timeline : [],
+      permissionRequests: [],
+      questions: [],
+      sessionTitle: thread.title || null,
+      usage: null,
+      availableCommands: [],
+      workspacePath: project.workspacePath,
+      fileCwd: project.workspacePath,
+      connectionState: 'connecting',
+    });
+    get().patchThreadRuntime(thread.id, {
+      ...emptyThreadRuntime(),
+      timeline: (get().threadRuntimeById[thread.id]?.timeline || thread.timeline || []).slice(-300),
+      connectionState: 'connecting',
+      currentModel: thread.modelId || null,
+      currentMode: thread.modeId || 'default',
+    });
+    await get().updateActiveThread({ status: 'connecting', lastOpenedAt: new Date().toISOString() });
+
+    const applyInitializedSession = async (init, loaded, recoveryError = null) => {
       const availableModels = loaded?.models?.availableModels
         || init?.models?.availableModels
         || init?.agentCapabilities?.availableModels
         || get().models;
       const currentModel = loaded?.models?.currentModelId
         || init?.models?.currentModelId
+        || thread.modelId
         || get().currentModel;
       const availableModes = loaded?.modes?.availableModes
         || init?.modes?.availableModes
         || get().modes;
       const currentMode = loaded?.modes?.currentModeId
         || init?.modes?.currentModeId
+        || thread.modeId
         || get().currentMode;
-      const models = normalizeModels(availableModels);
-      const modes = normalizeModes(availableModes);
+      const resolvedSessionId = loaded?.sessionId || (recoveryError ? null : requestedSessionId) || null;
+      const resolvedTitle = loaded?.title || loaded?.name || thread.title || '新对话';
+
       set({
-        sessionId: loaded?.sessionId || sessionId,
+        sessionId: resolvedSessionId,
+        sessionTitle: resolvedTitle,
         currentModel,
-        models,
-        modes,
+        models: normalizeModels(availableModels),
+        modes: normalizeModes(availableModes),
+        currentMode,
+        connectionState: 'connected',
+        error: null,
+      });
+      get().patchThreadRuntime(thread.id, {
+        sessionId: resolvedSessionId,
+        connectionState: 'connected',
+        currentModel,
+        models: normalizeModels(availableModels),
+        modes: normalizeModes(availableModes),
         currentMode,
       });
-      await Promise.all([get().refreshStats(), get().refreshTasks()]);
+      await get().updateActiveThread({
+        sessionId: resolvedSessionId,
+        title: resolvedTitle,
+        modelId: currentModel || null,
+        modeId: currentMode || 'default',
+        status: 'idle',
+        unread: false,
+        metadata: recoveryError ? {
+          ...(thread.metadata || {}),
+          previousSessionId: requestedSessionId,
+          recoveryError,
+          recoveredAt: new Date().toISOString(),
+          lastError: null,
+        } : { ...(thread.metadata || {}), lastError: null },
+      });
+      if (recoveryError) {
+        const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
+        const warning = `原会话恢复失败，已创建新会话继续工作。${recoveryError}`;
+        if (!currentTimeline.some((item) => item.content === warning)) get().appendTimelineEvent('error', {
+          type: 'error',
+          message: warning,
+        });
+      }
+      return true;
+    };
+
+    try {
+      const knownRecoveryError = thread.metadata?.lastError || thread.metadata?.recoveryError || '';
+      if (requestedSessionId && /(timeout|408)/i.test(knownRecoveryError)) {
+        await client.connect();
+        const init = await client.initialize();
+        const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
+        return await applyInitializedSession(init, loaded, knownRecoveryError);
+      }
+      const { init, loaded } = await client.initializeSession(requestedSessionId || null, project.workspacePath || '.');
+      return await applyInitializedSession(init, loaded);
     } catch (error) {
-      set({ error: error.message });
+      if (requestedSessionId) {
+        try {
+          const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
+          return await applyInitializedSession(null, loaded, error.message);
+        } catch (_) {}
+      }
+      set({ error: error.message, connectionState: 'error' });
+      await get().updateActiveThread({
+        status: 'error',
+        metadata: { ...(thread.metadata || {}), lastError: error.message },
+      });
+      return false;
     }
+  },
+
+  async changeSession(sessionId) {
+    if (!sessionId || !get().activeProjectId) return false;
+    const projectId = get().activeProjectId;
+    let thread = Object.values(get().threadsById).find((item) => (
+      item.projectId === projectId && item.sessionId === sessionId
+    ));
+    if (!thread) thread = createThreadRecord(projectId, { sessionId, title: sessionId });
+
+    set((state) => ({
+      threadsById: { ...state.threadsById, [thread.id]: thread },
+      threadOrderByProject: {
+        ...state.threadOrderByProject,
+        [projectId]: state.threadOrderByProject[projectId]?.includes(thread.id)
+          ? state.threadOrderByProject[projectId]
+          : [...(state.threadOrderByProject[projectId] || []), thread.id],
+      },
+      activeThreadId: thread.id,
+    }));
+    await get().persistProductState();
+    const initialized = await get().initializeActiveThread(sessionId);
+    if (initialized) await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
+    return initialized;
+  },
+
+  async activateThread(threadId) {
+    const thread = get().threadsById[threadId];
+    const project = thread ? get().projectsById[thread.projectId] : null;
+    if (!thread || !project) return false;
+    set({
+      activeProjectId: project.id,
+      activeThreadId: thread.id,
+      workspacePath: project.workspacePath,
+      fileCwd: project.workspacePath,
+    });
+    get().activateThreadRuntime(thread.id);
+    await get().persistProductState();
+    const runtime = await get().ensureProjectRuntime(project.id);
+    if (!runtime) return false;
+    await get().openDirectory(project.workspacePath);
+    const initialized = await get().initializeActiveThread(thread.sessionId);
+    if (initialized) await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
+    return initialized;
+  },
+
+  async renameThread(threadId, name) {
+    const thread = get().threadsById[threadId];
+    const title = String(name || '').trim();
+    if (!thread || !title) return false;
+    if (thread.sessionId) {
+      try {
+        await apiRenameSession(thread.sessionId, title);
+      } catch (error) {
+        set({ error: error.message || '重命名会话失败' });
+        return false;
+      }
+    }
+    set((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        [threadId]: { ...state.threadsById[threadId], title, updatedAt: new Date().toISOString() },
+      },
+      sessionTitle: state.activeThreadId === threadId ? title : state.sessionTitle,
+      sessions: state.sessions.map((session) => (
+        (session.id || session.sessionId) === thread.sessionId ? { ...session, name: title } : session
+      )),
+    }));
+    await get().persistProductState();
+    return true;
+  },
+
+  async deleteThread(threadId) {
+    const thread = get().threadsById[threadId];
+    if (!thread) return false;
+    await conversations.dispose(threadId);
+    if (thread.sessionId) {
+      try {
+        await apiDeleteSession(thread.sessionId);
+      } catch (error) {
+        set({ error: error.message || '删除会话失败' });
+        return false;
+      }
+    }
+    const wasActive = get().activeThreadId === threadId;
+    set((state) => {
+      const threadsById = { ...state.threadsById };
+      delete threadsById[threadId];
+      const order = (state.threadOrderByProject[thread.projectId] || []).filter((id) => id !== threadId);
+      return {
+        threadsById,
+        threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
+        sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
+        activeThreadId: wasActive ? (order[0] || null) : state.activeThreadId,
+      };
+    });
+    await get().persistProductState();
+    if (wasActive) {
+      const replacementId = get().activeThreadId;
+      if (replacementId) await get().activateThread(replacementId);
+      else await get().newSession();
+    }
+    return true;
   },
 
   async setModel(modelId) {
     try {
-      await acp.request('session/set_model', {
+      const client = get().getThreadClient();
+      if (!client) throw new Error('当前会话未连接');
+      await client.request('session/set_model', {
         sessionId: get().sessionId,
         modelId,
       });
       set({ currentModel: modelId });
+      get().patchThreadRuntime(get().activeThreadId, { currentModel: modelId });
+      await get().updateActiveThread({ modelId });
     } catch (error) {
       set({ error: error.message });
     }
@@ -263,18 +836,37 @@ export const useStore = create((set, get) => ({
 
   async setMode(modeId) {
     try {
-      await acp.request('session/set_mode', {
+      const client = get().getThreadClient();
+      if (!client) throw new Error('当前会话未连接');
+      await client.request('session/set_mode', {
         sessionId: get().sessionId,
         modeId,
       });
       set({ currentMode: modeId });
+      get().patchThreadRuntime(get().activeThreadId, { currentMode: modeId });
+      await get().updateActiveThread({ modeId });
     } catch (error) {
       set({ error: error.message });
     }
   },
 
   async newSession() {
-    return get().changeSession(null);
+    const projectId = get().activeProjectId;
+    if (!projectId) {
+      await get().chooseWorkspace();
+      return Boolean(get().activeThreadId);
+    }
+    const thread = createThreadRecord(projectId);
+    set((state) => ({
+      threadsById: { ...state.threadsById, [thread.id]: thread },
+      threadOrderByProject: {
+        ...state.threadOrderByProject,
+        [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+      },
+      activeThreadId: thread.id,
+    }));
+    await get().persistProductState();
+    return get().initializeActiveThread(null);
   },
 
   // 切工作区：经 IPC 弹目录选择框 → set workspacePath + 持久化 → 用新 cwd 起新会话 + 重定向文件树根
@@ -284,11 +876,6 @@ export const useStore = create((set, get) => ({
   async chooseWorkspace() {
     if (!window.electronAPI?.chooseWorkspace) {
       set({ error: '工作区选择不可用（IPC 缺失）' });
-      return;
-    }
-    // 当前会话有对话历史时，弹确认（避免用户误切丢对话）
-    const hasHistory = get().timeline.some(it => it.type === 'message' || it.type === 'assistant');
-    if (hasHistory && !window.confirm('切换工作区将开启新会话，当前对话历史不会被保留。是否继续？')) {
       return;
     }
     let path = null;
@@ -303,58 +890,238 @@ export const useStore = create((set, get) => ({
   },
 
   async setWorkspace(path) {
-    if (!path || path === get().workspacePath) return;
-    try { localStorage.setItem('codebuddy-gui-workspace', path); } catch (_) {}
-    set({ workspacePath: path, fileCwd: path });
-    // 用新 cwd 起新会话（不走 changeSession(sessionId) 路径，要带 cwd 起新）
-    try {
-      set({
-        sessionId: null,
-        timeline: [],
-        permissionRequests: [],
-        questions: [],
-        sessionTitle: null,
-        usage: null,
-        availableCommands: [],
-      });
-      const { init, loaded } = await acp.initializeSession(null, path);
-      const availableModels = loaded?.models?.availableModels
-        || init?.models?.availableModels
-        || init?.agentCapabilities?.availableModels
-        || get().models;
-      const currentModel = loaded?.models?.currentModelId
-        || init?.models?.currentModelId
-        || get().currentModel;
-      const availableModes = loaded?.modes?.availableModes
-        || init?.modes?.availableModes
-        || get().modes;
-      const currentMode = loaded?.modes?.currentModeId
-        || init?.modes?.currentModeId
-        || get().currentMode;
-      set({
-        sessionId: loaded?.sessionId || null,
-        currentModel,
-        models: normalizeModels(availableModels),
-        modes: normalizeModes(availableModes),
-        currentMode,
-        connectionState: 'connected',
-        error: null,
-      });
-      // 文件树根切到新工作区
-      await get().openDirectory(path);
+    if (!path) return false;
+    const normalizedPath = String(path);
+    let project = Object.values(get().projectsById).find((item) => (
+      item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
+    ));
+    let thread = project
+      ? get().threadsById[get().threadOrderByProject[project.id]?.[0]]
+      : null;
+    if (!project) project = createProjectRecord(normalizedPath);
+    if (!thread) thread = createThreadRecord(project.id);
+
+    set((state) => ({
+      projectsById: {
+        ...state.projectsById,
+        [project.id]: { ...project, lastOpenedAt: new Date().toISOString() },
+      },
+      projectOrder: state.projectOrder.includes(project.id)
+        ? state.projectOrder
+        : [...state.projectOrder, project.id],
+      threadsById: { ...state.threadsById, [thread.id]: thread },
+      threadOrderByProject: {
+        ...state.threadOrderByProject,
+        [project.id]: state.threadOrderByProject[project.id]?.includes(thread.id)
+          ? state.threadOrderByProject[project.id]
+          : [...(state.threadOrderByProject[project.id] || []), thread.id],
+      },
+      activeProjectId: project.id,
+      activeThreadId: thread.id,
+      workspacePath: normalizedPath,
+      fileCwd: normalizedPath,
+    }));
+    try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
+    await get().persistProductState();
+    const runtime = await get().ensureProjectRuntime(project.id);
+    if (!runtime) return false;
+    await get().openDirectory(normalizedPath);
+    const initialized = await get().initializeActiveThread(thread.sessionId);
+    if (initialized) {
       await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+    }
+    return initialized;
+  },
+
+  async activateProject(projectId) {
+    const project = get().projectsById[projectId];
+    if (!project || projectId === get().activeProjectId) return Boolean(project);
+    let threadId = get().threadOrderByProject[projectId]?.[0] || null;
+    let thread = threadId ? get().threadsById[threadId] : null;
+    if (!thread) {
+      thread = createThreadRecord(projectId);
+      threadId = thread.id;
+      set((state) => ({
+        threadsById: { ...state.threadsById, [thread.id]: thread },
+        threadOrderByProject: {
+          ...state.threadOrderByProject,
+          [projectId]: [thread.id],
+        },
+      }));
+    }
+    set({
+      activeProjectId: projectId,
+      activeThreadId: threadId,
+      workspacePath: project.workspacePath,
+      fileCwd: project.workspacePath,
+    });
+    await get().persistProductState();
+    const runtime = await get().ensureProjectRuntime(projectId);
+    if (!runtime) return false;
+    await get().openDirectory(project.workspacePath);
+    const initialized = await get().initializeActiveThread(thread.sessionId);
+    if (initialized) {
+      await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+    }
+    return initialized;
+  },
+
+  async renameProject(projectId, name) {
+    const project = get().projectsById[projectId];
+    const nextName = String(name || '').trim();
+    if (!project || !nextName) return false;
+    set((state) => ({
+      projectsById: {
+        ...state.projectsById,
+        [projectId]: { ...state.projectsById[projectId], name: nextName, updatedAt: new Date().toISOString() },
+      },
+    }));
+    await get().persistProductState();
+    return true;
+  },
+
+  async removeProject(projectId) {
+    const project = get().projectsById[projectId];
+    if (!project) return false;
+    const threadIds = get().threadOrderByProject[projectId] || [];
+    await get().stopProjectRuntime(projectId).catch(() => null);
+    const wasActive = get().activeProjectId === projectId;
+    set((state) => {
+      const projectsById = { ...state.projectsById };
+      const threadsById = { ...state.threadsById };
+      const threadRuntimeById = { ...state.threadRuntimeById };
+      const threadOrderByProject = { ...state.threadOrderByProject };
+      delete projectsById[projectId];
+      delete threadOrderByProject[projectId];
+      for (const threadId of threadIds) {
+        delete threadsById[threadId];
+        delete threadRuntimeById[threadId];
+      }
+      const projectOrder = state.projectOrder.filter((id) => id !== projectId);
+      const nextProjectId = wasActive ? (projectOrder[0] || null) : state.activeProjectId;
+      const nextThreadId = nextProjectId ? (threadOrderByProject[nextProjectId]?.[0] || null) : null;
+      return {
+        projectsById,
+        projectOrder,
+        threadsById,
+        threadRuntimeById,
+        threadOrderByProject,
+        activeProjectId: nextProjectId,
+        activeThreadId: wasActive ? nextThreadId : state.activeThreadId,
+        workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
+        fileCwd: wasActive ? (projectsById[nextProjectId]?.workspacePath || '.') : state.fileCwd,
+      };
+    });
+    await get().persistProductState();
+    if (wasActive && get().activeProjectId) {
+      const nextProject = activeProject(get());
+      const runtime = await get().ensureProjectRuntime(get().activeProjectId);
+      if (runtime && nextProject) {
+        await get().openDirectory(nextProject.workspacePath);
+        await get().initializeActiveThread(undefined);
+      }
+    }
+    if (wasActive && !get().activeProjectId) {
+      set({ sessionId: null, sessionTitle: null, connectionState: 'disconnected' });
+      get().activateThreadRuntime(null);
+    }
+    return true;
+  },
+
+  applyProjectRuntimeStatus(runtime) {
+    if (!runtime?.projectId) return;
+    set((state) => {
+      const project = state.projectsById[runtime.projectId];
+      if (!project) return {};
+      return {
+        projectsById: {
+          ...state.projectsById,
+          [runtime.projectId]: {
+            ...project,
+            runtimeStatus: runtime.status || 'idle',
+            runtimePort: runtime.port || null,
+            runtimePid: runtime.pid || null,
+            runtimeStartedAt: runtime.startedAt || null,
+            runtimeError: runtime.error || null,
+          },
+        },
+      };
+    });
+  },
+
+  async ensureProjectRuntime(projectId = get().activeProjectId) {
+    const project = get().projectsById[projectId];
+    if (!project || !window.electronAPI?.ensureProjectRuntime) return null;
+    get().applyProjectRuntimeStatus({ projectId, status: 'starting' });
+    try {
+      const runtime = await window.electronAPI.ensureProjectRuntime({
+        projectId,
+        cwd: project.workspacePath,
+      });
+      if (projectId === get().activeProjectId) {
+        const nextBase = `http://127.0.0.1:${runtime.port}`;
+        setApiBase(nextBase);
+        set({ apiBase: nextBase });
+        if (runtime.password) {
+          await requestCodeBuddy(`/?password=${encodeURIComponent(runtime.password)}`, {
+            headers: { 'X-CodeBuddy-Request': '1' },
+            credentials: 'include',
+          });
+        }
+      }
+      get().applyProjectRuntimeStatus(runtime);
+      return runtime;
     } catch (error) {
-      set({ error: error.message, connectionState: 'error' });
+      get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
+      set({ connectionState: 'error', error: `项目运行时启动失败: ${error.message}` });
+      return null;
+    }
+  },
+
+  async stopProjectRuntime(projectId = get().activeProjectId) {
+    if (!projectId || !window.electronAPI?.stopProjectRuntime) return false;
+    await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+    if (projectId === get().activeProjectId) {
+      setAcpSessionToken(null);
+      set({ connectionState: 'disconnected' });
+    }
+    const runtime = await window.electronAPI.stopProjectRuntime(projectId);
+    get().applyProjectRuntimeStatus(runtime || { projectId, status: 'stopped' });
+    return true;
+  },
+
+  async restartProjectRuntime(projectId = get().activeProjectId) {
+    const project = get().projectsById[projectId];
+    if (!project || !window.electronAPI?.restartProjectRuntime) return false;
+    await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+    if (projectId === get().activeProjectId) setAcpSessionToken(null);
+    try {
+      const runtime = await window.electronAPI.restartProjectRuntime({ projectId, cwd: project.workspacePath });
+      get().applyProjectRuntimeStatus(runtime);
+      if (projectId === get().activeProjectId) {
+        const nextBase = `http://127.0.0.1:${runtime.port}`;
+        setApiBase(nextBase);
+        set({ apiBase: nextBase });
+        if (runtime.password) {
+          await requestCodeBuddy(`/?password=${encodeURIComponent(runtime.password)}`, {
+            headers: { 'X-CodeBuddy-Request': '1' },
+            credentials: 'include',
+          });
+        }
+        return get().initializeActiveThread(undefined);
+      }
+      return true;
+    } catch (error) {
+      get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
+      set({ error: `重启项目运行时失败: ${error.message}` });
+      return false;
     }
   },
 
   async initializeWorkspace() {
-    // 启动时若已有持久化的 workspacePath，用它；否则文件树根兜底 '.'
-    const persisted = (function () { try { return localStorage.getItem('codebuddy-gui-workspace'); } catch (_) { return null; } })();
-    if (persisted && !get().workspacePath) {
-      set({ workspacePath: persisted });
-    }
-    await get().openDirectory(get().workspacePath || '.');
+    const project = activeProject(get());
+    if (!project?.workspacePath) return;
+    await get().openDirectory(project.workspacePath);
   },
 
   async openDirectory(path) {
@@ -528,30 +1295,28 @@ export const useStore = create((set, get) => ({
   },
 
   appendTimelineEvent(eventType, payload) {
-    // 收到 agent 真内容/工具事件时清"等响应"态（UI 态已转 streaming，不再需占位）
-    const su = payload?.sessionUpdate || eventType;
-    if (su === 'agent_message_chunk' || su === 'agent_thought_chunk' ||
-        su === 'tool_call' || su === 'tool_call_update' ||
-        eventType === 'message' || eventType === 'thinking') {
-      set({ isAwaitingResponse: false });
-    }
-    set((state) => ({ timeline: reduceAcpEvent(state.timeline, eventType, payload) }));
+    get().appendThreadTimelineEvent(get().activeThreadId, eventType, payload);
   },
 
   closeAssistantStream() {
-    set((state) => ({ timeline: closeAssistantStream(state.timeline) }));
+    const threadId = get().activeThreadId;
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    get().patchThreadRuntime(threadId, { timeline: closeAssistantStream(runtime.timeline) });
   },
 
   async respondToInterruption(interruptionId, decision = 'allow') {
     try {
-      await acp.request('_codebuddy.ai/resolveInterruption', {
+      const client = get().getThreadClient();
+      if (!client) throw new Error('当前会话未连接');
+      await client.request('_codebuddy.ai/resolveInterruption', {
         sessionId: get().sessionId,
         toolCallId: interruptionId,
         decision,
       });
-      set((state) => ({
-        permissionRequests: state.permissionRequests.filter((x) => x.interruptionId !== interruptionId),
-      }));
+      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(get().activeThreadId, {
+        permissionRequests: runtime.permissionRequests.filter((x) => x.interruptionId !== interruptionId),
+      });
     } catch (error) {
       set({ error: error.message });
     }
@@ -559,14 +1324,17 @@ export const useStore = create((set, get) => ({
 
   async submitQuestionAnswers(toolCallId, answers) {
     try {
-      await acp.request('_codebuddy.ai/answerQuestion', {
+      const client = get().getThreadClient();
+      if (!client) throw new Error('当前会话未连接');
+      await client.request('_codebuddy.ai/answerQuestion', {
         sessionId: get().sessionId,
         toolCallId,
         answers,
       });
-      set((state) => ({
-        questions: state.questions.filter((x) => x.toolCallId !== toolCallId),
-      }));
+      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(get().activeThreadId, {
+        questions: runtime.questions.filter((x) => x.toolCallId !== toolCallId),
+      });
       get().appendTimelineEvent('question_answered', { toolCallId, answers });
     } catch (error) {
       set({ error: error.message });
@@ -575,38 +1343,32 @@ export const useStore = create((set, get) => ({
   },
 
   async bootstrap() {
-    window.addEventListener('hashchange', () => {
-      set({ route: parseHashRoute() });
-    });
-
-    // 1. 从 Electron 主进程获取 CodeBuddy 端口和密码（带降级）
-    let cbPassword = null;
-    try {
-      if (window.electronAPI?.getCodeBuddyPort) {
-        const result = await window.electronAPI.getCodeBuddyPort();
-        const port = result?.port || result;
-        const base = `http://127.0.0.1:${port}`;
-        setApiBase(base);
-        set({ apiBase: base });
-        cbPassword = result?.password || null;
-        if (cbPassword) {
-          // 通过密码 URL 获取认证 cookie
-          try {
-            await requestCodeBuddy(`/?password=${encodeURIComponent(cbPassword)}`, {
-              headers: { 'X-CodeBuddy-Request': '1' },
-              credentials: 'include',
-            });
-          } catch (_) { /* cookie 认证失败不阻塞 */ }
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to get CodeBuddy port, using default:', err.message);
+    if (!routeListenerBound) {
+      routeListenerBound = true;
+      window.addEventListener('hashchange', () => {
+        set({ route: parseHashRoute() });
+      });
     }
 
-    // 2. 从 localStorage 恢复设置（主题等需要尽早生效）
+    // 1. 先恢复本地产品状态，再按活动项目惰性启动对应运行时。
     get().loadSettingsFromStorage();
+    if (!get().productStateLoaded) await get().hydrateProductState();
+    if (!runtimeListenerBound && window.electronAPI?.onProjectRuntimeStatus) {
+      runtimeListenerBound = true;
+      window.electronAPI.onProjectRuntimeStatus((runtime) => get().applyProjectRuntimeStatus(runtime));
+    }
+    if (get().activeProjectId) {
+      const runtime = await get().ensureProjectRuntime(get().activeProjectId);
+      if (!runtime) {
+        set({ authViewState: 'authenticated' });
+        return;
+      }
+    } else {
+      set({ authViewState: 'authenticated', connectionState: 'disconnected' });
+      return;
+    }
 
-    // 2.5. 鉴权态：对照源在连接前先 checkAuth，决定 viewState ∈ login|authenticated
+    // 2. 鉴权态：运行时就绪后再检查当前项目服务。
     //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
     const authState = await apiCheckAuth();
     set({ authViewState: authState });
@@ -615,108 +1377,28 @@ export const useStore = create((set, get) => ({
       return;
     }
 
-    acp.on('connected', () => {
-      set({ connectionState: 'connected', sessionToken: acp.sessionToken, error: null });
-      setAcpSessionToken(acp.sessionToken);
-    });
-
-    acp.on('reconnecting', () => {
-      set({ connectionState: 'reconnecting' });
-    });
-
-    acp.on('reconnected', () => {
-      set({ connectionState: 'connected', error: null });
-      setAcpSessionToken(acp.sessionToken);
-    });
-
-    acp.on('reconnect_failed', () => {
-      set({ connectionState: 'error', error: '连接断开，重连失败' });
-    });
-
-    acp.on('initialized', (detail) => {
-      const capabilities = detail?.agentCapabilities || {};
-      get().appendTimelineEvent('initialized', capabilities);
-    });
-
-    acp.on('session/update', (event) => {
-      get().handleSessionUpdate((event.detail || {}).update || {});
-    });
-
-    acp.on('message', (event) => {
-      get().appendTimelineEvent('message', event.detail);
-    });
-
-    acp.on('thinking', (event) => {
-      get().appendTimelineEvent('thinking', event.detail);
-    });
-
-    acp.on('model_update', (event) => {
-      const detail = event.detail || {};
-      set({ models: normalizeModels(detail.availableModels || get().models), currentModel: detail.currentModelId || get().currentModel });
-      get().appendTimelineEvent('model_update', detail);
-    });
-
-    acp.on('mode_update', (event) => {
-      const detail = event.detail || {};
-      set({ modes: normalizeModes(detail.availableModes || get().modes), currentMode: detail.currentModeId || get().currentMode });
-      get().appendTimelineEvent('mode_update', detail);
-    });
-
-    acp.on('current_mode_update', (event) => {
-      const detail = event.detail || {};
-      set({ currentMode: detail.currentModeId || get().currentMode });
-      get().appendTimelineEvent('current_mode_update', detail);
-    });
-
-    acp.on('status_change', (event) => {
-      get().appendTimelineEvent('status_change', event.detail);
-    });
-
-    acp.on('promptSuggestion', (event) => {
-      set({ promptSuggestion: event.detail });
-    });
-
-    acp.on('teamUpdate', (event) => {
-      set({ teamState: event.detail });
-      get().appendTimelineEvent('teamUpdate', event.detail);
-    });
-
-    acp.on('_codebuddy.ai/artifact', (event) => {
-      get().appendTimelineEvent('artifact', event.detail);
-    });
-
-    acp.on('checkpoint', (event) => {
-      get().appendTimelineEvent('checkpoint', event.detail);
-    });
+    if (!conversationEventsBound) {
+      conversationEventsBound = true;
+      conversations.onEvent((event) => get().handleConversationEvent(event));
+    }
 
     try {
       const querySessionId = new URLSearchParams(window.location.search).get('sessionId');
-      set({
-        timeline: [],
-        permissionRequests: [],
-        questions: [],
-        sessionTitle: null,
-        usage: null,
-        availableCommands: [],
-      });
-      const { init, loaded } = await acp.initializeSession(querySessionId || null);
-      // 模型列表可能在 init（initialize 响应）或 loaded（session/new|load 响应）中
-      const availableModels = loaded?.models?.availableModels
-        || init?.models?.availableModels
-        || init?.agentCapabilities?.availableModels
-        || [];
-      const currentModel = loaded?.models?.currentModelId
-        || init?.models?.currentModelId
-        || null;
-      const availableModes = loaded?.modes?.availableModes
-        || init?.modes?.availableModes
-        || [];
-      const currentMode = loaded?.modes?.currentModeId
-        || init?.modes?.currentModeId
-        || 'default';
-      const models = normalizeModels(availableModels);
-      const modes = normalizeModes(availableModes);
-      set({ sessionId: loaded?.sessionId || querySessionId || null, currentModel, models, modes, currentMode, connectionState: 'connected', error: null });
+      if (!get().activeProjectId || !get().activeThreadId) {
+        set({ connectionState: 'disconnected', sessionId: null });
+        await Promise.allSettled([
+          get().refreshInfo(),
+          get().refreshSettings(),
+          get().refreshPlugins(),
+          get().refreshMetrics(),
+          get().refreshStats(),
+          get().refreshTraces(),
+        ]);
+        return;
+      }
+      if (querySessionId) await get().updateActiveThread({ sessionId: querySessionId });
+      const initialized = await get().initializeActiveThread(querySessionId || undefined);
+      if (!initialized) return;
       // 非关键数据加载 - 任一个失败不影响会话状态
       await Promise.allSettled([
         get().refreshInfo(),
@@ -776,7 +1458,43 @@ export const useStore = create((set, get) => ({
 
   async refreshSessions() {
     const payload = await fetchJson('/api/v1/sessions');
-    set({ sessions: normalizeSessions(payload) });
+    const sessions = normalizeSessions(payload);
+    const projectId = get().activeProjectId;
+    if (!projectId) {
+      set({ sessions });
+      return;
+    }
+    set((state) => {
+      const threadsById = { ...state.threadsById };
+      const order = [...(state.threadOrderByProject[projectId] || [])];
+      for (const session of sessions) {
+        const sessionId = session.id || session.sessionId;
+        if (!sessionId) continue;
+        let thread = Object.values(threadsById).find((item) => (
+          item.projectId === projectId && item.sessionId === sessionId
+        ));
+        if (!thread) {
+          thread = createThreadRecord(projectId, {
+            sessionId,
+            title: session.name || session.title || sessionId,
+          });
+          threadsById[thread.id] = thread;
+          order.push(thread.id);
+        } else if ((session.name || session.title) && thread.title !== (session.name || session.title)) {
+          threadsById[thread.id] = {
+            ...thread,
+            title: session.name || session.title,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      }
+      return {
+        sessions,
+        threadsById,
+        threadOrderByProject: { ...state.threadOrderByProject, [projectId]: order },
+      };
+    });
+    get().persistProductState();
   },
 
   async refreshWorkers() {
@@ -966,8 +1684,10 @@ export const useStore = create((set, get) => ({
     try {
       await fsMkdir(path);
       await get().refreshFileEntries();
+      return true;
     } catch (error) {
       set({ error: error.message });
+      return false;
     }
   },
 
@@ -975,8 +1695,10 @@ export const useStore = create((set, get) => ({
     try {
       await fsMove(source, destination);
       await get().refreshFileEntries();
+      return true;
     } catch (error) {
       set({ error: error.message });
+      return false;
     }
   },
 
@@ -984,8 +1706,10 @@ export const useStore = create((set, get) => ({
     try {
       await fsRemove(path);
       await get().refreshFileEntries();
+      return true;
     } catch (error) {
       set({ error: error.message });
+      return false;
     }
   },
 
@@ -1068,12 +1792,18 @@ export const useStore = create((set, get) => ({
 
   async cancelSession() {
     try {
-      await acp.request('session/cancel', {
+      const threadId = get().activeThreadId;
+      const client = get().getThreadClient(threadId);
+      if (!client) throw new Error('当前会话未连接');
+      await client.request('session/cancel', {
         sessionId: get().sessionId,
       });
-      set({ isAwaitingResponse: false });
-      get().closeAssistantStream();
-      get().appendTimelineEvent('status_change', { status: 'cancelled', role: 'system' });
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        isAwaitingResponse: false,
+        timeline: reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', { status: 'cancelled', role: 'system' }),
+      });
+      await get().updateThreadRecord(threadId, { status: 'cancelled' });
     } catch (error) {
       set({ error: error.message });
     }
@@ -1082,18 +1812,80 @@ export const useStore = create((set, get) => ({
   async sendPrompt(text) {
     const content = String(text || '').trim();
     if (!content) return;
-    set((state) => ({ timeline: pushUserMessage(state.timeline, content), isAwaitingResponse: true }));
+    const threadId = get().activeThreadId;
+    const thread = get().threadsById[threadId];
+    const client = get().getThreadClient(threadId);
+    if (!thread || !client) {
+      set({ error: '当前会话未连接' });
+      return;
+    }
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    if (thread.status === 'running' || runtime.isAwaitingResponse) {
+      const queuedPrompt = {
+        id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: content,
+        createdAt: Date.now(),
+      };
+      get().patchThreadRuntime(threadId, { promptQueue: [...runtime.promptQueue, queuedPrompt] });
+      return { queued: true, id: queuedPrompt.id };
+    }
+    return get().runThreadPrompt(threadId, content);
+  },
+
+  async runThreadPrompt(threadId, content) {
+    const thread = get().threadsById[threadId];
+    const client = get().getThreadClient(threadId);
+    if (!thread || !client) return false;
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    get().patchThreadRuntime(threadId, {
+      timeline: pushUserMessage(runtime.timeline, content),
+      isAwaitingResponse: true,
+    });
+    await get().updateThreadRecord(threadId, { status: 'running', draft: '', unread: false });
     try {
-      await acp.request('session/prompt', {
-        sessionId: get().sessionId,
+      await client.request('session/prompt', {
+        sessionId: thread.sessionId,
         prompt: [{ type: 'text', text: content }],
       });
-      get().closeAssistantStream();
+      const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        timeline: closeAssistantStream(completedRuntime.timeline),
+        isAwaitingResponse: false,
+      });
+      await get().updateThreadRecord(threadId, {
+        status: 'idle',
+        unread: get().activeThreadId !== threadId,
+      });
+      await get().drainThreadPromptQueue(threadId);
+      return true;
     } catch (error) {
-      set({ isAwaitingResponse: false });
-      get().appendTimelineEvent('error', { message: error.message, type: 'error' });
-      get().closeAssistantStream();
+      const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, {
+        timeline: closeAssistantStream(reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' })),
+        isAwaitingResponse: false,
+      });
+      await get().updateThreadRecord(threadId, {
+        status: 'error',
+        unread: get().activeThreadId !== threadId,
+        metadata: { ...(thread.metadata || {}), lastError: error.message },
+      });
+      return false;
     }
+  },
+
+  async drainThreadPromptQueue(threadId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const [next, ...rest] = runtime.promptQueue;
+    if (!next) return false;
+    get().patchThreadRuntime(threadId, { promptQueue: rest });
+    return get().runThreadPrompt(threadId, next.text);
+  },
+
+  removeQueuedPrompt(threadId, promptId) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    get().patchThreadRuntime(threadId, {
+      promptQueue: runtime.promptQueue.filter((item) => item.id !== promptId),
+    });
   },
 
   // ===== 会话删除/重命名（对照源 DELETE /sessions/{id} + POST /sessions/{id}/rename）=====
@@ -1103,6 +1895,22 @@ export const useStore = create((set, get) => ({
       await apiDeleteSession(sessionId);
       // 本地即时剔除，避免等 refreshSessions 往返
       set((state) => ({ sessions: state.sessions.filter((s) => (s.id || s.sessionId) !== sessionId) }));
+      const localThread = Object.values(get().threadsById).find((thread) => thread.sessionId === sessionId);
+      if (localThread) {
+        set((state) => {
+          const threadsById = { ...state.threadsById };
+          delete threadsById[localThread.id];
+          return {
+            threadsById,
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [localThread.projectId]: (state.threadOrderByProject[localThread.projectId] || [])
+                .filter((id) => id !== localThread.id),
+            },
+          };
+        });
+        await get().persistProductState();
+      }
       // 若删的是当前会话，起新会话顶替
       if (get().sessionId === sessionId) {
         set({ sessionId: null, sessionTitle: null, timeline: [], permissionRequests: [], questions: [], usage: null });
@@ -1127,6 +1935,20 @@ export const useStore = create((set, get) => ({
         }),
         sessionTitle: get().sessionId === sessionId ? String(name || '').trim() : state.sessionTitle,
       }));
+      const localThread = Object.values(get().threadsById).find((thread) => thread.sessionId === sessionId);
+      if (localThread) {
+        set((state) => ({
+          threadsById: {
+            ...state.threadsById,
+            [localThread.id]: {
+              ...state.threadsById[localThread.id],
+              title: String(name || '').trim(),
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        }));
+        await get().persistProductState();
+      }
       return true;
     } catch (err) {
       get().appendTimelineEvent('error', { message: err.message || '重命名会话失败', type: 'error' });
@@ -1157,7 +1979,7 @@ export const useStore = create((set, get) => ({
   async logout() {
     apiAuthLogout();
     set({ authViewState: 'login', authError: null, sessionId: null, sessionToken: null, timeline: [] });
-    try { await acp.disconnect(); } catch (_) {}
+    await conversations.disposeAll();
   },
 
   async refreshAuth() {
@@ -1174,4 +1996,4 @@ if (typeof window !== "undefined" && import.meta.env.DEV) {
   window.__sendPrompt = (text) => useStore.getState().sendPrompt(text);
   window.__ZUSTAND_STORE = useStore;
 }
-export { acp };
+export { conversations };

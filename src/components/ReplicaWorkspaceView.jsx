@@ -254,12 +254,18 @@ export default function ReplicaWorkspaceView() {
   const openDirectory = useStore((s) => s.openDirectory);
   const openFile = useStore((s) => s.openFile);
   const setSelectedFile = useStore((s) => s.setSelectedFile);
+  const createFile = useStore((s) => s.fsWrite);
+  const createFolder = useStore((s) => s.fsMkdir);
+  const moveEntry = useStore((s) => s.fsMove);
+  const removeEntry = useStore((s) => s.fsRemove);
 
   const [newFileName, setNewFileName] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
   const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+  const [renameEntry, setRenameEntry] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [workspaceError, setWorkspaceError] = useState(null);
 
@@ -287,32 +293,65 @@ export default function ReplicaWorkspaceView() {
 
   const handleRefresh = () => openDirectory(fileCwd || '.');
 
+  const validateEntryName = (value) => {
+    const name = String(value || '').trim();
+    if (!name) return '名称不能为空';
+    if (name === '.' || name === '..' || /[\\/]/.test(name)) return '名称不能包含路径分隔符';
+    return null;
+  };
+
+  const pathForEntry = (entry) => entry?.path || joinPath(fileCwd || '.', entry?.name || '');
+
   const handleCreateFile = async () => {
-    if (!newFileName.trim()) return;
-    const path = fileCwd ? `${fileCwd}/${newFileName.trim()}` : newFileName.trim();
-    try {
-      await window.electronAPI.runGit({ args: ['add', '-N', path], cwd: fileCwd || '.' });
-      setShowNewFileInput(false);
-      setNewFileName('');
-      openDirectory(fileCwd || '.');
-    } catch (err) {
-      setShowNewFileInput(false);
-      setWorkspaceError('创建文件失败: ' + (err?.message || '未知错误'));
-    }
+    const nameError = validateEntryName(newFileName);
+    if (nameError) { setWorkspaceError(nameError); return; }
+    const path = joinPath(fileCwd || '.', newFileName.trim());
+    const created = await createFile(path, '');
+    if (!created) { setWorkspaceError('创建文件失败'); return; }
+    setShowNewFileInput(false);
+    setNewFileName('');
+    setStatusMessage(`已创建 ${newFileName.trim()}`);
+    await openFile(path);
   };
 
   const handleCreateFolder = async () => {
     const name = newFolderName.trim();
-    if (!name) return;
+    const nameError = validateEntryName(name);
+    if (nameError) { setWorkspaceError(nameError); return; }
+    const created = await createFolder(joinPath(fileCwd || '.', name));
+    if (!created) { setWorkspaceError('创建目录失败'); return; }
     setShowNewFolderInput(false);
     setNewFolderName('');
-    try {
-      await window.electronAPI?.runGit({ args: ['init', '-q'], cwd: fileCwd || '.' }).catch(() => {});
-      // Placeholder: backend mkdir API not yet available
-      setStatusMessage(`目录 "${name}" 创建功能开发中`);
-    } catch (err) {
-      setWorkspaceError('创建目录失败: ' + (err?.message || '未知错误'));
-    }
+    setStatusMessage(`已创建目录 ${name}`);
+  };
+
+  const startRename = (entry) => {
+    setRenameEntry(entry);
+    setRenameValue(entry?.name || '');
+    setContextMenu(null);
+  };
+
+  const submitRename = async () => {
+    const nameError = validateEntryName(renameValue);
+    if (nameError) { setWorkspaceError(nameError); return; }
+    const source = pathForEntry(renameEntry);
+    const destination = joinPath(fileCwd || '.', renameValue.trim());
+    if (source === destination) { setRenameEntry(null); return; }
+    const moved = await moveEntry(source, destination);
+    if (!moved) { setWorkspaceError('重命名失败'); return; }
+    if (useStore.getState().selectedFile === source) await openFile(destination);
+    setStatusMessage(`已重命名为 ${renameValue.trim()}`);
+    setRenameEntry(null);
+  };
+
+  const handleDelete = async (entry) => {
+    const path = pathForEntry(entry);
+    setContextMenu(null);
+    if (!window.confirm(`确定删除“${entry?.name || path}”吗？此操作不可撤销。`)) return;
+    const removed = await removeEntry(path);
+    if (!removed) { setWorkspaceError('删除失败'); return; }
+    if (useStore.getState().selectedFile === path) setSelectedFile(null);
+    setStatusMessage(`已删除 ${entry?.name || path}`);
   };
 
   const handleContextMenu = (e, entry) => {
@@ -419,7 +458,13 @@ export default function ReplicaWorkspaceView() {
               style={{ left: contextMenu.x, top: contextMenu.y }}
             >
               <button className="w-full text-left px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-                onClick={() => { openFile(contextMenu.entry.path); setContextMenu(null); }}>
+                onClick={() => {
+                  const entry = contextMenu.entry;
+                  const path = pathForEntry(entry);
+                  if (entry.type === 'directory' || entry.is_dir) openDirectory(path);
+                  else openFile(path);
+                  setContextMenu(null);
+                }}>
                 打开
               </button>
               {contextMenu.entry.type === 'file' && (
@@ -428,15 +473,40 @@ export default function ReplicaWorkspaceView() {
                   预览
                 </button>
               )}
+              <button className="w-full text-left px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+                onClick={() => startRename(contextMenu.entry)}>
+                重命名
+              </button>
               <div className="h-px bg-[var(--color-border-muted)] my-1" />
               <button className="w-full text-left px-3 py-1.5 text-xs text-[#f87171] hover:bg-[var(--color-bg-hover)] transition-colors"
-                onClick={() => { setStatusMessage(`删除 "${contextMenu.entry?.name || contextMenu.entry?.path}" 功能开发中`); setContextMenu(null); }}>
+                onClick={() => handleDelete(contextMenu.entry)}>
                 删除
               </button>
             </div>
           </>
         )}
       </div>
+      {renameEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45" role="dialog" aria-modal="true" aria-label="重命名文件或目录">
+          <div className="w-80 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4 shadow-xl">
+            <div className="mb-3 text-sm font-medium text-[var(--color-text-primary)]">重命名</div>
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') submitRename();
+                if (event.key === 'Escape') setRenameEntry(null);
+              }}
+              className="w-full rounded border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => setRenameEntry(null)}>取消</button>
+              <button className="btn-primary px-3 py-1.5 text-xs" onClick={submitRename}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
       <EditorPane />
     </div>
   );
