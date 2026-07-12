@@ -1,21 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect } from 'react';
 import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
-import ReplicaSettingsView from './components/ReplicaSettingsView';
 import ReplicaChatView from './components/ReplicaChatView';
-import ReplicaTerminalView from './components/ReplicaTerminalView';
-import ReplicaWorkspaceView from './components/ReplicaWorkspaceView';
-import ReplicaChangesView from './components/ReplicaChangesView';
-import ReplicaWorkersView from './components/ReplicaWorkersView';
-import ReplicaMetricsView from './components/ReplicaMetricsView';
-import ReplicaPluginsView from './components/ReplicaPluginsView';
-import ReplicaStatsView from './components/ReplicaStatsView';
-import ReplicaTracesView from './components/ReplicaTracesView';
-import ReplicaTasksView from './components/ReplicaTasksView';
-import ReplicaLogsView from './components/ReplicaLogsView';
-import ReplicaRemoteControlView from './components/ReplicaRemoteControlView';
-import ReplicaInstancesView from './components/ReplicaInstancesView';
-import ReplicaMonitorView from './components/ReplicaMonitorView';
+
+const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
+const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
+const ReplicaWorkspaceView = lazy(() => import('./components/ReplicaWorkspaceView'));
+const ReplicaChangesView = lazy(() => import('./components/ReplicaChangesView'));
+const ReplicaWorkersView = lazy(() => import('./components/ReplicaWorkersView'));
+const ReplicaMetricsView = lazy(() => import('./components/ReplicaMetricsView'));
+const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'));
+const ReplicaStatsView = lazy(() => import('./components/ReplicaStatsView'));
+const ReplicaTracesView = lazy(() => import('./components/ReplicaTracesView'));
+const ReplicaTasksView = lazy(() => import('./components/ReplicaTasksView'));
+const ReplicaLogsView = lazy(() => import('./components/ReplicaLogsView'));
+const ReplicaRemoteControlView = lazy(() => import('./components/ReplicaRemoteControlView'));
+const ReplicaInstancesView = lazy(() => import('./components/ReplicaInstancesView'));
+const ReplicaMonitorView = lazy(() => import('./components/ReplicaMonitorView'));
 
 function WindowControls({ height = 'h-12' }) {
   return (
@@ -248,29 +249,34 @@ function MainContent() {
     );
   }
 
+  let content;
   switch (route) {
-    case 'chat': return <ReplicaChatView />;
-    case 'instances': return <ReplicaInstancesView />;
-    case 'remote-control': return <ReplicaRemoteControlView />;
-    case 'terminal': return <ReplicaTerminalView />;
-    case 'settings': return <ReplicaSettingsView />;
-    case 'editor': return <ReplicaWorkspaceView />;
-    case 'changes': return <ReplicaChangesView />;
-    case 'workers': return <ReplicaWorkersView />;
-    case 'metrics': return <ReplicaMetricsView />;
-    case 'plugins': return <ReplicaPluginsView />;
-    case 'tasks': return <ReplicaTasksView />;
-    case 'stats': return <ReplicaStatsView />;
-    case 'traces': return <ReplicaTracesView />;
-    case 'monitor': return <ReplicaMonitorView />;
-    case 'logs': return <ReplicaLogsView />;
-    default:
-      return (
+    case 'chat': content = <ReplicaChatView />; break;
+    case 'instances': content = <ReplicaInstancesView />; break;
+    case 'remote-control': content = <ReplicaRemoteControlView />; break;
+    case 'terminal': content = <ReplicaTerminalView />; break;
+    case 'settings': content = <ReplicaSettingsView />; break;
+    case 'editor': content = <ReplicaWorkspaceView />; break;
+    case 'changes': content = <ReplicaChangesView />; break;
+    case 'workers': content = <ReplicaWorkersView />; break;
+    case 'metrics': content = <ReplicaMetricsView />; break;
+    case 'plugins': content = <ReplicaPluginsView />; break;
+    case 'tasks': content = <ReplicaTasksView />; break;
+    case 'stats': content = <ReplicaStatsView />; break;
+    case 'traces': content = <ReplicaTracesView />; break;
+    case 'monitor': content = <ReplicaMonitorView />; break;
+    case 'logs': content = <ReplicaLogsView />; break;
+    default: content = (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
           <button className="btn-primary px-4 py-2 text-sm" onClick={() => useStore.getState().setRoute('chat')}>返回对话</button>
         </div>
       );
   }
+  return (
+    <Suspense fallback={<div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] text-sm text-[var(--color-text-muted)]">正在加载页面...</div>}>
+      {content}
+    </Suspense>
+  );
 }
 
 function GlobalErrorNotice() {
