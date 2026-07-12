@@ -1,3 +1,5 @@
+import { name as appName, version as appVersion } from '../../package.json';
+
 // 后端基址兜底值：仅当 Electron 主进程 IPC 不可达时使用。
 // 正常运行时 store.bootstrap() 会按活动项目请求 Electron 运行时管理器，并用该项目的随机端口覆盖此值。
 let _apiBase = 'http://127.0.0.1:63918';
@@ -489,7 +491,7 @@ export class AcpClient {
     if (this.initialized) return;
     const result = await this.request('initialize', {
       protocolVersion: 1,
-      clientInfo: { name: 'codebuddy-gui-replica', version: '0.1.0' },
+      clientInfo: { name: appName, version: appVersion },
       clientCapabilities: {
         _meta: {
           'codebuddy.ai': {
