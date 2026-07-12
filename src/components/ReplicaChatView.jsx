@@ -268,6 +268,11 @@ export default function ReplicaChatView() {
 
   const timeline = useStore((s) => s.timeline);
   const connectionState = useStore((s) => s.connectionState);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const activeProject = useStore((s) => s.projectsById[s.activeProjectId] || null);
+  const recoveryError = useStore((s) => s.threadsById[s.activeThreadId]?.metadata?.lastError || s.projectsById[s.activeProjectId]?.runtimeError || '');
+  const restartProjectRuntime = useStore((s) => s.restartProjectRuntime);
+  const initializeActiveThread = useStore((s) => s.initializeActiveThread);
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
   const sessionTitle = useStore((s) => s.sessionTitle);
@@ -291,6 +296,7 @@ export default function ReplicaChatView() {
   const input = useStore((s) => s.threadsById[s.activeThreadId]?.draft || '');
   const setInput = useStore((s) => s.setThreadDraft);
   const [chatError, setChatError] = useState(null);
+  const [recovering, setRecovering] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
   // Auto-dismiss error banner after 8 seconds
@@ -329,6 +335,29 @@ export default function ReplicaChatView() {
     return null;
   })();
 
+  const runtimeStatus = activeProject?.runtimeStatus || 'idle';
+  const runtimeUnavailable = runtimeStatus === 'error' || runtimeStatus === 'stopped';
+  const connectionNeedsRecovery = runtimeUnavailable || connectionState === 'error' || (connectionState === 'disconnected' && runtimeStatus === 'running');
+  const canSend = connectionState === 'connected';
+  const recoveryMessage = activeProject?.runtimeError || recoveryError || (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
+
+  const recoverConnection = async () => {
+    if (!activeProjectId || recovering) return;
+    setRecovering(true);
+    setChatError(null);
+    try {
+      const recovered = runtimeUnavailable ? await restartProjectRuntime(activeProjectId) : await initializeActiveThread(undefined);
+      if (!recovered) {
+        const currentError = useStore.getState().error;
+        setChatError(currentError || '重新连接失败，请检查 CodeBuddy CLI 状态后重试。');
+      }
+    } catch (error) {
+      setChatError('重新连接失败: ' + (error?.message || '未知错误'));
+    } finally {
+      setRecovering(false);
+    }
+  };
+
   const isStreaming = useMemo(() => timeline.some(item => item.streaming === true) || isAwaitingResponse, [timeline, isAwaitingResponse]);
   const slashSuggestions = useMemo(() => {
     if (!input.startsWith('/') || input.includes(' ')) return [];
@@ -357,6 +386,10 @@ export default function ReplicaChatView() {
   const onSubmit = async () => {
     const value = input.trim();
     if (!value && pendingAttachments.length === 0) return;
+    if (!canSend) {
+      setChatError('当前会话尚未连接，请先重新连接后再发送。');
+      return;
+    }
     setInput('');
     setChatError(null);
     try {
@@ -383,6 +416,24 @@ export default function ReplicaChatView() {
       return { ...item, showDate };
     });
   }, [timeline]);
+  const recoveryNotice = connectionNeedsRecovery ? (
+    <div className={`${timeline.length === 0 ? 'mt-16 ' : ''}mb-4 rounded-md border border-[rgba(248,113,113,0.3)] bg-[rgba(248,113,113,0.08)] px-4 py-4 text-center`}>
+      <div className="text-sm font-medium text-[var(--color-accent-red)]">
+        {runtimeUnavailable ? '项目运行时不可用' : 'CodeBuddy 会话连接失败'}
+      </div>
+      <div className="mt-2 break-words text-xs leading-5 text-[var(--color-text-secondary)]">
+        {recoveryMessage}
+      </div>
+      <button
+        type="button"
+        className="btn-primary mt-4 px-4 py-2 text-xs"
+        disabled={recovering}
+        onClick={recoverConnection}
+      >
+        {recovering ? '正在恢复...' : runtimeUnavailable ? '重新启动并连接' : '重新连接'}
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
@@ -390,14 +441,14 @@ export default function ReplicaChatView() {
       <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
         <div className="mx-auto max-w-3xl px-6 py-4">
           {timeline.length === 0 ? (
-            connectionState === 'connecting' ? (
+            connectionState === 'connecting' || runtimeStatus === 'starting' ? (
               <div className="flex items-center justify-center h-64">
                 <div className="flex flex-col items-center gap-3">
                   <div className="animate-spin w-6 h-6 border-2 border-[var(--color-border-default)] border-t-[var(--color-accent-blue)] rounded-full" />
                   <span className="text-sm" style={{color:'var(--color-text-tertiary)'}}>正在加载对话...</span>
                 </div>
               </div>
-            ) : (
+            ) : connectionNeedsRecovery ? recoveryNotice : (
               <div className="flex flex-col items-center justify-center pt-20">
                 <div className="mb-3 text-2xl font-semibold text-[var(--color-text-primary)]">CodeBuddy Code</div>
                 <div className="mb-4 text-sm text-[var(--color-text-secondary)]">今天有什么可以帮到你？</div>
@@ -422,6 +473,7 @@ export default function ReplicaChatView() {
               ))}
             </div>
           )}
+          {timeline.length > 0 ? recoveryNotice : null}
           {chatError && (
             <div className="mx-0 mb-4 p-3 rounded-lg flex items-center justify-between"
                  style={{ background: 'var(--color-error-bg)', border: '1px solid var(--color-error)', color: 'var(--color-error)' }}>
@@ -504,7 +556,7 @@ export default function ReplicaChatView() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="从一个想法开始..."
+              placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
               className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
             />
             <div className="flex items-center justify-between px-3 pb-3">
@@ -606,8 +658,8 @@ export default function ReplicaChatView() {
                 <button
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
                   onClick={onSubmit}
-                  disabled={!input.trim() && pendingAttachments.length === 0}
-                  title={isStreaming ? '加入待发送队列' : '发送'}
+                  disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
+                  title={!canSend ? '等待会话连接' : isStreaming ? '加入待发送队列' : '发送'}
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                     <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
