@@ -78,6 +78,9 @@ export default function ReplicaChangesView() {
   const [loadError, setLoadError] = useState('');
   const loadRequestRef = useRef(0);
   const diffRequestRef = useRef(0);
+  const writeRequestRef = useRef(0);
+  const writeBusyRef = useRef(false);
+  const writeBusy = busy || committing;
 
   async function loadAll(keepSelection = true) {
     const requestId = ++loadRequestRef.current;
@@ -117,12 +120,20 @@ export default function ReplicaChangesView() {
   }
 
   useEffect(() => {
-    loadAll(false);
+    loadRequestRef.current += 1;
+    diffRequestRef.current += 1;
+    writeRequestRef.current += 1;
+    writeBusyRef.current = false;
+    setBusy(false);
+    setCommitting(false);
     setSelected(null);
     setDiff('');
     setStatusText('');
     setCommitMessage('');
     setOperationDialog(null);
+    setOperationValue('');
+    setOperationError('');
+    loadAll(false);
   }, [workspacePath]);
 
   useEffect(() => {
@@ -149,18 +160,30 @@ export default function ReplicaChangesView() {
   }, [selected, workspacePath]);
 
   async function perform(action) {
+    if (writeBusyRef.current) return { ok: false, ignored: true };
+    const cwd = workspacePath || '.';
+    const requestId = ++writeRequestRef.current;
+    const isCurrent = () => (
+      requestId === writeRequestRef.current && useStore.getState().workspacePath === workspacePath
+    );
+    writeBusyRef.current = true;
     setBusy(true);
     setStatusText('执行中...');
     try {
-      await action();
+      await action(cwd);
+      if (!isCurrent()) return { ok: false, stale: true };
       setStatusText('已完成');
       await loadAll(true);
       return { ok: true };
     } catch (error) {
+      if (!isCurrent()) return { ok: false, stale: true };
       setStatusText(`失败: ${error.message}`);
       return { ok: false, error: error.message || '操作失败' };
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        writeBusyRef.current = false;
+        setBusy(false);
+      }
     }
   }
 
@@ -183,13 +206,13 @@ export default function ReplicaChangesView() {
   };
 
   const closeOperationDialog = () => {
-    if (busy) return;
+    if (writeBusyRef.current) return;
     setOperationDialog(null);
     setOperationError('');
   };
 
   const submitOperationDialog = async () => {
-    if (!operationDialog || busy) return;
+    if (!operationDialog || writeBusyRef.current) return;
     const value = operationValue.trim();
     if ((operationDialog.type === 'switch' || operationDialog.type === 'create') && !value) {
       setOperationError(operationDialog.type === 'switch' ? '请选择目标分支' : '分支名称不能为空');
@@ -205,13 +228,17 @@ export default function ReplicaChangesView() {
     }
 
     let action;
-    if (operationDialog.type === 'switch') action = () => switchBranch(value);
-    else if (operationDialog.type === 'create') action = () => createBranch(value);
-    else if (operationDialog.type === 'discard-all') action = () => discardAll();
-    else action = () => discardFile(operationDialog.item);
+    if (operationDialog.type === 'switch') action = (cwd) => switchBranch(value, cwd);
+    else if (operationDialog.type === 'create') action = (cwd) => createBranch(value, cwd);
+    else if (operationDialog.type === 'discard-all') action = (cwd) => discardAll(cwd);
+    else {
+      const item = operationDialog.item;
+      action = (cwd) => discardFile(item, cwd);
+    }
 
     setOperationError('');
     const result = await perform(action);
+    if (result.stale || result.ignored) return;
     if (!result.ok) {
       setOperationError(result.error);
       return;
@@ -220,17 +247,28 @@ export default function ReplicaChangesView() {
   };
 
   const handleCommit = async () => {
-    if (!commitMessage.trim() || !hasStagedChanges) return;
+    if (!commitMessage.trim() || !hasStagedChanges || writeBusyRef.current) return;
+    const cwd = workspacePath || '.';
+    const message = commitMessage.trim();
+    const requestId = ++writeRequestRef.current;
+    const isCurrent = () => (
+      requestId === writeRequestRef.current && useStore.getState().workspacePath === workspacePath
+    );
+    writeBusyRef.current = true;
     setCommitting(true);
     try {
-      await commit(commitMessage.trim());
+      await commit(message, cwd);
+      if (!isCurrent()) return;
       setStatusText('提交成功');
       setCommitMessage('');
       await loadAll(true);
     } catch (err) {
-      setStatusText(`提交失败: ${err.message}`);
+      if (isCurrent()) setStatusText(`提交失败: ${err.message}`);
     } finally {
-      setCommitting(false);
+      if (isCurrent()) {
+        writeBusyRef.current = false;
+        setCommitting(false);
+      }
     }
   };
   const operationType = operationDialog?.type || '';
@@ -271,16 +309,16 @@ export default function ReplicaChangesView() {
             <div className="text-sm text-[var(--color-text-primary)]">当前分支: {branch || '-'}</div>
             <div className="mt-1 text-xs text-[var(--color-text-muted)]">{branches.length} 个分支</div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button className="btn-ghost" disabled={busy || !!loadError || !hasSwitchTarget} onClick={onSwitchBranch}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || !hasSwitchTarget} onClick={onSwitchBranch}>
                 切换分支
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={onCreateBranch}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={onCreateBranch}>
                 新建分支
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => pullBranch())}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pullBranch(cwd))}>
                 Pull
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError} onClick={() => perform(() => pushBranch())}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pushBranch(cwd))}>
                 Push
               </button>
             </div>
@@ -298,12 +336,12 @@ export default function ReplicaChangesView() {
                     }
                   }}
                   placeholder="输入提交信息..."
-                  disabled={committing || !!loadError}
+                  disabled={writeBusy || !!loadError}
                   className="flex-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-focus-ring)] placeholder:text-[var(--color-text-muted)] disabled:opacity-50"
                 />
                 <button
                   onClick={handleCommit}
-                  disabled={!commitMessage.trim() || !hasStagedChanges || committing || !!loadError}
+                  disabled={!commitMessage.trim() || !hasStagedChanges || busy || committing || !!loadError}
                   className="rounded-md bg-[#0078d4] px-4 py-2 text-sm font-medium text-white hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {committing ? '提交中...' : '提交'}
@@ -311,13 +349,13 @@ export default function ReplicaChangesView() {
               </div>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button className="btn-ghost" disabled={busy || !!loadError || !hasUnstagedChanges} onClick={() => perform(() => stageAll())}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || !hasUnstagedChanges} onClick={() => perform((cwd) => stageAll(cwd))}>
                 Stage All
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError || !hasStagedChanges} onClick={() => perform(() => unstageAll())}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || !hasStagedChanges} onClick={() => perform((cwd) => unstageAll(cwd))}>
                 Unstage All
               </button>
-              <button className="btn-ghost" disabled={busy || !!loadError || (!hasStagedChanges && !hasUnstagedChanges)} onClick={confirmDiscardAll}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError || (!hasStagedChanges && !hasUnstagedChanges)} onClick={confirmDiscardAll}>
                 Discard All
               </button>
             </div>
@@ -377,21 +415,21 @@ export default function ReplicaChangesView() {
                       <div className="mt-2 flex flex-wrap gap-2">
                         <button
                           className="btn-ghost"
-                          disabled={busy || !selectedHasUnstagedChanges}
-                          onClick={() => perform(() => stageFile(item.path))}
+                          disabled={writeBusy || !selectedHasUnstagedChanges}
+                          onClick={() => perform((cwd) => stageFile(item.path, cwd))}
                         >
                           Stage
                         </button>
                         <button
                           className="btn-ghost"
-                          disabled={busy || !selectedHasStagedChanges}
-                          onClick={() => perform(() => unstageFile(item.path))}
+                          disabled={writeBusy || !selectedHasStagedChanges}
+                          onClick={() => perform((cwd) => unstageFile(item.path, cwd))}
                         >
                           Unstage
                         </button>
                         <button
                           className="btn-ghost"
-                          disabled={busy || (!selectedHasStagedChanges && !selectedHasUnstagedChanges)}
+                          disabled={writeBusy || (!selectedHasStagedChanges && !selectedHasUnstagedChanges)}
                           onClick={() => {
                             setOperationDialog({ type: 'discard-file', item });
                             setOperationValue('');
@@ -444,7 +482,7 @@ export default function ReplicaChangesView() {
                     autoFocus
                     className="input-field w-full"
                     value={operationValue}
-                    disabled={busy}
+                    disabled={writeBusy}
                     onChange={(event) => {
                       setOperationValue(event.target.value);
                       setOperationError('');
@@ -467,7 +505,7 @@ export default function ReplicaChangesView() {
                     autoFocus
                     className="input-field w-full"
                     value={operationValue}
-                    disabled={busy}
+                    disabled={writeBusy}
                     placeholder="例如 feature/new-ui"
                     onChange={(event) => {
                       setOperationValue(event.target.value);
@@ -500,7 +538,7 @@ export default function ReplicaChangesView() {
             ) : null}
 
             <div className="mt-5 flex justify-end gap-2">
-              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={busy} onClick={closeOperationDialog}>
+              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={writeBusy} onClick={closeOperationDialog}>
                 取消
               </button>
               <button
@@ -511,13 +549,13 @@ export default function ReplicaChangesView() {
                 }
                 style={isDiscardOperation ? { background: 'var(--color-accent-red)' } : undefined}
                 disabled={
-                  busy ||
+                  writeBusy ||
                   (operationType === 'switch' && (!operationValue || operationValue === branch)) ||
                   (operationType === 'create' && !operationValue.trim())
                 }
                 onClick={submitOperationDialog}
               >
-                {busy ? '处理中...' : confirmLabel}
+                {writeBusy ? '处理中...' : confirmLabel}
               </button>
             </div>
           </div>

@@ -83,59 +83,59 @@ export async function getDiff(path, cwd) {
   return staged || unstaged;
 }
 
-export async function stageFile(path) {
-  return await runGit(['add', '--', path]);
+export async function stageFile(path, cwd = getWorkspaceCwd()) {
+  return await runGit(['add', '--', path], cwd);
 }
 
-export async function unstageFile(path) {
-  return await runGit(['reset', 'HEAD', '--', path]);
+export async function unstageFile(path, cwd = getWorkspaceCwd()) {
+  return await runGit(['reset', 'HEAD', '--', path], cwd);
 }
 
-export async function discardFile(item) {
+export async function discardFile(item, cwd = getWorkspaceCwd()) {
   const path = typeof item === 'string' ? item : item?.path;
   if (!path) throw new Error('缺少要丢弃的文件路径');
   const untracked = typeof item === 'object' && item?.indexStatus === '?' && item?.worktreeStatus === '?';
   if (untracked) {
-    return await runGit(['clean', '-fd', '--', path]);
+    return await runGit(['clean', '-fd', '--', path], cwd);
   }
   const paths = [path];
   if (typeof item === 'object' && item?.originalPath) paths.push(item.originalPath);
-  return await runGit(['restore', '--source=HEAD', '--staged', '--worktree', '--', ...paths]);
+  return await runGit(['restore', '--source=HEAD', '--staged', '--worktree', '--', ...paths], cwd);
 }
 
-export async function stageAll() {
-  return await runGit(['add', '-A']);
+export async function stageAll(cwd = getWorkspaceCwd()) {
+  return await runGit(['add', '-A'], cwd);
 }
 
-export async function unstageAll() {
-  return await runGit(['reset', 'HEAD', '--', '.']);
+export async function unstageAll(cwd = getWorkspaceCwd()) {
+  return await runGit(['reset', 'HEAD', '--', '.'], cwd);
 }
 
-export async function discardAll() {
+export async function discardAll(cwd = getWorkspaceCwd()) {
   try {
-    await runGit(['rev-parse', '--verify', 'HEAD']);
+    await runGit(['rev-parse', '--verify', 'HEAD'], cwd);
   } catch (_) {
     throw new Error('仓库尚无提交，无法安全丢弃全部修改');
   }
-  await runGit(['reset', 'HEAD', '--', '.']);
-  await runGit(['checkout', '--', '.']);
-  return await runGit(['clean', '-fd']);
+  await runGit(['reset', 'HEAD', '--', '.'], cwd);
+  await runGit(['checkout', '--', '.'], cwd);
+  return await runGit(['clean', '-fd'], cwd);
 }
 
-export async function switchBranch(name) {
-  return await runGit(['checkout', name]);
+export async function switchBranch(name, cwd = getWorkspaceCwd()) {
+  return await runGit(['checkout', name], cwd);
 }
 
-export async function createBranch(name) {
-  return await runGit(['checkout', '-b', name]);
+export async function createBranch(name, cwd = getWorkspaceCwd()) {
+  return await runGit(['checkout', '-b', name], cwd);
 }
 
-export async function pushBranch() {
-  return await runGit(['push']);
+export async function pushBranch(cwd = getWorkspaceCwd()) {
+  return await runGit(['push'], cwd);
 }
 
-export async function pullBranch() {
-  return await runGit(['pull']);
+export async function pullBranch(cwd = getWorkspaceCwd()) {
+  return await runGit(['pull'], cwd);
 }
 
 /**
@@ -143,8 +143,8 @@ export async function pullBranch() {
  * @param {string} message - 提交信息
  * @returns {Promise<string>}
  */
-export async function commit(message) {
-  return await runGit(['commit', '-m', message]);
+export async function commit(message, cwd = getWorkspaceCwd()) {
+  return await runGit(['commit', '-m', message], cwd);
 }
 
 /**
