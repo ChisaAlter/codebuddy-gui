@@ -38,8 +38,8 @@ function writeWindowState(state) {
   try { fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state)); } catch (_) { /* 写失败不阻塞 */ }
 }
 
-// 真退出标志：tray 点"退出"或 Cmd/Q 时为 true，window-all-closed 看到 true 才 quit
-// 普通 X 关窗口不设它，window-all-closed 改 hide 不 quit
+// 真退出标志：渲染进程确认退出后为 true，普通 X 关窗口仍只隐藏到托盘。
+// 这样编辑器可以在真正退出前处理未保存内容。
 let reallyQuitting = false;
 
 function redactSecrets(text) {
@@ -268,6 +268,27 @@ function showOrCreateMainWindow() {
   mainWindow.focus();
   return mainWindow;
 }
+
+async function requestApplicationQuit() {
+  const windowResult = showOrCreateMainWindow();
+  if (windowResult && typeof windowResult.then === 'function') await windowResult;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    reallyQuitting = true;
+    app.quit();
+    return;
+  }
+
+  const sendRequest = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:quitRequested');
+  };
+  if (mainWindow.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', sendRequest);
+  else sendRequest();
+}
+
+ipcMain.on('app:confirmQuit', () => {
+  reallyQuitting = true;
+  app.quit();
+});
 
 const GIT_ALLOWED_COMMANDS = new Set([
   'add', 'branch', 'checkout', 'clean', 'commit', 'diff', 'fetch', 'init', 'log', 'pull', 'push', 'remote', 'reset', 'restore', 'rev-parse', 'stash', 'status',
@@ -717,7 +738,7 @@ app.whenReady().then(async () => {
     const menu = Menu.buildFromTemplate([
       { label: '显示窗口', click: showOrCreateMainWindow },
       { type: 'separator' },
-      { label: '退出', click: () => { reallyQuitting = true; app.quit(); } },
+      { label: '退出', click: () => requestApplicationQuit().catch((error) => logStartup(`Quit request failed: ${error.message}`)) },
     ]);
     tray.setContextMenu(menu);
     logStartup('Tray icon created');
@@ -747,10 +768,9 @@ app.on('before-quit', () => {
   if (tray) { try { tray.destroy(); } catch (_) {} tray = null; }
 });
 
-// 关窗口不退出 = 最小化到托盘；只有 reallyQuitting（托盘退出 / Cmd+Q）才真 quit
-// 注意：tray 退出菜单调的是 app.quit()，会触发 before-quit → will-quit → quit 全链，
-// window-all-closed 在 quit 链里只是被动确认——reallyQuitting 已被 before-quit 设 true，
-// 非 darwin 走 app.quit() 是幂等（quit 已发起），darwin 不再 quit 留给 activate 兜底
+// 关窗口不退出；托盘退出先由渲染进程处理未保存内容，确认后才进入 Electron 退出链。
+// window-all-closed 在退出链中只是被动确认，非 darwin 的 app.quit() 调用保持幂等。
+// darwin 不在这里重复退出，交给 activate 生命周期处理。
 app.on('window-all-closed', () => {
   if (!reallyQuitting && tray) return;
   if (process.platform !== 'darwin') app.quit();

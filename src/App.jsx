@@ -335,6 +335,14 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', flushProductState);
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onQuitRequested?.(async () => {
+      const confirmed = await useStore.getState().confirmDirtyFileAction('退出应用');
+      if (confirmed) window.electronAPI?.confirmQuit?.();
+    });
+    return unsubscribe;
+  }, []);
+
   // 主题切换：根据 settings.theme 设置 data-theme 属性
   useEffect(() => {
     const theme = settingsTheme || 'dark';

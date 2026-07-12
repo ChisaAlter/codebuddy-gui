@@ -339,6 +339,10 @@ export const useStore = create((set, get) => ({
     resolve?.(Boolean(confirmed));
   },
 
+  confirmDirtyFileAction(actionLabel) {
+    return requestDirtyFileConfirmation(set, get, actionLabel);
+  },
+
   patchThreadRuntime(threadId, patch) {
     if (!threadId) return;
     set((state) => {
