@@ -13,6 +13,8 @@ export default function ReplicaPluginsView() {
   const [installing, setInstalling] = React.useState(false);
   const [installMsg, setInstallMsg] = React.useState(null);
   const [actionError, setActionError] = React.useState(null);
+  const [actionDialog, setActionDialog] = React.useState(null);
+  const [actionDialogError, setActionDialogError] = React.useState('');
   // 市场增删表单态
   const [newMktId, setNewMktId] = React.useState('');
   const [newMktUrl, setNewMktUrl] = React.useState('');
@@ -62,6 +64,36 @@ export default function ReplicaPluginsView() {
 
   const isEnabled = (p) => p.status === 'enabled' || p.enabled;
 
+  const pluginOperationActive = Boolean(pluginBusy);
+
+  const openActionDialog = (action) => {
+    if (pluginOperationActive || mktBusy) return;
+    setActionDialog(action);
+    setActionDialogError('');
+  };
+
+  const closeActionDialog = () => {
+    if (pluginOperationActive) return;
+    setActionDialog(null);
+    setActionDialogError('');
+  };
+
+  const confirmActionDialog = async () => {
+    if (!actionDialog || pluginOperationActive) return;
+    setActionDialogError('');
+    setActionError(null);
+    setMktMsg(null);
+    const ok = actionDialog.type === 'uninstall'
+      ? await uninstallPluginByName(actionDialog.id)
+      : await removeMarketplaceById(actionDialog.id);
+    if (!ok) {
+      const message = useStore.getState().pluginError
+        || (actionDialog.type === 'uninstall' ? '卸载插件失败' : '删除市场失败');
+      setActionDialogError(message);
+      return;
+    }
+    setActionDialog(null);
+  };
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-5xl px-8 py-8">
@@ -71,6 +103,7 @@ export default function ReplicaPluginsView() {
           <div className="flex items-center gap-2">
             <button
               className="btn-primary text-xs"
+              disabled={pluginOperationActive || mktBusy}
               onClick={() => {
                 setInstallId('');
                 setInstallMarketplace('');
@@ -81,7 +114,7 @@ export default function ReplicaPluginsView() {
             </button>
             <button
               onClick={handleRefresh}
-              disabled={refreshing}
+              disabled={refreshing || pluginOperationActive || mktBusy}
               className="flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:opacity-50"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className={refreshing ? 'animate-spin' : ''}>
@@ -204,8 +237,8 @@ export default function ReplicaPluginsView() {
                       role="switch"
                       aria-checked={enabled}
                       aria-label={`${enabled ? '禁用' : '启用'}插件 ${p.name}`}
-                      className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginBusy === `toggle:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
-                      disabled={pluginBusy === `toggle:${p.name}`}
+                      className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
+                      disabled={pluginOperationActive}
                       onClick={async () => {
                         setActionError(null);
                         const ok = await togglePluginByName(p.name, !enabled);
@@ -236,13 +269,14 @@ export default function ReplicaPluginsView() {
                   {/* Uninstall */}
                   <div className="mt-auto pt-2 border-t border-[var(--color-border-muted)]">
                     <button
-                      className={`text-xs text-[var(--color-error)] hover:underline ${pluginBusy === `uninstall:${p.name}` ? 'opacity-50 pointer-events-none' : ''}`}
-                      onClick={async () => {
-                        if (!window.confirm(`确定要卸载插件 "${p.name}" 吗？`)) return;
-                        setActionError(null);
-                        const ok = await uninstallPluginByName(p.name);
-                        if (!ok) setActionError(useStore.getState().pluginError || '卸载失败');
-                      }}
+                      className={`text-xs text-[var(--color-error)] hover:underline ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
+                      disabled={pluginOperationActive}
+                      onClick={() => openActionDialog({
+                        type: 'uninstall',
+                        id: p.name,
+                        label: p.name || '未命名插件',
+                        detail: p.description || '',
+                      })}
                     >
                       {pluginBusy === `uninstall:${p.name}` ? '卸载中...' : '卸载'}
                     </button>
@@ -255,13 +289,14 @@ export default function ReplicaPluginsView() {
 
         {/* Install Modal */}
         {showInstallModal && (
-          <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowInstallModal(false); }}>
+          <div className="overlay" onClick={(e) => { if (!installing && e.target === e.currentTarget) setShowInstallModal(false); }}>
             <div className="modal-content w-[420px]">
               <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border-default)]">
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">安装插件</h3>
                 <button
                   className="btn-icon"
                   onClick={() => setShowInstallModal(false)}
+                  disabled={installing}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <path d="M4 4l8 8M12 4l-8 8" />
@@ -295,10 +330,10 @@ export default function ReplicaPluginsView() {
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--color-border-default)]">
-                <button className="btn-ghost text-xs" onClick={() => setShowInstallModal(false)}>取消</button>
+                <button className="btn-ghost text-xs" disabled={installing} onClick={() => setShowInstallModal(false)}>取消</button>
                 <button
                   className="btn-primary text-xs"
-                  disabled={!installId.trim() || installing}
+                  disabled={!installId.trim() || installing || pluginOperationActive}
                   onClick={async () => {
                     if (!installId.trim()) return;
                     setInstalling(true);
@@ -321,6 +356,45 @@ export default function ReplicaPluginsView() {
           </div>
         )}
 
+
+        {actionDialog ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label={actionDialog.type === 'uninstall' ? '卸载插件确认' : '删除插件市场确认'}
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeActionDialog();
+            }}
+          >
+            <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">
+                {actionDialog.type === 'uninstall' ? '卸载插件？' : '删除插件市场？'}
+              </div>
+              <div className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+                <div className="font-medium text-[var(--color-text-primary)]">{actionDialog.label}</div>
+                {actionDialog.detail ? <div className="mt-1 break-words text-[var(--color-text-muted)]">{actionDialog.detail}</div> : null}
+                <p className="mt-2">
+                  {actionDialog.type === 'uninstall'
+                    ? '插件及其提供的技能将从本机移除，需要时可以重新安装。'
+                    : '该市场来源将从配置中删除，已安装插件不会在此操作中卸载。'}
+                </p>
+              </div>
+              {actionDialogError ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{actionDialogError}</div> : null}
+              <div className="mt-5 flex justify-end gap-2">
+                <button className="btn-ghost px-3 py-1.5 text-xs" disabled={pluginOperationActive} onClick={closeActionDialog}>取消</button>
+                <button
+                  className="rounded-md px-3 py-1.5 text-xs font-medium text-white"
+                  style={{ background: 'var(--color-accent-red)' }}
+                  disabled={pluginOperationActive}
+                  onClick={confirmActionDialog}
+                >
+                  {pluginOperationActive ? '处理中...' : actionDialog.type === 'uninstall' ? '卸载插件' : '删除市场'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {/* Plugin Marketplaces 增删（对照源 POST/DELETE /api/v1/plugins/marketplaces/{id}）*/}
         <div className="mt-8 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5">
           <div className="mb-3 flex items-center justify-between">
@@ -339,7 +413,7 @@ export default function ReplicaPluginsView() {
                   setMktBusy(false);
                 }
               }}
-              disabled={mktBusy}
+              disabled={mktBusy || pluginOperationActive}
               className="btn-ghost text-xs"
               title="刷新市场列表"
             >
@@ -369,7 +443,7 @@ export default function ReplicaPluginsView() {
             />
             <button
               className="btn-primary text-xs"
-              disabled={mktBusy || !newMktId.trim() || !newMktUrl.trim()}
+              disabled={mktBusy || pluginOperationActive || !newMktId.trim() || !newMktUrl.trim()}
               onClick={async () => {
                 setMktBusy(true);
                 setMktMsg(null);
@@ -409,14 +483,14 @@ export default function ReplicaPluginsView() {
                       {(mkt.source || mkt.url) && <div className="truncate text-[11px] text-[var(--color-text-muted)]" title={mkt.source || mkt.url}>{mkt.source || mkt.url}</div>}
                     </div>
                     <button
-                      disabled={busy}
+                      disabled={mktBusy || pluginOperationActive}
                       className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
-                      onClick={async () => {
-                        if (!window.confirm(`确定删除市场 "${id}" 吗？`)) return;
-                        setMktMsg(null);
-                        const ok = await removeMarketplaceById(id);
-                        if (!ok) setMktMsg(useStore.getState().pluginError || '删除市场失败');
-                      }}
+                      onClick={() => openActionDialog({
+                        type: 'remove-marketplace',
+                        id,
+                        label: mkt.name || id,
+                        detail: mkt.source || mkt.url || mkt.description || '',
+                      })}
                     >
                       {busy ? '删除中...' : '删除'}
                     </button>
