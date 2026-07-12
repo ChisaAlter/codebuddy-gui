@@ -46,12 +46,14 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
   }
 
   function start(entry) {
+    const runId = (entry.runId || 0) + 1;
+    entry.runId = runId;
     entry.status = 'starting';
     entry.error = null;
     emit(entry);
     logger(`Starting CodeBuddy runtime project=${entry.projectId} cwd=${entry.cwd}`);
 
-    entry.startPromise = new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       const proc = spawn('codebuddy', ['--serve'], {
         cwd: entry.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -62,8 +64,15 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       let stdoutBuffer = '';
       let settled = false;
 
-      const finish = async (error) => {
+      entry.cancelStart = () => {
         if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        reject(new Error('CodeBuddy start cancelled'));
+      };
+
+      const finish = async (error) => {
+        if (settled || entry.runId !== runId) return;
         if (error) {
           settled = true;
           clearTimeout(timeoutId);
@@ -93,8 +102,8 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       };
 
       const timeoutId = setTimeout(() => {
-        stopProcess(entry);
         finish(new Error('CodeBuddy start timeout: port or password not announced'));
+        stopProcess(entry);
       }, 30000);
 
       proc.stdout.on('data', (data) => {
@@ -120,6 +129,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       proc.on('error', (error) => finish(error));
       proc.on('exit', (code, signal) => {
         clearTimeout(timeoutId);
+        if (entry.runId !== runId) return;
         entry.proc = null;
         entry.port = null;
         entry.password = null;
@@ -127,17 +137,20 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
           finish(new Error(`CodeBuddy exited before ready (code=${code}, signal=${signal})`));
           return;
         }
-        if (entry.status !== 'stopping') {
+        if (entry.status !== 'stopping' && entry.status !== 'error') {
           entry.status = code === 0 ? 'stopped' : 'error';
           entry.error = code === 0 ? null : `CodeBuddy exited (code=${code}, signal=${signal})`;
           emit(entry);
         }
       });
-    }).finally(() => {
-      entry.startPromise = null;
     });
+    const trackedPromise = promise.finally(() => {
+      if (entry.startPromise === trackedPromise) entry.startPromise = null;
+      if (entry.runId === runId) entry.cancelStart = null;
+    });
+    entry.startPromise = trackedPromise;
 
-    return entry.startPromise;
+    return trackedPromise;
   }
 
   async function ensure(projectId, cwd) {
@@ -159,6 +172,8 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         password: null,
         proc: null,
         startPromise: null,
+        cancelStart: null,
+        runId: 0,
         error: null,
         startedAt: null,
       };
@@ -172,11 +187,14 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     if (!entry) return null;
     entry.status = 'stopping';
     emit(entry);
+    entry.cancelStart?.();
+    entry.runId = (entry.runId || 0) + 1;
     stopProcess(entry);
     entry.proc = null;
     entry.port = null;
     entry.password = null;
     entry.startPromise = null;
+    entry.cancelStart = null;
     entry.status = 'stopped';
     entry.error = null;
     return emit(entry);

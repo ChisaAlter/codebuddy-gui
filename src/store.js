@@ -1199,6 +1199,7 @@ export const useStore = create((set, get) => ({
         activeProjectId: nextProjectId,
         activeThreadId: wasActive ? nextThreadId : state.activeThreadId,
         workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
+        ...(wasActive ? resetProjectRuntimeViews() : {}),
         ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
       };
     });
@@ -1208,11 +1209,12 @@ export const useStore = create((set, get) => ({
       const runtime = await get().ensureProjectRuntime(get().activeProjectId);
       if (runtime && nextProject) {
         await get().openDirectory(nextProject.workspacePath, { skipDirtyCheck: true });
-        await get().initializeActiveThread(undefined);
+        const initialized = await get().initializeActiveThread(undefined);
+        if (initialized) await get().refreshProjectViews();
       }
     }
     if (wasActive && !get().activeProjectId) {
-      set({ sessionId: null, sessionTitle: null, connectionState: 'disconnected' });
+      set({ sessionId: null, sessionTitle: null, connectionState: 'disconnected', ...resetProjectRuntimeViews() });
       get().activateThreadRuntime(null);
     }
     return true;
@@ -1265,8 +1267,12 @@ export const useStore = create((set, get) => ({
       get().applyProjectRuntimeStatus(runtime);
       return runtime;
     } catch (error) {
+      const stopped = get().projectsById[projectId]?.runtimeStatus === 'stopped';
+      if (/start cancelled/i.test(error.message || '') || stopped) return null;
       get().applyProjectRuntimeStatus({ projectId, status: 'error', error: error.message });
-      set({ connectionState: 'error', error: `项目运行时启动失败: ${error.message}` });
+      if (projectId === get().activeProjectId) {
+        set({ connectionState: 'error', error: `项目运行时启动失败: ${error.message}` });
+      }
       return null;
     }
   },
