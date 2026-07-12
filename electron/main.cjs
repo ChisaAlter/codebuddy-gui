@@ -615,6 +615,14 @@ ipcMain.handle('attachment:choose', async () => {
 });
 ipcMain.handle('productState:load', () => productStateStore.load());
 ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));
+ipcMain.on('productState:saveSync', (event, state) => {
+  try {
+    event.returnValue = { ok: true, state: productStateStore.save(state) };
+  } catch (error) {
+    logStartup(`Synchronous product state save failed: ${error.message}`);
+    event.returnValue = { ok: false, error: error.message };
+  }
+});
 ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' }); });
 
 // 未捕获异常处理（P0-4）：写 crash log 到 userData，dialog 提示用户

@@ -298,6 +298,14 @@ export default function App() {
     bootstrap().catch((error) => console.error(error));
   }, [bootstrap]);
 
+  useEffect(() => {
+    const flushProductState = () => {
+      useStore.getState().flushProductStateSync?.();
+    };
+    window.addEventListener('beforeunload', flushProductState);
+    return () => window.removeEventListener('beforeunload', flushProductState);
+  }, []);
+
   // 主题切换：根据 settings.theme 设置 data-theme 属性
   useEffect(() => {
     const theme = settingsTheme || 'dark';

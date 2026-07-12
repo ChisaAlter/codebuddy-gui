@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),
   loadProductState: () => ipcRenderer.invoke('productState:load'),
   saveProductState: (state) => ipcRenderer.invoke('productState:save', state),
+  saveProductStateSync: (state) => ipcRenderer.sendSync('productState:saveSync', state),
   ensureProjectRuntime: (request) => ipcRenderer.invoke('runtime:ensure', request),
   listProjectRuntimes: () => ipcRenderer.invoke('runtime:list'),
   stopProjectRuntime: (projectId) => ipcRenderer.invoke('runtime:stop', projectId),

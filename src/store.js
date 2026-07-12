@@ -396,6 +396,72 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  flushProductStateSync() {
+    const saveSync = window.electronAPI?.saveProductStateSync;
+    if (!saveSync) return false;
+
+    const pendingThreadIds = Array.from(threadTimelinePersistTimers.keys());
+    for (const timer of threadTimelinePersistTimers.values()) clearTimeout(timer);
+    threadTimelinePersistTimers.clear();
+
+    const pendingTerminalStates = Array.from(terminalStatePersistTimers.entries());
+    for (const [, pending] of pendingTerminalStates) clearTimeout(pending?.timer || pending);
+    terminalStatePersistTimers.clear();
+
+    if (pendingThreadIds.length || pendingTerminalStates.length) {
+      set((state) => {
+        const threadsById = { ...state.threadsById };
+        const projectsById = { ...state.projectsById };
+        const now = new Date().toISOString();
+
+        for (const threadId of pendingThreadIds) {
+          const thread = threadsById[threadId];
+          if (!thread) continue;
+          const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
+          threadsById[threadId] = {
+            ...thread,
+            timeline: runtime.timeline.slice(-300),
+            updatedAt: now,
+          };
+        }
+
+        for (const [projectId, pending] of pendingTerminalStates) {
+          const project = projectsById[projectId];
+          const snapshot = pending?.snapshot;
+          if (!project || !snapshot) continue;
+          projectsById[projectId] = {
+            ...project,
+            preferences: {
+              ...(project.preferences || {}),
+              terminalState: {
+                activePaneId: snapshot.activePaneId,
+                panes: snapshot.panes.map((pane) => ({
+                  ...pane,
+                  output: String(pane.output || '').slice(-200000),
+                })),
+              },
+            },
+            updatedAt: now,
+          };
+        }
+
+        return { threadsById, projectsById };
+      });
+    }
+
+    try {
+      const result = saveSync(productStateSnapshot(get()));
+      if (!result?.ok) {
+        set({ error: `退出前保存项目状态失败: ${result?.error || '未知错误'}` });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      set({ error: `退出前保存项目状态失败: ${error.message}` });
+      return false;
+    }
+  },
+
   async hydrateProductState() {
     let loaded = emptyProductState();
     try {
@@ -1508,7 +1574,7 @@ export const useStore = create((set, get) => ({
     const projectId = get().activeProjectId;
     if (!projectId) return;
     const previous = terminalStatePersistTimers.get(projectId);
-    if (previous) clearTimeout(previous);
+    if (previous) clearTimeout(previous.timer || previous);
     const snapshot = {
       panes: get().terminalPanes.map((pane) => ({ ...pane, output: String(pane.output || '').slice(-200000) })),
       activePaneId: get().activePaneId,
@@ -1517,7 +1583,7 @@ export const useStore = create((set, get) => ({
       terminalStatePersistTimers.delete(projectId);
       get().persistProjectTerminalState(projectId, snapshot);
     }, 500);
-    terminalStatePersistTimers.set(projectId, timer);
+    terminalStatePersistTimers.set(projectId, { timer, snapshot });
   },
 
   async persistActiveProjectTerminalState() {
@@ -1525,7 +1591,7 @@ export const useStore = create((set, get) => ({
     if (!projectId) return;
     const pending = terminalStatePersistTimers.get(projectId);
     if (pending) {
-      clearTimeout(pending);
+      clearTimeout(pending.timer || pending);
       terminalStatePersistTimers.delete(projectId);
     }
     await get().persistProjectTerminalState(projectId, {
