@@ -122,6 +122,9 @@ export const useStore = create((set, get) => ({
   watcherId: null,
   selectedFile: null,
   filePreview: '',
+  fileSavedContent: '',
+  fileDirty: false,
+  fileSaving: false,
   filePreviewLoading: false,
 
   setRoute(route) {
@@ -147,7 +150,10 @@ export const useStore = create((set, get) => ({
   },
 
   setFilePreview(value) {
-    set({ filePreview: value });
+    set((state) => ({
+      filePreview: value,
+      fileDirty: Boolean(state.selectedFile) && value !== state.fileSavedContent,
+    }));
   },
 
   applySessionConfigUpdate(configOptions = []) {
@@ -352,7 +358,16 @@ export const useStore = create((set, get) => ({
   },
 
   async openDirectory(path) {
-    set({ fileLoading: true, fileCwd: path, selectedFile: null, filePreview: '', filePreviewLoading: false });
+    set({
+      fileLoading: true,
+      fileCwd: path,
+      selectedFile: null,
+      filePreview: '',
+      fileSavedContent: '',
+      fileDirty: false,
+      fileSaving: false,
+      filePreviewLoading: false,
+    });
     try {
       const entries = await fsList(path, 1);
       set({ fileEntries: entries, fileLoading: false });
@@ -362,17 +377,31 @@ export const useStore = create((set, get) => ({
   },
 
   async openFile(path) {
-    set({ selectedFile: path, filePreviewLoading: true, filePreview: '' });
+    set({
+      selectedFile: path,
+      filePreviewLoading: true,
+      filePreview: '',
+      fileSavedContent: '',
+      fileDirty: false,
+      fileSaving: false,
+    });
     try {
       const content = await downloadFile(path);
-      set({ filePreview: content, filePreviewLoading: false });
+      set({ filePreview: content, fileSavedContent: content, fileDirty: false, filePreviewLoading: false });
     } catch (error) {
       set({ filePreview: `读取失败: ${error.message}`, filePreviewLoading: false, error: error.message });
     }
   },
 
   setSelectedFile(file) {
-    set({ selectedFile: file, filePreviewLoading: !!file, filePreview: '' });
+    set({
+      selectedFile: file,
+      filePreviewLoading: !!file,
+      filePreview: '',
+      fileSavedContent: '',
+      fileDirty: false,
+      fileSaving: false,
+    });
   },
 
   async runFileSearch() {
@@ -964,9 +993,29 @@ export const useStore = create((set, get) => ({
     try {
       await fsWrite(path, content);
       await get().refreshFileEntries();
+      return true;
     } catch (error) {
       set({ error: error.message });
+      return false;
     }
+  },
+
+  async saveSelectedFile() {
+    const path = get().selectedFile;
+    if (!path || !get().fileDirty || get().fileSaving) return false;
+    const content = get().filePreview;
+    set({ fileSaving: true });
+    const saved = await get().fsWrite(path, content);
+    if (!saved) {
+      set({ fileSaving: false });
+      return false;
+    }
+    set((state) => ({
+      fileSavedContent: content,
+      fileDirty: state.selectedFile === path && state.filePreview !== content,
+      fileSaving: false,
+    }));
+    return true;
   },
 
   async refreshFileEntries() {

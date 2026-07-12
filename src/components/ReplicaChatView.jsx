@@ -274,7 +274,7 @@ export default function ReplicaChatView() {
   const usage = useStore((s) => s.usage);
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
-  const closeAssistantStream = useStore((s) => s.closeAssistantStream);
+  const cancelSession = useStore((s) => s.cancelSession);
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
   const models = useStore((s) => s.models);
   const modes = useStore((s) => s.modes);
@@ -523,7 +523,7 @@ export default function ReplicaChatView() {
                 {isStreaming ? (
                   <button
                     className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all" style={{ background: 'var(--color-accent-red)' }}
-                    onClick={() => closeAssistantStream()}
+                    onClick={() => cancelSession()}
                     title="停止生成"
                   >
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

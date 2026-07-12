@@ -184,19 +184,35 @@ function detectLanguage(path = '') {
   return map[ext] || 'plaintext';
 }
 
-function EditorPane() {
+export function EditorPane() {
   const selectedFile = useStore((s) => s.selectedFile);
   const filePreview = useStore((s) => s.filePreview);
   const filePreviewLoading = useStore((s) => s.filePreviewLoading);
+  const fileDirty = useStore((s) => s.fileDirty);
+  const fileSaving = useStore((s) => s.fileSaving);
   const setFilePreview = useStore((s) => s.setFilePreview);
+  const saveSelectedFile = useStore((s) => s.saveSelectedFile);
 
   const language = useMemo(() => detectLanguage(selectedFile || ''), [selectedFile]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-primary)]">
       <div className="flex h-12 items-center justify-between border-b border-[var(--color-border-default)] px-4">
-        <div className="truncate text-sm text-[var(--color-text-primary)]">{selectedFile || '未选择文件'}</div>
-        <div className="text-xs text-[var(--color-text-muted)]">{language}</div>
+        <div className="min-w-0">
+          <div className="truncate text-sm text-[var(--color-text-primary)]">
+            {selectedFile || '未选择文件'}{fileDirty ? ' •' : ''}
+          </div>
+          <div className="text-xs text-[var(--color-text-muted)]">{language}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => saveSelectedFile()}
+          disabled={!selectedFile || !fileDirty || fileSaving}
+          className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-40"
+          title="保存文件 (Ctrl+S)"
+        >
+          {fileSaving ? '保存中...' : '保存'}
+        </button>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedFile ? (
@@ -208,6 +224,9 @@ function EditorPane() {
               language={language}
               value={filePreview}
               onChange={(value) => setFilePreview(value || '')}
+              onMount={(editor, monaco) => {
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveSelectedFile());
+              }}
               options={{
                 minimap: { enabled: false },
                 fontSize: 13,
