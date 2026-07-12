@@ -1,5 +1,19 @@
 import { getApiBase, fetchJson, requestCodeBuddy } from './acp';
 
+async function requestOptionalJson(path, init = {}) {
+  const response = await requestCodeBuddy(path, init);
+  const text = response.status === 204 ? '' : await response.text().catch(() => '');
+  let payload = null;
+  if (text) {
+    try { payload = JSON.parse(text); } catch (_) { payload = text; }
+  }
+  if (!response.ok) {
+    const detail = payload?.error?.message || payload?.error || payload?.message;
+    throw new Error(detail || `${response.status} ${response.statusText}`);
+  }
+  return payload?.data ?? payload ?? null;
+}
+
 export async function fetchSessionStats(sessionId) {
   if (!sessionId) return null;
   const payload = await fetchJson(`/api/v1/stats/session?sessionId=${encodeURIComponent(sessionId)}`);
@@ -45,16 +59,9 @@ export async function fetchWorkerLogs(workerPid, type = 'stdout', tail = 200) {
 /** 删除会话（对照源 DELETE /api/v1/sessions/{id}） */
 export async function deleteSession(sessionId) {
   if (!sessionId) return;
-  const response = await fetchJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+  return requestOptionalJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
-  }).catch((err) => {
-    if (String(err?.message || '').includes('40') || String(err?.message || '').match(/4\d\d/)) {
-      // 404/409 等业务异常向上抛出可读消息
-      throw new Error(`删除会话失败：${err.message}`);
-    }
-    throw err;
   });
-  return response?.data || response || null;
 }
 
 /** 重命名会话（对照源 POST /api/v1/sessions/{id}/rename {name}） */
@@ -75,10 +82,9 @@ export async function renameSession(sessionId, name) {
 /** 删除定时任务 */
 export async function deleteScheduledTask(taskId, sessionId) {
   const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
-  const payload = await fetchJson(`/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}${query}`, {
+  return requestOptionalJson(`/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}${query}`, {
     method: 'DELETE',
   });
-  return payload?.data || payload || null;
 }
 
 // ===== Channels 管理 =====
@@ -101,10 +107,9 @@ export async function toggleChannel(channelId, enabled) {
 
 /** 删除 channel */
 export async function deleteChannel(channelId) {
-  const payload = await fetchJson(`/api/v1/channels/${encodeURIComponent(channelId)}`, {
+  return requestOptionalJson(`/api/v1/channels/${encodeURIComponent(channelId)}`, {
     method: 'DELETE',
   });
-  return payload.data || payload;
 }
 
 /**
@@ -208,36 +213,11 @@ export async function createWecomChannel({ botId, secret } = {}) {
   return payload?.data || payload || null;
 }
 
-/** 启动 worker */
-export async function startWorker(config) {
-  const payload = await fetchJson('/api/v1/workers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-  return payload.data || payload;
-}
-
-/** 停止 worker */
+/** 终止 worker（对照源 DELETE /api/v1/workers/{pid}） */
 export async function stopWorker(pid) {
-  const payload = await fetchJson(`/api/v1/workers/${encodeURIComponent(pid)}/stop`, {
-    method: 'POST',
+  return requestOptionalJson(`/api/v1/workers/${encodeURIComponent(pid)}`, {
+    method: 'DELETE',
   });
-  return payload.data || payload;
-}
-
-/** 重启 worker */
-export async function restartWorker(pid) {
-  const payload = await fetchJson(`/api/v1/workers/${encodeURIComponent(pid)}/restart`, {
-    method: 'POST',
-  });
-  return payload.data || payload;
-}
-
-/** 获取单个 worker 详情 */
-export async function fetchWorkerDetail(pid) {
-  const payload = await fetchJson(`/api/v1/workers/${encodeURIComponent(pid)}`);
-  return payload.data || payload;
 }
 
 // ===== Plugin 管理 =====
@@ -426,19 +406,26 @@ export async function fetchDaemonStatus() {
 
 /** 启动 daemon */
 export async function startDaemon() {
-  const payload = await fetchJson('/api/v1/daemon/start', { method: 'POST' });
+  const payload = await fetchJson('/api/v1/daemon/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
   return payload.data || payload;
 }
 
 /** 停止 daemon */
 export async function stopDaemon() {
-  const payload = await fetchJson('/api/v1/daemon/stop', { method: 'POST' });
-  return payload.data || payload;
+  return requestOptionalJson('/api/v1/daemon/stop', { method: 'POST' });
 }
 
 /** 重启 daemon */
 export async function restartDaemon() {
-  const payload = await fetchJson('/api/v1/daemon/restart', { method: 'POST' });
+  const payload = await fetchJson('/api/v1/daemon/restart', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
   return payload.data || payload;
 }
 

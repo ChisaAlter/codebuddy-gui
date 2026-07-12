@@ -1,5 +1,6 @@
 import React from 'react';
 import { useStore } from '../store';
+import { fetchDaemonStatus, restartDaemon, startDaemon, stopDaemon, stopWorker } from '../lib/ops';
 
 const STATUS_CONFIG = {
   running: { klass: 'tag-green', label: '运行中' },
@@ -15,11 +16,27 @@ export default function ReplicaWorkersView() {
   const [expandedPid, setExpandedPid] = React.useState(null);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [loading, setLoading] = React.useState(true);
+  const [daemon, setDaemon] = React.useState(null);
+  const [daemonBusy, setDaemonBusy] = React.useState(false);
+  const [workerBusyPid, setWorkerBusyPid] = React.useState(null);
+  const [actionError, setActionError] = React.useState('');
 
   const handleRefresh = React.useCallback(async () => {
     setRefreshing(true);
+    setActionError('');
     try {
-      await refreshWorkers();
+      const [workersResult, daemonResult] = await Promise.allSettled([
+        refreshWorkers(),
+        fetchDaemonStatus(),
+      ]);
+      if (workersResult.status === 'rejected') {
+        setActionError(workersResult.reason?.message || '加载 Worker 失败');
+      }
+      if (daemonResult.status === 'fulfilled') {
+        setDaemon(daemonResult.value);
+      } else {
+        setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
+      }
     } finally {
       setRefreshing(false);
       setLoading(false);
@@ -29,6 +46,34 @@ export default function ReplicaWorkersView() {
   React.useEffect(() => {
     handleRefresh();
   }, [handleRefresh]);
+
+  const runDaemonAction = async (action, fallbackMessage) => {
+    setDaemonBusy(true);
+    setActionError('');
+    try {
+      await action();
+      await handleRefresh();
+    } catch (error) {
+      setActionError(error?.message || fallbackMessage);
+    } finally {
+      setDaemonBusy(false);
+    }
+  };
+
+  const handleStopWorker = async (worker) => {
+    if (!worker?.pid) return;
+    if (!window.confirm(`确定终止 Worker PID ${worker.pid} 吗？正在执行的任务会中断。`)) return;
+    setWorkerBusyPid(worker.pid);
+    setActionError('');
+    try {
+      await stopWorker(worker.pid);
+      await refreshWorkers();
+    } catch (error) {
+      setActionError(error?.message || '终止 Worker 失败');
+    } finally {
+      setWorkerBusyPid(null);
+    }
+  };
 
   const workersList = Array.isArray(workers) ? workers : [];
 
@@ -75,10 +120,31 @@ export default function ReplicaWorkersView() {
           </button>
         </div>
 
+        <div className="mb-5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-[var(--color-text-primary)]">Daemon</div>
+              <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                状态：{daemon?.status || '未知'}{daemon?.pid ? ` · PID ${daemon.pid}` : ''}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {daemon?.status === 'running' ? (
+                <button className="btn-ghost text-xs" disabled={daemonBusy} onClick={() => runDaemonAction(stopDaemon, '停止 Daemon 失败')}>停止</button>
+              ) : (
+                <button className="btn-primary text-xs" disabled={daemonBusy} onClick={() => runDaemonAction(startDaemon, '启动 Daemon 失败')}>启动</button>
+              )}
+              <button className="btn-ghost text-xs" disabled={daemonBusy} onClick={() => runDaemonAction(restartDaemon, '重启 Daemon 失败')}>
+                {daemonBusy ? '处理中...' : '重启'}
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* Error banner */}
-        {workersError && (
+        {(workersError || actionError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
-            {workersError}
+            {actionError || workersError}
             <button className="ml-3 underline text-xs" onClick={handleRefresh}>重试</button>
           </div>
         )}
@@ -171,20 +237,12 @@ export default function ReplicaWorkersView() {
                         日志
                       </button>
                       <button
-                        className="btn-ghost text-xs text-[var(--color-text-muted)] opacity-50"
-                        onClick={(e) => e.stopPropagation()}
-                        disabled
-                        title="当前 CodeBuddy 运行时未提供单 Worker 重启接口"
+                        className="btn-ghost text-xs text-[var(--color-error)]"
+                        onClick={(e) => { e.stopPropagation(); handleStopWorker(w); }}
+                        disabled={workerBusyPid === w.pid}
+                        title="终止这个 Worker"
                       >
-                        重启
-                      </button>
-                      <button
-                        className="btn-ghost text-xs text-[var(--color-text-muted)] opacity-50"
-                        onClick={(e) => e.stopPropagation()}
-                        disabled
-                        title="当前 CodeBuddy 运行时未提供单 Worker 停止接口"
-                      >
-                        停止
+                        {workerBusyPid === w.pid ? '终止中...' : '终止'}
                       </button>
                       <span className="ml-auto text-[10px] text-[var(--color-text-muted)]">
                         {isExpanded ? '收起' : '展开详情'}

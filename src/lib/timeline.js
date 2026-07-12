@@ -110,8 +110,12 @@ function mergeUserChunk(timeline, payload) {
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'user') {
     if (isDuplicateChunk(messageId, payload?.content)) return next;
-    target.content += getText(payload?.content);
-    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    const index = next.lastIndexOf(target);
+    next[index] = {
+      ...target,
+      content: target.content + getText(payload?.content),
+      meta: { ...(target.meta || {}), ...(payload || {}) },
+    };
     return next;
   }
   next.push(
@@ -134,9 +138,13 @@ function mergeAssistantChunk(timeline, payload) {
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
     if (isDuplicateChunk(messageId, payload?.content)) return next;
-    target.content += getText(payload?.content);
-    target.streaming = true;
-    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    const index = next.lastIndexOf(target);
+    next[index] = {
+      ...target,
+      content: target.content + getText(payload?.content),
+      streaming: true,
+      meta: { ...(target.meta || {}), ...(payload || {}) },
+    };
     return next;
   }
   next.push(
@@ -159,8 +167,12 @@ function mergeThinkingChunk(timeline, payload) {
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
     if (isDuplicateChunk(messageId, payload?.content)) return next;
-    target.content += getText(payload?.content);
-    target.meta = { ...(target.meta || {}), ...(payload || {}) };
+    const index = next.lastIndexOf(target);
+    next[index] = {
+      ...target,
+      content: target.content + getText(payload?.content),
+      meta: { ...(target.meta || {}), ...(payload || {}) },
+    };
     return next;
   }
   next.push(
@@ -181,15 +193,19 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
   const toolCallId = payload?.toolCallId || null;
   const target = findLastByToolCallId(next, toolCallId);
   if (target) {
-    target.status = payload?.status || target.status;
-    target.title = payload?.title || target.title;
-    target.kind = payload?.kind || target.kind;
-    target.content = payload?.content || target.content;
-    target.rawInput = payload?.rawInput ?? target.rawInput;
-    target.rawOutput = payload?.rawOutput ?? target.rawOutput;
-    target.locations = payload?.locations ?? target.locations;
-    target.meta = { ...(target.meta || {}), ...(payload || {}) };
-    target.raw = payload;
+    const index = next.lastIndexOf(target);
+    next[index] = {
+      ...target,
+      status: payload?.status || target.status,
+      title: payload?.title || target.title,
+      kind: payload?.kind || target.kind,
+      content: payload?.content != null ? getText(payload.content) : target.content,
+      rawInput: payload?.rawInput ?? target.rawInput,
+      rawOutput: payload?.rawOutput ?? target.rawOutput,
+      locations: payload?.locations ?? target.locations,
+      meta: { ...(target.meta || {}), ...(payload || {}) },
+      raw: payload,
+    };
     return next;
   }
   next.push(
