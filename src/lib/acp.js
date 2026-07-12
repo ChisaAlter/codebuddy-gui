@@ -127,6 +127,14 @@ export function parseEventStreamMessages(text) {
     } catch (_) { console.warn('ACP SSE JSON parse failed:', _); }
   }
 
+  if (messages.length === 0 && text.trim()) {
+    try {
+      const parsed = JSON.parse(text.trim());
+      if (Array.isArray(parsed)) messages.push(...parsed);
+      else messages.push(parsed);
+    } catch (_) {}
+  }
+
   return messages;
 }
 
@@ -370,13 +378,16 @@ export class AcpClient {
     this._heartbeatFailures = 0;
   }
 
-  startNotificationStream() {
+  startNotificationStream(resetRetry = true) {
     this.stopNotificationStream();
     if (!this.connectionId) return;
-    this._sseRetryAttempt = 0;
+    if (resetRetry) this._sseRetryAttempt = 0;
     this._sseAbortController = new AbortController();
 
-    const onMessage = (message) => this.handleIncomingRpc(message);
+    const onMessage = (message) => {
+      this._sseRetryAttempt = 0;
+      this.handleIncomingRpc(message);
+    };
     const onError = () => this._scheduleNotificationReconnect();
 
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
@@ -418,7 +429,7 @@ export class AcpClient {
     this._sseRetryAttempt = Math.min(this._sseRetryAttempt + 1, 10);
     this._sseReconnectTimer = setTimeout(() => {
       this._sseReconnectTimer = null;
-      if (this.connected && !this.reconnecting) this.startNotificationStream();
+      if (this.connected && !this.reconnecting) this.startNotificationStream(false);
     }, delay);
   }
 
@@ -468,6 +479,7 @@ export class AcpClient {
       }
       const tail = decoder.decode();
       if (tail) this._consumeSseText(tail, onMessage);
+      if (this._sseBuffer.trim()) this._consumeSseText('\n\n', onMessage);
     } finally {
       reader.releaseLock?.();
     }

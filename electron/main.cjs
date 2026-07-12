@@ -407,16 +407,27 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     let buffer = '';
     const sender = event.sender;
     (async () => {
+      const emitMessages = (messages) => {
+        for (const message of messages) {
+          if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
+        }
+      };
       try {
         while (!controller.signal.aborted) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            buffer += decoder.decode();
+            if (buffer.trim()) {
+              const parsed = parseSseMessagesFromBuffer(`${buffer}\n\n`);
+              buffer = parsed.rest;
+              emitMessages(parsed.messages);
+            }
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
-          for (const message of parsed.messages) {
-            if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
-          }
+          emitMessages(parsed.messages);
         }
       } catch (error) {
         if (!controller.signal.aborted && !sender.isDestroyed()) {

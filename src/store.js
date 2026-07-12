@@ -31,6 +31,30 @@ let fileDirectoryRequestId = 0;
 let filePreviewRequestId = 0;
 let fileSearchRequestId = 0;
 let fileNameSearchRequestId = 0;
+const scopedRequestVersions = new Map();
+
+function beginScopedRequest(key, state, scope = 'project') {
+  const version = (scopedRequestVersions.get(key) || 0) + 1;
+  scopedRequestVersions.set(key, version);
+  return {
+    key,
+    version,
+    scope,
+    projectId: state.activeProjectId,
+    threadId: state.activeThreadId,
+    sessionId: state.sessionId,
+  };
+}
+
+function isScopedRequestCurrent(token, state) {
+  if (scopedRequestVersions.get(token.key) !== token.version) return false;
+  if (token.projectId !== state.activeProjectId) return false;
+  if (token.scope === 'threadId' || token.scope === 'thread') {
+    if (token.threadId !== state.activeThreadId) return false;
+  }
+  if (token.scope === 'thread' && token.sessionId !== state.sessionId) return false;
+  return true;
+}
 
 function emptyThreadRuntime() {
   return {
@@ -155,6 +179,32 @@ function resetFileWorkspace(path) {
     fileNameQuery: '',
     fileNameResults: [],
     fileNameSearching: false,
+  };
+}
+
+function resetProjectRuntimeViews() {
+  return {
+    info: null,
+    infoLoaded: false,
+    sessions: [],
+    workers: [],
+    workersError: null,
+    plugins: [],
+    marketplaces: [],
+    pluginError: null,
+    pluginBusy: null,
+    metrics: null,
+    metricsError: null,
+    stats: null,
+    statsError: null,
+    statsLoading: false,
+    sessionStats: null,
+    scheduledTasks: [],
+    scheduledTasksError: null,
+    taskTemplates: [],
+    taskTemplatesError: null,
+    taskTemplatesLoading: false,
+    traces: [],
   };
 }
 
@@ -696,6 +746,7 @@ export const useStore = create((set, get) => ({
       set({ connectionState: 'disconnected' });
       return false;
     }
+    const request = beginScopedRequest('initializeActiveThread', get(), 'threadId');
 
     const existingClient = conversations.peek(thread.id);
     if (existingClient?.connected && thread.sessionId) {
@@ -707,7 +758,7 @@ export const useStore = create((set, get) => ({
         connectionState: existingClient.connectionState,
       });
       await get().updateThreadRecord(thread.id, { unread: false, lastOpenedAt: new Date().toISOString() });
-      return true;
+      return isScopedRequestCurrent(request, get());
     }
 
     const client = get().getThreadClient(thread.id);
@@ -739,34 +790,38 @@ export const useStore = create((set, get) => ({
     await get().updateActiveThread({ status: 'connecting', lastOpenedAt: new Date().toISOString() });
 
     const applyInitializedSession = async (init, loaded, recoveryError = null) => {
+      const threadRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
       const availableModels = loaded?.models?.availableModels
         || init?.models?.availableModels
         || init?.agentCapabilities?.availableModels
-        || get().models;
+        || threadRuntime.models;
       const currentModel = loaded?.models?.currentModelId
         || init?.models?.currentModelId
         || thread.modelId
-        || get().currentModel;
+        || threadRuntime.currentModel;
       const availableModes = loaded?.modes?.availableModes
         || init?.modes?.availableModes
-        || get().modes;
+        || threadRuntime.modes;
       const currentMode = loaded?.modes?.currentModeId
         || init?.modes?.currentModeId
         || thread.modeId
-        || get().currentMode;
+        || threadRuntime.currentMode;
       const resolvedSessionId = loaded?.sessionId || (recoveryError ? null : requestedSessionId) || null;
       const resolvedTitle = loaded?.title || loaded?.name || thread.title || '新对话';
+      const stillActive = isScopedRequestCurrent(request, get());
 
-      set({
-        sessionId: resolvedSessionId,
-        sessionTitle: resolvedTitle,
-        currentModel,
-        models: normalizeModels(availableModels),
-        modes: normalizeModes(availableModes),
-        currentMode,
-        connectionState: 'connected',
-        error: null,
-      });
+      if (stillActive) {
+        set({
+          sessionId: resolvedSessionId,
+          sessionTitle: resolvedTitle,
+          currentModel,
+          models: normalizeModels(availableModels),
+          modes: normalizeModes(availableModes),
+          currentMode,
+          connectionState: 'connected',
+          error: null,
+        });
+      }
       get().patchThreadRuntime(thread.id, {
         sessionId: resolvedSessionId,
         connectionState: 'connected',
@@ -774,9 +829,9 @@ export const useStore = create((set, get) => ({
         models: normalizeModels(availableModels),
         modes: normalizeModes(availableModes),
         currentMode,
-        capabilities: init?.agentCapabilities || get().threadRuntimeById[thread.id]?.capabilities || {},
+        capabilities: init?.agentCapabilities || threadRuntime.capabilities || {},
       });
-      await get().updateActiveThread({
+      await get().updateThreadRecord(thread.id, {
         sessionId: resolvedSessionId,
         title: resolvedTitle,
         modelId: currentModel || null,
@@ -794,12 +849,12 @@ export const useStore = create((set, get) => ({
       if (recoveryError) {
         const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
         const warning = `原会话恢复失败，已创建新会话继续工作。${recoveryError}`;
-        if (!currentTimeline.some((item) => item.content === warning)) get().appendTimelineEvent('error', {
+        if (!currentTimeline.some((item) => item.content === warning)) get().appendThreadTimelineEvent(thread.id, 'error', {
           type: 'error',
           message: warning,
         });
       }
-      return true;
+      return isScopedRequestCurrent(request, get());
     };
 
     try {
@@ -819,8 +874,10 @@ export const useStore = create((set, get) => ({
           return await applyInitializedSession(null, loaded, error.message);
         } catch (_) {}
       }
-      set({ error: error.message, connectionState: 'error' });
-      await get().updateActiveThread({
+      const stillActive = isScopedRequestCurrent(request, get());
+      if (stillActive) set({ error: error.message, connectionState: 'error' });
+      get().patchThreadRuntime(thread.id, { connectionState: 'error' });
+      await get().updateThreadRecord(thread.id, {
         status: 'error',
         metadata: { ...(thread.metadata || {}), lastError: error.message },
       });
@@ -863,6 +920,7 @@ export const useStore = create((set, get) => ({
       activeProjectId: project.id,
       activeThreadId: thread.id,
       workspacePath: project.workspacePath,
+      ...(projectChanged ? resetProjectRuntimeViews() : {}),
       ...(projectChanged ? resetFileWorkspace(project.workspacePath) : {}),
     });
     if (projectChanged) get().loadProjectTerminalState(project.id);
@@ -872,7 +930,10 @@ export const useStore = create((set, get) => ({
     if (!runtime) return false;
     if (projectChanged) await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
-    if (initialized) await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
+    if (initialized) {
+      if (projectChanged) await get().refreshProjectViews();
+      else await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
+    }
     return initialized;
   },
 
@@ -1020,6 +1081,7 @@ export const useStore = create((set, get) => ({
       : null;
     if (!project) project = createProjectRecord(normalizedPath);
     if (!thread) thread = createThreadRecord(project.id);
+    const projectChanged = currentProject?.id !== project.id;
 
     set((state) => ({
       projectsById: {
@@ -1039,6 +1101,7 @@ export const useStore = create((set, get) => ({
       activeProjectId: project.id,
       activeThreadId: thread.id,
       workspacePath: normalizedPath,
+      ...(projectChanged ? resetProjectRuntimeViews() : {}),
       ...resetFileWorkspace(normalizedPath),
     }));
     get().loadProjectTerminalState(project.id);
@@ -1049,7 +1112,8 @@ export const useStore = create((set, get) => ({
     await get().openDirectory(normalizedPath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
     if (initialized) {
-      await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+      if (projectChanged) await get().refreshProjectViews();
+      else await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
     }
     return initialized;
   },
@@ -1076,6 +1140,7 @@ export const useStore = create((set, get) => ({
       activeProjectId: projectId,
       activeThreadId: threadId,
       workspacePath: project.workspacePath,
+      ...resetProjectRuntimeViews(),
       ...resetFileWorkspace(project.workspacePath),
     });
     get().loadProjectTerminalState(projectId);
@@ -1085,7 +1150,7 @@ export const useStore = create((set, get) => ({
     await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
     const initialized = await get().initializeActiveThread(thread.sessionId);
     if (initialized) {
-      await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+      await get().refreshProjectViews();
     }
     return initialized;
   },
@@ -1639,33 +1704,43 @@ export const useStore = create((set, get) => ({
       const initialized = await get().initializeActiveThread(querySessionId || undefined);
       if (!initialized) return;
       await get().initializeWorkspace();
-      // 非关键数据加载 - 任一个失败不影响会话状态
-      await Promise.allSettled([
-        get().refreshInfo(),
-        get().refreshSettings(),
-        get().refreshSessions(),
-        get().refreshWorkers(),
-        get().refreshPlugins(),
-        get().refreshMetrics(),
-        get().refreshStats(),
-        get().refreshTasks(),
-        get().refreshTraces(),
-      ]);
+      await get().refreshProjectViews();
     } catch (error) {
       set({ error: error.message, connectionState: 'error' });
     }
   },
 
+  async refreshProjectViews() {
+    await Promise.allSettled([
+      get().refreshInfo(),
+      get().refreshSettings(),
+      get().refreshSessions(),
+      get().refreshWorkers(),
+      get().refreshPlugins(),
+      get().refreshMarketplaces(),
+      get().refreshMetrics(),
+      get().refreshStats(),
+      get().refreshTasks(),
+      get().refreshTraces(),
+    ]);
+  },
+
   async refreshInfo() {
+    const request = beginScopedRequest('info', get());
     const payload = await fetchJson('/api/v1/info');
+    if (!isScopedRequestCurrent(request, get())) return false;
     set({ info: payload.data || payload, infoLoaded: true });
+    return true;
   },
 
   async refreshSettings() {
+    const request = beginScopedRequest('settings', get());
     const payload = await fetchJson('/api/v1/settings');
+    if (!isScopedRequestCurrent(request, get())) return false;
     const loaded = payload.data || payload;
     try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(loaded)); } catch (_) {}
     set({ settings: loaded, settingsLoaded: true });
+    return true;
   },
 
   loadSettingsFromStorage() {
@@ -1698,12 +1773,14 @@ export const useStore = create((set, get) => ({
   },
 
   async refreshSessions() {
+    const request = beginScopedRequest('sessions', get());
+    const projectId = request.projectId;
     const payload = await fetchJson('/api/v1/sessions');
+    if (!isScopedRequestCurrent(request, get())) return false;
     const sessions = normalizeSessions(payload);
-    const projectId = get().activeProjectId;
     if (!projectId) {
       set({ sessions });
-      return;
+      return true;
     }
     set((state) => {
       const threadsById = { ...state.threadsById };
@@ -1736,36 +1813,46 @@ export const useStore = create((set, get) => ({
       };
     });
     get().persistProductState();
+    return true;
   },
 
   async refreshWorkers() {
+    const request = beginScopedRequest('workers', get());
     try {
       const payload = await fetchJson('/api/v1/workers');
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ workers: normalizeWorkers(payload), workersError: null });
       return true;
     } catch (error) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ workersError: error.message || '加载 Worker 失败' });
       return false;
     }
   },
 
   async refreshPlugins() {
+    const request = beginScopedRequest('plugins', get());
     try {
       const payload = await fetchJson('/api/v1/plugins');
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ plugins: normalizePlugins(payload) });
       return true;
     } catch (error) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ pluginError: error?.message || '加载插件失败' });
       return false;
     }
   },
 
   async refreshMarketplaces() {
+    const request = beginScopedRequest('marketplaces', get());
     try {
       const list = await apiFetchMarketplaces();
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ marketplaces: Array.isArray(list) ? list : [] });
       return true;
     } catch (error) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ pluginError: error?.message || '加载插件市场失败' });
       return false;
     }
@@ -1838,66 +1925,87 @@ export const useStore = create((set, get) => ({
   },
 
   async refreshMetrics() {
+    const request = beginScopedRequest('metrics', get());
     try {
       const payload = await fetchJson('/api/v1/metrics');
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ metrics: payload.data || payload, metricsError: null });
       return true;
     } catch (error) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ metricsError: error?.message || '加载监控数据失败' });
       return false;
     }
   },
 
   async refreshStats() {
+    const request = beginScopedRequest('stats', get());
     set({ statsLoading: true, statsError: null });
     try {
       const stats = await fetchStatsApi();
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ stats, statsLoading: false });
     } catch (err) {
-      set({ stats: null, statsLoading: false, statsError: err?.message || '加载全局统计失败' });
+      if (!isScopedRequestCurrent(request, get())) return false;
+      set({ statsLoading: false, statsError: err?.message || '加载全局统计失败' });
     }
     // 同时刷新当前会话的会话级统计（失败不阻塞全局）
     get().refreshSessionStats?.();
+    return true;
   },
 
   async refreshSessionStats() {
+    const request = beginScopedRequest('sessionStats', get(), 'thread');
     try {
-      const sessionStats = await fetchSessionStats(get().sessionId);
+      const sessionStats = await fetchSessionStats(request.sessionId);
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ sessionStats });
     } catch (_) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ sessionStats: null });
     }
+    return true;
   },
 
   async refreshTasks() {
+    const request = beginScopedRequest('tasks', get(), 'thread');
     try {
-      const tasks = await fetchScheduledTasks(get().sessionId);
+      const tasks = await fetchScheduledTasks(request.sessionId);
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ scheduledTasks: tasks, scheduledTasksError: null });
     } catch (error) {
-      set({ scheduledTasks: [], scheduledTasksError: error.message || '加载定时任务失败' });
+      if (!isScopedRequestCurrent(request, get())) return false;
+      set({ scheduledTasksError: error.message || '加载定时任务失败' });
     }
     // 同时刷任务模板（失败不阻塞定时任务）
     get().refreshTaskTemplates?.();
+    return true;
   },
 
   async refreshTaskTemplates() {
+    const request = beginScopedRequest('taskTemplates', get(), 'thread');
     set({ taskTemplatesLoading: true, taskTemplatesError: null });
     try {
-      const result = await apiFetchTaskTemplates(get().sessionId);
+      const result = await apiFetchTaskTemplates(request.sessionId);
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({
         taskTemplates: result.templates || [],
         taskTemplatesError: result.error || null,
         taskTemplatesLoading: false,
       });
     } catch (err) {
-      set({ taskTemplates: [], taskTemplatesLoading: false, taskTemplatesError: err?.message || '加载任务模板失败' });
+      if (!isScopedRequestCurrent(request, get())) return false;
+      set({ taskTemplatesLoading: false, taskTemplatesError: err?.message || '加载任务模板失败' });
     }
+    return true;
   },
 
   async refreshTaskTemplatesNow() {
+    const request = beginScopedRequest('taskTemplates', get(), 'thread');
     set({ taskTemplatesLoading: true, taskTemplatesError: null });
     try {
-      const result = await apiRefreshTaskTemplates(get().sessionId);
+      const result = await apiRefreshTaskTemplates(request.sessionId);
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({
         taskTemplates: result.templates || [],
         taskTemplatesError: result.error || null,
@@ -1905,6 +2013,7 @@ export const useStore = create((set, get) => ({
       });
       return true;
     } catch (err) {
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ taskTemplatesLoading: false, taskTemplatesError: err?.message || '刷新任务模板失败' });
       return false;
     }
@@ -1939,11 +2048,15 @@ export const useStore = create((set, get) => ({
   },
 
   async refreshTraces() {
+    const request = beginScopedRequest('traces', get());
     try {
       const traces = await fetchTraceList();
+      if (!isScopedRequestCurrent(request, get())) return false;
       set({ traces });
+      return true;
     } catch (_) {
-      set({ traces: [] });
+      if (!isScopedRequestCurrent(request, get())) return false;
+      return false;
     }
   },
 
