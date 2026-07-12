@@ -41,14 +41,34 @@ function SpinButton({ value, onChange, min = 1, max = 999 }) {
   );
 }
 
-function TextInput({ value, onChange, placeholder = '未设置' }) {
+function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56' }) {
+  const normalized = String(value ?? '');
+  const [draft, setDraft] = useState(normalized);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!saving) setDraft(normalized);
+  }, [normalized, saving]);
+
+  const commit = async () => {
+    if (saving || draft === normalized) return;
+    setSaving(true);
+    const saved = await onChange(draft);
+    setSaving(false);
+    if (saved === false) setDraft(normalized);
+  };
   return (
     <input
       type="text"
-      className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)] w-40"
-      value={value || ''}
+      className={`rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)] ${width}`}
+      value={draft}
       placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value)}
+      disabled={saving}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+      }}
     />
   );
 }
@@ -124,14 +144,70 @@ function JsonObjectEditor({ value, onSave }) {
   );
 }
 
+function JsonArrayEditor({ value, onSave, ariaLabel }) {
+  const serialized = JSON.stringify(Array.isArray(value) ? value : [], null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(serialized);
+  }, [serialized]);
+
+  const save = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(draft || '[]');
+      if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+        throw new Error('请输入字符串数组');
+      }
+    } catch (parseError) {
+      setMessage(parseError.message || 'JSON 格式无效');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const saved = await onSave(parsed);
+    setSaving(false);
+    setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
+  };
+
+  return (
+    <div className="w-72">
+      <textarea
+        rows={6}
+        value={draft}
+        onChange={(event) => { setDraft(event.target.value); setMessage(''); }}
+        className="w-full resize-y rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
+        aria-label={ariaLabel}
+      />
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {message ? <span className={`mr-auto text-[11px] ${message === '已保存' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'}`}>{message}</span> : null}
+        <button className="btn-primary px-3 py-1 text-xs" disabled={saving || draft === serialized} onClick={save}>
+          {saving ? '保存中...' : '保存'}
+        </button>
+      </div>
+    </div>
+  );
+}
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
-    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting, refreshInfo, refreshSettings,
+    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, refreshInfo, refreshSettings,
   } = useStore();
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [appInfo, setAppInfo] = useState(null);
+  const [saveError, setSaveError] = useState('');
+
+  const updateSetting = async (key, value) => {
+    setSaveError('');
+    const saved = await persistSetting(key, value);
+    if (saved === false) {
+      setSaveError(useStore.getState().error || `设置“${key}”保存失败，已恢复原值`);
+    }
+    return saved;
+  };
 
   const isLoading = connectionState !== 'error' && (!infoLoaded || !settingsLoaded);
 
@@ -181,6 +257,12 @@ export default function ReplicaSettingsView() {
           </div>
         ) : null}
 
+        {saveError ? (
+          <div className="mb-6 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-[var(--color-accent-red)]">
+            <span>{saveError}</span>
+            <button className="btn-ghost px-3 py-1 text-xs" onClick={() => setSaveError('')}>关闭</button>
+          </div>
+        ) : null}
         {isLoading ? (
           <>
             {[1, 2, 3].map((n) => (
@@ -312,6 +394,7 @@ export default function ReplicaSettingsView() {
             <SettingRow label="延迟加载工具" control={<Toggle value={!!settings?.lazyLoadTools} onChange={(v) => updateSetting('lazyLoadTools', v)} />} />
             <SettingRow label="允许剪贴板贴图" control={<Toggle value={!!settings?.enablePasteImageFromClipboard} onChange={(v) => updateSetting('enablePasteImageFromClipboard', v)} />} />
             <SettingRow label="终端进度条" control={<Toggle value={!!settings?.enableTerminalProgressBar} onChange={(v) => updateSetting('enableTerminalProgressBar', v)} />} />
+            <SettingRow label="显示 Token 计数" control={<Toggle value={!!settings?.showTokensCounter} onChange={(v) => updateSetting('showTokensCounter', v)} />} />
           </div>
         </div>
 
@@ -331,6 +414,9 @@ export default function ReplicaSettingsView() {
             <SettingRow label="响应语言" desc="设置 AI 回复使用的语言" control={
               <span className="text-xs text-[var(--color-text-secondary)]">{settings?.language || '简体中文'}</span>
             } />
+            <SettingRow label="通知渠道" control={
+              <TextInput value={settings?.preferredNotifChannel || 'Auto'} onChange={(value) => updateSetting('preferredNotifChannel', value)} />
+            } />
           </div>
         </div>
 
@@ -346,8 +432,15 @@ export default function ReplicaSettingsView() {
             } />
             <SettingRow label="自动更新" control={<Toggle value={!!settings?.autoUpdates} onChange={(v) => updateSetting('autoUpdates', v)} />} />
             <SettingRow label="启用全部项目 MCP" control={<Toggle value={!!settings?.enableAllProjectMcpServers} onChange={(v) => updateSetting('enableAllProjectMcpServers', v)} />} />
+            <SettingRow label="信任全部目录" control={<Toggle value={!!settings?.trustAll} onChange={(value) => updateSetting('trustAll', value)} />} />
+            <SettingRow label="状态栏命令" control={
+              <TextInput value={settings?.statusLine?.command || ''} width="w-72" onChange={(value) => updateSetting('statusLine.command', value)} />
+            } />
             <SettingRow label="环境变量" desc="应用于每个会话的环境变量 (JSON)" control={
               <JsonObjectEditor value={settings?.env} onSave={(value) => updateSetting('env', value)} />
+            } />
+            <SettingRow label="可信目录" control={
+              <JsonArrayEditor value={settings?.trustedDirectories} ariaLabel="可信目录 JSON" onSave={(value) => updateSetting('trustedDirectories', value)} />
             } />
           </div>
         </div>

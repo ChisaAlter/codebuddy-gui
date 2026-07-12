@@ -131,6 +131,26 @@ function normalizeModes(modes = []) {
   }));
 }
 
+function readSettingPath(settings, path) {
+  return String(path || '').split('.').reduce((value, key) => value?.[key], settings);
+}
+
+function writeSettingPath(settings, path, value, remove = false) {
+  const keys = String(path || '').split('.').filter(Boolean);
+  const next = { ...(settings || {}) };
+  if (!keys.length) return next;
+  let cursor = next;
+  for (const key of keys.slice(0, -1)) {
+    const current = cursor[key];
+    cursor[key] = current && typeof current === 'object' && !Array.isArray(current) ? { ...current } : {};
+    cursor = cursor[key];
+  }
+  const leaf = keys[keys.length - 1];
+  if (remove) delete cursor[leaf];
+
+  else cursor[leaf] = value;
+  return next;
+}
 function makePane(title = 'Terminal') {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -1838,11 +1858,11 @@ export const useStore = create((set, get) => ({
     const version = (settingWriteVersions.get(key) || 0) + 1;
     settingWriteVersions.set(key, version);
     if (!confirmedSettingValues.has(key)) {
-      confirmedSettingValues.set(key, get().settings?.[key]);
+      confirmedSettingValues.set(key, readSettingPath(get().settings, key));
     }
 
     set((state) => {
-      const next = { ...(state.settings || {}), [key]: value };
+      const next = writeSettingPath(state.settings, key, value);
       try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
       return { settings: next, settingsLoaded: true };
     });
@@ -1857,9 +1877,7 @@ export const useStore = create((set, get) => ({
         if (settingWriteVersions.get(key) === version) {
           const confirmedValue = confirmedSettingValues.get(key);
           set((state) => {
-            const next = { ...(state.settings || {}) };
-            if (confirmedValue === undefined) delete next[key];
-            else next[key] = confirmedValue;
+            const next = writeSettingPath(state.settings, key, confirmedValue, confirmedValue === undefined);
             try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
             return {
               settings: next,
