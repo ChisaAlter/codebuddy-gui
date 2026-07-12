@@ -18,6 +18,7 @@ const ReplicaLogsView = lazy(() => import('./components/ReplicaLogsView'));
 const ReplicaRemoteControlView = lazy(() => import('./components/ReplicaRemoteControlView'));
 const ReplicaInstancesView = lazy(() => import('./components/ReplicaInstancesView'));
 const ReplicaMonitorView = lazy(() => import('./components/ReplicaMonitorView'));
+const ReplicaKeybindingsView = lazy(() => import('./components/ReplicaKeybindingsView'));
 
 function WindowControls({ height = 'h-12' }) {
   return (
@@ -145,6 +146,7 @@ const ROUTE_TITLES = {
   monitor: '监控',
   logs: '日志',
   settings: '设置',
+  keybindings: '快捷键',
   workers: 'Workers',
   metrics: '指标',
 };
@@ -263,6 +265,7 @@ function MainContent() {
     case 'stats': content = <ReplicaStatsView />; break;
     case 'traces': content = <ReplicaTracesView />; break;
     case 'monitor': content = <ReplicaMonitorView />; break;
+    case 'keybindings': content = <ReplicaKeybindingsView />; break;
     case 'logs': content = <ReplicaLogsView />; break;
     default: content = (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">

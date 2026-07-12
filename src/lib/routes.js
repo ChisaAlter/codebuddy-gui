@@ -13,6 +13,7 @@ export const ROUTES = [
   'metrics',
   'logs',
   'workers',
+  'keybindings',
   'settings',
 ];
 

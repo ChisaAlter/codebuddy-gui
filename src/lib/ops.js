@@ -414,16 +414,33 @@ export async function restartDaemon() {
 
 // ===== Keybindings 管理 =====
 
-/** 获取快捷键绑定列表 */
+/** 获取快捷键配置、上下文、动作与保留按键。 */
 export async function fetchKeybindings() {
   const payload = await fetchJson('/api/v1/keybindings');
-  return payload.data?.keybindings || payload.keybindings || [];
+  return payload?.data ?? payload ?? {};
+}
+
+/** 校验用户快捷键覆盖。 */
+export async function validateKeybindings(bindings) {
+  return requestOptionalJson('/api/v1/keybindings/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bindings }),
+  });
+}
+
+/** 保存用户快捷键覆盖。 */
+export async function saveKeybindings(bindings) {
+  return requestOptionalJson('/api/v1/keybindings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bindings }),
+  });
 }
 
 /** 重置快捷键绑定为默认值 */
 export async function resetKeybindings() {
-  const payload = await fetchJson('/api/v1/keybindings/reset', { method: 'POST' });
-  return payload.data || payload;
+  return requestOptionalJson('/api/v1/keybindings/reset', { method: 'POST' });
 }
 
 // ===== Plugin Marketplaces =====
