@@ -656,8 +656,8 @@ export async function authLogin(password) {
   const payload = await response.json();
   if (payload?.success) {
     // 仅当后端真发 token 才持久化为 Bearer；无 token 字段时**不**把密码当 bearer 落 sessionStorage
-    // 安全：旧兜底"用 password 作 bearer"会让明文密码长期驻留 sessionStorage + 每请求 Authorization 头携带，
-    // 与 UI"密码由系统 keyring 加密保存"承诺冲突，且后端无 token 即意味着本会话无需 bearer 鉴权
+    // 旧兜底“用 password 作 bearer”会让明文密码长期驻留 sessionStorage，并在每次请求中重复携带；
+    // 后端不返回 token 时，当前会话不需要 Bearer 鉴权。
     if (payload.token) setAuthToken(payload.token);
     return { success: true };
   }

@@ -124,7 +124,7 @@ function LoginView() {
           </button>
         </form>
         <div className="mt-4 text-center text-[10px] text-[var(--color-text-muted)]">
-          密码由系统 keyring 加密保存，下次启动自动复用
+          密码仅用于本次登录，应用不会保存
         </div>
       </div>
     </div>
