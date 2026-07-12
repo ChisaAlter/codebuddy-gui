@@ -390,10 +390,12 @@ export default function ReplicaChatView() {
       setChatError('当前会话尚未连接，请先重新连接后再发送。');
       return;
     }
-    setInput('');
     setChatError(null);
     try {
-      await sendPrompt(value);
+      const sent = await sendPrompt(value);
+      if (!sent) {
+        setChatError('发送失败，草稿和附件已恢复，可重新连接后再次发送。');
+      }
     } catch (err) {
       setChatError('发送消息失败: ' + (err.message || '未知错误'));
     }

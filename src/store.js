@@ -2376,30 +2376,41 @@ export const useStore = create((set, get) => ({
     const client = get().getThreadClient(threadId);
     if (!thread || !client) {
       set({ error: '当前会话未连接' });
-      return;
+      return false;
     }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const attachments = runtime.pendingAttachments || [];
+    const draftText = String(text || '');
     const content = String(text || '').trim() || (attachments.length ? '请查看附件。' : '');
-    if (!content) return;
+    if (!content) return false;
     if (thread.status === 'running' || runtime.isAwaitingResponse) {
       const queuedPrompt = {
         id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         text: content,
         attachments,
+        draftText,
         createdAt: Date.now(),
       };
       get().patchThreadRuntime(threadId, { promptQueue: [...runtime.promptQueue, queuedPrompt], pendingAttachments: [] });
+      await get().updateThreadRecord(threadId, { draft: '' });
       return { queued: true, id: queuedPrompt.id };
     }
     get().patchThreadRuntime(threadId, { pendingAttachments: [] });
-    return get().runThreadPrompt(threadId, content, attachments);
+    return get().runThreadPrompt(threadId, content, attachments, draftText);
   },
 
-  async runThreadPrompt(threadId, content, attachments = []) {
+  async runThreadPrompt(threadId, content, attachments = [], draftText = content) {
     const thread = get().threadsById[threadId];
     const client = get().getThreadClient(threadId);
-    if (!thread || !client) return false;
+    if (!thread || !client) {
+      const currentRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const restoredAttachments = [...attachments, ...(currentRuntime.pendingAttachments || [])].filter((item, index, items) => (
+        items.findIndex((candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind) === index
+      ));
+      get().patchThreadRuntime(threadId, { pendingAttachments: restoredAttachments });
+      set({ error: '当前会话未连接' });
+      return false;
+    }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
     get().patchThreadRuntime(threadId, {
@@ -2435,14 +2446,24 @@ export const useStore = create((set, get) => ({
       return true;
     } catch (error) {
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const currentThread = get().threadsById[threadId] || thread;
+      const failedDraft = String(draftText || '').trim();
+      const currentDraft = String(currentThread.draft || '').trim();
+      const restoredDraft = failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
+      const restoredAttachments = [...attachments, ...(failedRuntime.pendingAttachments || [])].filter((item, index, items) => (
+        items.findIndex((candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind) === index
+      ));
+
       get().patchThreadRuntime(threadId, {
         timeline: closeAssistantStream(reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' })),
         isAwaitingResponse: false,
+        pendingAttachments: restoredAttachments,
       });
       await get().updateThreadRecord(threadId, {
         status: 'error',
         unread: get().activeThreadId !== threadId,
-        metadata: { ...(thread.metadata || {}), lastError: error.message },
+        draft: restoredDraft,
+        metadata: { ...(currentThread.metadata || {}), lastError: error.message },
       });
       return false;
     }
@@ -2453,7 +2474,7 @@ export const useStore = create((set, get) => ({
     const [next, ...rest] = runtime.promptQueue;
     if (!next) return false;
     get().patchThreadRuntime(threadId, { promptQueue: rest });
-    return get().runThreadPrompt(threadId, next.text, next.attachments || []);
+    return get().runThreadPrompt(threadId, next.text, next.attachments || [], next.draftText ?? next.text);
   },
 
   removeQueuedPrompt(threadId, promptId) {
