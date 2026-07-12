@@ -205,10 +205,53 @@ export function EditorPane() {
   const filePreviewLoading = useStore((s) => s.filePreviewLoading);
   const fileDirty = useStore((s) => s.fileDirty);
   const fileSaving = useStore((s) => s.fileSaving);
+  const fileExternalChange = useStore((s) => s.fileExternalChange);
   const setFilePreview = useStore((s) => s.setFilePreview);
   const saveSelectedFile = useStore((s) => s.saveSelectedFile);
+  const checkSelectedFileForExternalChanges = useStore((s) => s.checkSelectedFileForExternalChanges);
+  const reloadExternalFileContent = useStore((s) => s.reloadExternalFileContent);
+  const keepCurrentFileContent = useStore((s) => s.keepCurrentFileContent);
+  const [saveStatus, setSaveStatus] = useState(null);
 
   const language = useMemo(() => detectLanguage(selectedFile || ''), [selectedFile]);
+
+  useEffect(() => {
+    setSaveStatus(null);
+  }, [selectedFile]);
+
+  useEffect(() => {
+    if (!saveStatus || saveStatus.type === 'error') return undefined;
+    const timer = setTimeout(() => setSaveStatus(null), 3000);
+    return () => clearTimeout(timer);
+  }, [saveStatus]);
+
+  const handleSave = useCallback(async () => {
+    const state = useStore.getState();
+    const path = state.selectedFile;
+    if (!path || !state.fileDirty || state.fileSaving) return;
+    setSaveStatus(null);
+    const saved = await saveSelectedFile();
+    const current = useStore.getState();
+    if (current.selectedFile !== path) return;
+    if (!saved) {
+      setSaveStatus({ type: 'error', message: '保存失败，未保存内容仍保留' });
+    } else if (current.fileDirty) {
+      setSaveStatus({ type: 'warning', message: '已保存此前内容，仍有新修改未保存' });
+    } else {
+      setSaveStatus({ type: 'success', message: '已保存' });
+    }
+  }, [saveSelectedFile]);
+
+  const handleEditorChange = useCallback((value) => {
+    setSaveStatus(null);
+    setFilePreview(value || '');
+  }, [setFilePreview]);
+
+  const saveStatusColor = {
+    error: 'var(--color-accent-red)',
+    success: '#4ade80',
+    warning: '#fbbf24',
+  }[saveStatus?.type] || 'var(--color-text-muted)';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col border-l border-[var(--color-border-default)] bg-[var(--color-bg-primary)]">
@@ -217,11 +260,11 @@ export function EditorPane() {
           <div className="truncate text-sm text-[var(--color-text-primary)]">
             {selectedFile || '未选择文件'}{fileDirty ? ' •' : ''}
           </div>
-          <div className="text-xs text-[var(--color-text-muted)]">{language}</div>
+          <div className="text-xs" style={{ color: saveStatusColor }}>{saveStatus?.message || language}</div>
         </div>
         <button
           type="button"
-          onClick={() => saveSelectedFile()}
+          onClick={handleSave}
           disabled={!selectedFile || !fileDirty || fileSaving}
           className="rounded px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-40"
           title="保存文件 (Ctrl+S)"
@@ -229,6 +272,36 @@ export function EditorPane() {
           {fileSaving ? '保存中...' : '保存'}
         </button>
       </div>
+      {fileExternalChange && (
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2 text-xs"
+          style={{
+            borderColor: 'rgba(245, 158, 11, 0.35)',
+            background: 'rgba(245, 158, 11, 0.1)',
+            color: '#fbbf24',
+          }}
+        >
+          <span className="min-w-[220px] flex-1 break-words">
+            {fileExternalChange.error
+              ? `无法读取磁盘上的文件：${fileExternalChange.error}。当前编辑内容已保留。`
+              : '磁盘上的文件已被其他程序修改。请选择重新载入，或保留当前编辑内容。'}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            {fileExternalChange.error ? (
+              <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => checkSelectedFileForExternalChanges()}>
+                重新检查
+              </button>
+            ) : (
+              <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={reloadExternalFileContent}>
+                重新载入
+              </button>
+            )}
+            <button type="button" className="btn-primary px-2 py-1 text-xs" onClick={keepCurrentFileContent}>
+              保留当前内容
+            </button>
+          </div>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedFile ? (
           filePreviewLoading ? (
@@ -238,9 +311,9 @@ export function EditorPane() {
               theme="vs-dark"
               language={language}
               value={filePreview}
-              onChange={(value) => setFilePreview(value || '')}
+              onChange={handleEditorChange}
               onMount={(editor, monaco) => {
-                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveSelectedFile());
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, handleSave);
               }}
               options={{
                 minimap: { enabled: false },
@@ -269,6 +342,10 @@ export default function ReplicaWorkspaceView() {
   const fileLoading = useStore((s) => s.fileLoading);
   const openDirectory = useStore((s) => s.openDirectory);
   const refreshFileEntries = useStore((s) => s.refreshFileEntries);
+  const startWatcher = useStore((s) => s.startWatcher);
+  const pollWatcher = useStore((s) => s.pollWatcher);
+  const stopWatcher = useStore((s) => s.stopWatcher);
+  const checkSelectedFileForExternalChanges = useStore((s) => s.checkSelectedFileForExternalChanges);
   const openFile = useStore((s) => s.openFile);
   const setSelectedFile = useStore((s) => s.setSelectedFile);
   const createFile = useStore((s) => s.fsWrite);
@@ -295,6 +372,59 @@ export default function ReplicaWorkspaceView() {
   useEffect(() => {
     if (runtimePort) initializeWorkspace();
   }, [initializeWorkspace, runtimePort]);
+
+  useEffect(() => {
+    if (!runtimePort || !fileCwd) return undefined;
+    let disposed = false;
+    let polling = false;
+    let fallbackTicks = 0;
+
+    const pollWorkspace = async () => {
+      if (disposed || polling) return;
+      polling = true;
+      try {
+        const state = useStore.getState();
+        if (state.watcherId) {
+          const events = await pollWatcher();
+          if (!disposed && events.length > 0) {
+            await Promise.all([
+              refreshFileEntries({ silent: true }),
+              checkSelectedFileForExternalChanges(),
+            ]);
+          }
+        } else {
+          fallbackTicks += 1;
+          if (fallbackTicks % 4 === 0) await startWatcher(fileCwd);
+          if (!disposed && fallbackTicks % 3 === 0) {
+            await Promise.all([
+              refreshFileEntries({ silent: true }),
+              checkSelectedFileForExternalChanges(),
+            ]);
+          }
+        }
+      } finally {
+        polling = false;
+      }
+    };
+
+    startWatcher(fileCwd).then(() => {
+      if (!disposed) pollWorkspace();
+    });
+    const timer = setInterval(pollWorkspace, 1800);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      stopWatcher();
+    };
+  }, [
+    checkSelectedFileForExternalChanges,
+    fileCwd,
+    pollWatcher,
+    refreshFileEntries,
+    runtimePort,
+    startWatcher,
+    stopWatcher,
+  ]);
 
   useEffect(() => {
     setContextMenu(null);

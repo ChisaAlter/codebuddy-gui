@@ -31,6 +31,9 @@ let fileDirectoryRequestId = 0;
 let filePreviewRequestId = 0;
 let fileSearchRequestId = 0;
 let fileNameSearchRequestId = 0;
+let fileSaveRequestId = 0;
+let fileDiskSyncRequestId = 0;
+let fileWatcherRequestId = 0;
 const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
@@ -199,6 +202,8 @@ function resetFileWorkspace(path) {
   filePreviewRequestId += 1;
   fileSearchRequestId += 1;
   fileNameSearchRequestId += 1;
+  fileSaveRequestId += 1;
+  fileDiskSyncRequestId += 1;
   return {
     fileCwd: path || '.',
     fileEntries: [],
@@ -208,6 +213,7 @@ function resetFileWorkspace(path) {
     fileSavedContent: '',
     fileDirty: false,
     fileSaving: false,
+    fileExternalChange: null,
     filePreviewLoading: false,
     fileSearchQuery: '',
     fileSearchResults: [],
@@ -322,6 +328,7 @@ export const useStore = create((set, get) => ({
   fileSavedContent: '',
   fileDirty: false,
   fileSaving: false,
+  fileExternalChange: null,
   filePreviewLoading: false,
   dirtyFileConfirmation: null,
 
@@ -1468,6 +1475,8 @@ export const useStore = create((set, get) => ({
   async openDirectory(path, options = {}) {
     if (!options.skipDirtyCheck && !await requestDirtyFileConfirmation(set, get, '打开其他目录')) return false;
     const requestId = ++fileDirectoryRequestId;
+    fileSaveRequestId += 1;
+    fileDiskSyncRequestId += 1;
     const projectId = get().activeProjectId;
     set({
       fileLoading: true,
@@ -1477,6 +1486,7 @@ export const useStore = create((set, get) => ({
       fileSavedContent: '',
       fileDirty: false,
       fileSaving: false,
+      fileExternalChange: null,
       filePreviewLoading: false,
     });
     try {
@@ -1494,6 +1504,8 @@ export const useStore = create((set, get) => ({
   async openFile(path) {
     if (path !== get().selectedFile && !await requestDirtyFileConfirmation(set, get, '打开其他文件')) return false;
     const requestId = ++filePreviewRequestId;
+    fileSaveRequestId += 1;
+    fileDiskSyncRequestId += 1;
     const projectId = get().activeProjectId;
     set({
       selectedFile: path,
@@ -1502,6 +1514,7 @@ export const useStore = create((set, get) => ({
       fileSavedContent: '',
       fileDirty: false,
       fileSaving: false,
+      fileExternalChange: null,
     });
     try {
       const content = await downloadFile(path);
@@ -1516,6 +1529,8 @@ export const useStore = create((set, get) => ({
   },
 
   setSelectedFile(file) {
+    fileSaveRequestId += 1;
+    fileDiskSyncRequestId += 1;
     set({
       selectedFile: file,
       filePreviewLoading: !!file,
@@ -1523,6 +1538,7 @@ export const useStore = create((set, get) => ({
       fileSavedContent: '',
       fileDirty: false,
       fileSaving: false,
+      fileExternalChange: null,
     });
   },
 
@@ -1568,35 +1584,51 @@ export const useStore = create((set, get) => ({
 
   async startWatcher(path = null) {
     const target = path || get().fileCwd || '.';
+    const requestId = ++fileWatcherRequestId;
+    const projectId = get().activeProjectId;
+    const previousWatcherId = get().watcherId;
+    if (previousWatcherId) {
+      set({ watcherId: null });
+      try { await removeWatcher(previousWatcherId); } catch (_) {}
+    }
     try {
       const data = await createWatcher(target, true);
       const watcherId = data.watcherId || data.id || null;
+      if (!watcherId) return null;
+      if (requestId !== fileWatcherRequestId || projectId !== get().activeProjectId || target !== get().fileCwd) {
+        try { await removeWatcher(watcherId); } catch (_) {}
+        return null;
+      }
       set({ watcherId });
       return watcherId;
-    } catch (error) {
-      set({ error: error.message });
+    } catch (_) {
+      if (requestId === fileWatcherRequestId && projectId === get().activeProjectId) set({ watcherId: null });
       return null;
     }
   },
 
   async pollWatcher() {
     const watcherId = get().watcherId;
+    const projectId = get().activeProjectId;
     if (!watcherId) return [];
     try {
-      return await pollWatcher(watcherId);
-    } catch (error) {
-      set({ error: error.message });
+      const events = await pollWatcher(watcherId);
+      if (watcherId !== get().watcherId || projectId !== get().activeProjectId) return [];
+      return Array.isArray(events) ? events : [];
+    } catch (_) {
+      if (watcherId === get().watcherId) set({ watcherId: null });
       return [];
     }
   },
 
   async stopWatcher() {
+    fileWatcherRequestId += 1;
     const watcherId = get().watcherId;
     if (!watcherId) return;
+    set((state) => (state.watcherId === watcherId ? { watcherId: null } : {}));
     try {
       await removeWatcher(watcherId);
     } catch (_) {}
-    set({ watcherId: null });
   },
 
   loadProjectTerminalState(projectId) {
@@ -2287,28 +2319,103 @@ export const useStore = create((set, get) => ({
   },
 
   async saveSelectedFile() {
-    const path = get().selectedFile;
-    if (!path || !get().fileDirty || get().fileSaving) return false;
-    const content = get().filePreview;
-    set({ fileSaving: true });
-    const saved = await get().fsWrite(path, content);
-    if (!saved) {
-      set({ fileSaving: false });
+    const state = get();
+    const path = state.selectedFile;
+    if (!path || !state.fileDirty || state.fileSaving) return false;
+    const projectId = state.activeProjectId;
+    const content = state.filePreview;
+    const requestId = ++fileSaveRequestId;
+    set({ fileSaving: true, fileExternalChange: null });
+    try {
+      await fsWrite(path, content);
+    } catch (error) {
+      if (requestId === fileSaveRequestId && projectId === get().activeProjectId && path === get().selectedFile) {
+        set({ fileSaving: false, error: error.message });
+      }
       return false;
     }
-    set((state) => ({
-      fileSavedContent: content,
-      fileDirty: state.selectedFile === path && state.filePreview !== content,
-      fileSaving: false,
+
+    if (requestId === fileSaveRequestId && projectId === get().activeProjectId && path === get().selectedFile) {
+      set((current) => ({
+        fileSavedContent: content,
+        fileDirty: current.filePreview !== content,
+        fileSaving: false,
+        fileExternalChange: null,
+      }));
+      await get().refreshFileEntries();
+    }
+    return true;
+  },
+
+  async checkSelectedFileForExternalChanges() {
+    const state = get();
+    const path = state.selectedFile;
+    if (!path || state.filePreviewLoading || state.fileSaving) return false;
+    const projectId = state.activeProjectId;
+    const requestId = ++fileDiskSyncRequestId;
+    try {
+      const content = await downloadFile(path);
+      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile) return false;
+      set((current) => {
+        if (content === current.fileSavedContent) {
+          return current.fileExternalChange?.path === path ? { fileExternalChange: null } : {};
+        }
+        if (current.fileDirty) {
+          return { fileExternalChange: { path, content, error: null } };
+        }
+        return {
+          filePreview: content,
+          fileSavedContent: content,
+          fileDirty: false,
+          fileExternalChange: null,
+        };
+      });
+      return true;
+    } catch (error) {
+      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile) return false;
+      set({
+        fileExternalChange: {
+          path,
+          content: null,
+          error: error.message || '无法读取磁盘上的文件',
+        },
+      });
+      return false;
+    }
+  },
+
+  reloadExternalFileContent() {
+    const change = get().fileExternalChange;
+    if (!change || change.path !== get().selectedFile || typeof change.content !== 'string') return false;
+    fileDiskSyncRequestId += 1;
+    set({
+      filePreview: change.content,
+      fileSavedContent: change.content,
+      fileDirty: false,
+      fileExternalChange: null,
+    });
+    return true;
+  },
+
+  keepCurrentFileContent() {
+    const change = get().fileExternalChange;
+    if (!change || change.path !== get().selectedFile) return false;
+    fileDiskSyncRequestId += 1;
+    set((current) => ({
+      fileSavedContent: typeof change.content === 'string' ? change.content : current.fileSavedContent,
+      fileDirty: typeof change.content === 'string'
+        ? current.filePreview !== change.content
+        : Boolean(current.selectedFile),
+      fileExternalChange: null,
     }));
     return true;
   },
 
-  async refreshFileEntries() {
+  async refreshFileEntries(options = {}) {
     const cwd = get().fileCwd;
     const requestId = ++fileDirectoryRequestId;
     const projectId = get().activeProjectId;
-    set({ fileLoading: true });
+    if (!options.silent) set({ fileLoading: true });
     try {
       const entries = await fsList(cwd, 1);
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
@@ -2316,6 +2423,7 @@ export const useStore = create((set, get) => ({
       return true;
     } catch (error) {
       if (requestId !== fileDirectoryRequestId || projectId !== get().activeProjectId) return false;
+      if (options.silent) return false;
       set({ fileEntries: [], fileLoading: false, error: error.message });
       return false;
     }

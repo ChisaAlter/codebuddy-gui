@@ -61,7 +61,9 @@ export async function pollWatcher(watcherId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ watcherId }),
   });
-  return payload.data?.events || payload.events || [];
+  const data = payload?.data ?? payload;
+  if (Array.isArray(data)) return data;
+  return data?.events || data?.changes || [];
 }
 
 export async function removeWatcher(watcherId) {
