@@ -120,6 +120,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
         json: async () => readText() ? JSON.parse(readText()) : null,
         blob: async () => new Blob([bodyBytes || proxied?.body || ''], { type: headers.get('content-type') || '' }),
         arrayBuffer: async () => readArrayBuffer(),
+        truncated: Boolean(proxied?.truncated),
       };
     } finally {
       cleanup();
@@ -774,6 +775,9 @@ export class AcpClient {
       }
 
       if (matchedResponse) return matchedResult;
+      if (response.truncated) {
+        throw new Error(`ACP 响应流意外中断: ${method}`);
+      }
 
       const trimmed = text.trim();
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
