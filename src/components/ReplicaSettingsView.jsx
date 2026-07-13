@@ -309,6 +309,8 @@ export default function ReplicaSettingsView() {
   const [appInfoError, setAppInfoError] = useState('');
   const [systemAction, setSystemAction] = useState(null);
   const [openingUserData, setOpeningUserData] = useState(false);
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState(null);
   const [saveError, setSaveError] = useState('');
   const [selectionStatus, setSelectionStatus] = useState(null);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -444,6 +446,50 @@ export default function ReplicaSettingsView() {
       if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || '打开用户数据目录失败' });
     } finally {
       if (mountedRef.current) setOpeningUserData(false);
+    }
+  };
+
+  const checkForGuiUpdates = async () => {
+    if (checkingForUpdates) return;
+    setCheckingForUpdates(true);
+    setUpdateStatus({ type: 'checking', message: '正在检查 GitHub Releases...' });
+    try {
+      if (!window.electronAPI?.checkForUpdates) throw new Error('更新检查接口不可用');
+      const result = await window.electronAPI.checkForUpdates();
+      if (!mountedRef.current) return;
+      if (result?.status === 'error') throw new Error(result.error || '更新检查失败');
+      if (result?.updateAvailable) {
+        setUpdateStatus({
+          type: 'update',
+          message: `发现新版本 v${result.latestVersion}，当前为 v${result.currentVersion}。`,
+          releaseUrl: result.releaseUrl,
+        });
+      } else if (result?.latestVersion) {
+        setUpdateStatus({
+          type: 'current',
+          message: `已是最新版本 v${result.currentVersion}。`,
+          releaseUrl: result.releaseUrl,
+        });
+      } else {
+        setUpdateStatus({
+          type: 'no-release',
+          message: `GitHub 暂无正式发布，当前版本 v${result?.currentVersion || appInfo?.version || '-'}。`,
+          releaseUrl: result?.releaseUrl,
+        });
+      }
+    } catch (error) {
+      if (mountedRef.current) setUpdateStatus({ type: 'error', message: error?.message || '更新检查失败' });
+    } finally {
+      if (mountedRef.current) setCheckingForUpdates(false);
+    }
+  };
+
+  const openGuiReleasePage = async () => {
+    try {
+      if (!window.electronAPI?.openReleasePage) throw new Error('发布页打开接口不可用');
+      await window.electronAPI.openReleasePage(updateStatus?.releaseUrl);
+    } catch (error) {
+      if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: 'error', message: error?.message || '打开发布页失败' }));
     }
   };
 
@@ -651,7 +697,7 @@ export default function ReplicaSettingsView() {
                 ))}
               </div>
             } />
-            <SettingRow label="通知渠道" desc="传递给 CodeBuddy CLI；GUI 当前不会发送系统通知" control={
+            <SettingRow label="通知渠道" desc="传递给 CodeBuddy CLI；与上方 GUI 桌面通知开关相互独立" control={
               <TextInput scopeKey={activeProjectId} value={settings?.preferredNotifChannel || 'Auto'} onChange={(value) => updateSetting('preferredNotifChannel', value)} />
             } />
           </div>
@@ -701,6 +747,14 @@ export default function ReplicaSettingsView() {
           <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
             <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfoError ? '信息不可用' : appInfo?.version ? `v${appInfo.version}` : '加载中...'}</span>} />
             <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo ? (appInfo.packaged ? '安装版' : '开发版') : '-'}</span>} />
+            <SettingRow label="GUI 更新" desc={updateStatus?.message || '手动检查 GitHub Releases；不会后台下载或自动安装'} control={
+              <div className="flex items-center gap-1">
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={checkingForUpdates} onClick={checkForGuiUpdates}>
+                  {checkingForUpdates ? '检查中...' : updateStatus ? '重新检查' : '检查更新'}
+                </button>
+                <button className={`${updateStatus?.type === 'update' ? 'btn-primary' : 'btn-ghost'} shrink-0 px-2 py-1 text-[11px]`} onClick={openGuiReleasePage}>{updateStatus?.type === 'update' ? '下载新版本' : '发布页'}</button>
+              </div>
+            } />
             <SettingRow label="用户数据目录" desc="项目、对话、界面状态和诊断日志的本地保存位置" control={
               <div className="flex min-w-0 items-center gap-1">
                 <span className="max-w-[160px] truncate text-xs text-[var(--color-text-secondary)]" title={appInfo?.userDataPath || ''}>{appInfo?.userDataPath || '-'}</span>

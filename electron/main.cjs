@@ -84,6 +84,29 @@ function logStartup(message) {
   } catch (_) {}
 }
 
+const GUI_RELEASES_URL = 'https://github.com/ChisaAlter/codebuddy-gui/releases';
+const GUI_LATEST_RELEASE_API = 'https://api.github.com/repos/ChisaAlter/codebuddy-gui/releases/latest';
+
+function compareVersions(left, right) {
+  const parts = (value) => String(value || '').trim().replace(/^v/i, '').split('-')[0].split('.').map((item) => Number.parseInt(item, 10) || 0);
+  const leftParts = parts(left);
+  const rightParts = parts(right);
+  const length = Math.max(leftParts.length, rightParts.length, 3);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function trustedGuiReleaseUrl(value) {
+  try {
+    const parsed = new URL(String(value || GUI_RELEASES_URL));
+    if (parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/ChisaAlter/codebuddy-gui/releases')) return parsed.toString();
+  } catch (_) {}
+  return GUI_RELEASES_URL;
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -142,6 +165,50 @@ ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
     logStartup(`Task notification failed: ${error?.message || error}`);
     return { shown: false, reason: error?.message || String(error) };
   }
+});
+
+ipcMain.handle('app:checkForUpdates', async () => {
+  const currentVersion = app.getVersion();
+  const timeout = createTimeoutSignal(15000);
+  try {
+    const response = await net.fetch(GUI_LATEST_RELEASE_API, {
+      signal: timeout.signal,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `CodeBuddy-GUI/${currentVersion}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (response.status === 404) {
+      return { status: 'no-release', currentVersion, latestVersion: null, updateAvailable: false, releaseUrl: GUI_RELEASES_URL };
+    }
+    if (!response.ok) throw new Error(`GitHub Releases 请求失败: ${response.status} ${response.statusText}`);
+    const release = await response.json();
+    const latestVersion = String(release?.tag_name || '').trim().replace(/^v/i, '');
+    if (!latestVersion || !/^\d+(?:\.\d+){0,3}(?:[-+].*)?$/.test(latestVersion)) {
+      throw new Error('最新发布版本号格式无效');
+    }
+    return {
+      status: 'ok',
+      currentVersion,
+      latestVersion,
+      updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+      releaseUrl: trustedGuiReleaseUrl(release?.html_url),
+      publishedAt: release?.published_at || null,
+    };
+  } catch (error) {
+    const message = error?.name === 'AbortError' ? 'GitHub Releases 请求超时' : (error?.message || String(error));
+    logStartup(`GUI update check failed: ${message}`);
+    return { status: 'error', currentVersion, latestVersion: null, updateAvailable: false, releaseUrl: GUI_RELEASES_URL, error: message };
+  } finally {
+    timeout.cleanup();
+  }
+});
+
+ipcMain.handle('app:openReleasePage', async (_event, releaseUrl) => {
+  const target = trustedGuiReleaseUrl(releaseUrl);
+  await shell.openExternal(target);
+  return { url: target };
 });
 
 ipcMain.handle('app:getInfo', () => ({
