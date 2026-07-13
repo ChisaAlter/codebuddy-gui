@@ -160,7 +160,7 @@ export default function ReplicaInstancesView() {
         <h2 className="text-base font-semibold text-[var(--color-text-primary)]">项目运行时</h2>
         <div className="flex items-center gap-2">
           <button className="btn-ghost px-3 py-1.5 text-xs" disabled={refreshing} onClick={() => refresh()}>{refreshing ? '刷新中...' : '刷新'}</button>
-          <button className="btn-primary px-3 py-1.5 text-xs" onClick={chooseWorkspace}>添加项目</button>
+          <button className="btn-primary px-3 py-1.5 text-xs" onClick={() => chooseWorkspace()}>添加项目</button>
         </div>
       </div>
 
@@ -173,7 +173,7 @@ export default function ReplicaInstancesView() {
         ) : null}
         {projectOrder.length === 0 ? (
           <div className="flex h-full items-center justify-center">
-            <button className="btn-primary px-4 py-2 text-sm" onClick={chooseWorkspace}>打开第一个项目</button>
+            <button className="btn-primary px-4 py-2 text-sm" onClick={() => chooseWorkspace()}>打开第一个项目</button>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">

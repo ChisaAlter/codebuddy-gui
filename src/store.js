@@ -1690,7 +1690,7 @@ export const useStore = create((set, get) => ({
   // cwd 一次性注入到 session/new，agent 工具调用就以此目录为工作根；不动后端进程
   // ⚠ 注意：CLI 协议 cwd 只在 session/new|load 一次性注入，运行中改不了 cwd。
   //   所以切工作区 = 起新会话（旧 sessionId + timeline 丢），UI 要明告知用户。
-  async chooseWorkspace() {
+  async chooseWorkspace(options = {}) {
     if (!window.electronAPI?.chooseWorkspace) {
       set({ error: '工作区选择不可用（IPC 缺失）' });
       return false;
@@ -1703,10 +1703,10 @@ export const useStore = create((set, get) => ({
       return false;
     }
     if (!path) return null; // 用户取消
-    return get().setWorkspace(path);
+    return get().setWorkspace(path, options);
   },
 
-  async setWorkspace(path) {
+  async setWorkspace(path, options = {}) {
     if (!path) return false;
     if (isProjectMutationNavigation(get())) return false;
     const normalizedPath = String(path);
@@ -1761,6 +1761,7 @@ export const useStore = create((set, get) => ({
       const runtime = await get().ensureProjectRuntime(project.id);
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!runtime) throw new Error(get().error || '项目运行时启动失败');
+      if (options.deferInitializationUntilAuth) return true;
       const opened = await get().initializeWorkspace();
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!opened) throw new Error(get().error || '恢复工作区失败');
@@ -1782,7 +1783,7 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async activateProject(projectId) {
+  async activateProject(projectId, options = {}) {
     if (isProjectMutationNavigation(get())) return false;
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
@@ -1818,6 +1819,7 @@ export const useStore = create((set, get) => ({
       const runtime = await get().ensureProjectRuntime(projectId);
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!runtime) throw new Error(get().error || '项目运行时启动失败');
+      if (options.deferInitializationUntilAuth) return true;
       const opened = await get().initializeWorkspace();
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!opened) throw new Error(get().error || '恢复项目工作区失败');
@@ -2154,7 +2156,7 @@ export const useStore = create((set, get) => ({
     });
   },
 
-  async restartProjectRuntime(projectId = get().activeProjectId) {
+  async restartProjectRuntime(projectId = get().activeProjectId, options = {}) {
     return queueProjectRuntimeOperation(projectId, async () => {
       const project = get().projectsById[projectId];
       if (!project || !window.electronAPI?.restartProjectRuntime) return false;
@@ -2169,6 +2171,7 @@ export const useStore = create((set, get) => ({
         get().applyProjectRuntimeStatus(runtime);
         const connected = await connectActiveProjectRuntime(set, get, projectId, runtime);
         if (connected && projectId === get().activeProjectId) {
+          if (options.deferInitializationUntilAuth) return true;
           const initialized = await get().initializeActiveThread(undefined);
           if (!initialized) return false;
           await get().refreshProjectViews();

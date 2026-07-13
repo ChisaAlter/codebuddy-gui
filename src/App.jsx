@@ -59,27 +59,110 @@ function WindowControls({ height = 'h-12' }) {
 function LoginView() {
   const authSubmitting = useStore((s) => s.authSubmitting);
   const authError = useStore((s) => s.authError);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const projectsById = useStore((s) => s.projectsById);
+  const projectOrder = useStore((s) => s.projectOrder);
+  const projectNavigationBusy = useStore((s) => s.projectNavigationBusy);
   const login = useStore((s) => s.login);
+  const bootstrap = useStore((s) => s.bootstrap);
+  const activateProject = useStore((s) => s.activateProject);
+  const chooseWorkspace = useStore((s) => s.chooseWorkspace);
+  const restartProjectRuntime = useStore((s) => s.restartProjectRuntime);
   const [password, setPassword] = React.useState('');
   const [show, setShow] = React.useState(false);
+  const [accessAction, setAccessAction] = React.useState(null);
+  const [accessError, setAccessError] = React.useState('');
+  const mountedRef = React.useRef(true);
+  const alternativeProjectIds = React.useMemo(
+    () => projectOrder.filter((projectId) => projectId !== activeProjectId && projectsById[projectId]),
+    [activeProjectId, projectOrder, projectsById],
+  );
+  const [selectedProjectId, setSelectedProjectId] = React.useState(alternativeProjectIds[0] || '');
+  const accessBusy = Boolean(accessAction) || projectNavigationBusy;
+  const busy = authSubmitting || accessBusy;
+  const activeProjectName = projectsById[activeProjectId]?.name || '当前项目';
 
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    if (!password.trim()) return;
+  React.useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+
+  React.useEffect(() => {
+    if (!alternativeProjectIds.includes(selectedProjectId)) {
+      setSelectedProjectId(alternativeProjectIds[0] || '');
+    }
+  }, [alternativeProjectIds, selectedProjectId]);
+
+  const onSubmit = async (event) => {
+    event.preventDefault();
+    if (busy || !password.trim()) return;
+    setAccessError('');
     await login(password);
   };
 
+  const finishProjectAccess = async (result, fallbackMessage) => {
+    if (result === true) {
+      await bootstrap();
+      return;
+    }
+    if (result === false && mountedRef.current) {
+      const state = useStore.getState();
+      setAccessError(state.projectNavigationError || state.error || fallbackMessage);
+    }
+  };
+
+  const switchProject = async () => {
+    if (busy || !selectedProjectId) return;
+    setAccessAction('switch');
+    setAccessError('');
+    try {
+      const switched = await activateProject(selectedProjectId, { deferInitializationUntilAuth: true });
+      await finishProjectAccess(switched, '切换项目失败');
+    } catch (error) {
+      if (mountedRef.current) setAccessError(error?.message || '切换项目失败');
+    } finally {
+      if (mountedRef.current) setAccessAction(null);
+    }
+  };
+
+  const openOtherProject = async () => {
+    if (busy) return;
+    setAccessAction('workspace');
+    setAccessError('');
+    try {
+      const opened = await chooseWorkspace({ deferInitializationUntilAuth: true });
+      await finishProjectAccess(opened, '打开项目失败');
+    } catch (error) {
+      if (mountedRef.current) setAccessError(error?.message || '打开项目失败');
+    } finally {
+      if (mountedRef.current) setAccessAction(null);
+    }
+  };
+
+  const restartAndRecheck = async () => {
+    if (busy || !activeProjectId) return;
+    setAccessAction('restart');
+    setAccessError('');
+    try {
+      const restarted = await restartProjectRuntime(activeProjectId, { deferInitializationUntilAuth: true });
+      await finishProjectAccess(restarted, '重启项目运行时失败');
+    } catch (error) {
+      if (mountedRef.current) setAccessError(error?.message || '重启项目运行时失败');
+    } finally {
+      if (mountedRef.current) setAccessAction(null);
+    }
+  };
+
   return (
-    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] px-6 text-[var(--color-text-primary)]">
       <div className="titlebar-drag absolute inset-x-0 top-0 flex h-10 justify-end border-b border-[var(--color-border-default)]">
         <WindowControls height="h-10" />
       </div>
-      <div className="w-full max-w-sm rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
+      <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
         <div className="mb-5 flex items-center gap-2">
-          <img src={appIconUrl} alt="CodeBuddy GUI" className="h-9 w-9 rounded-lg" />
-          <div>
+          <img src={appIconUrl} alt="CodeBuddy GUI" className="h-9 w-9 rounded-md" />
+          <div className="min-w-0">
             <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy GUI</div>
-            <div className="text-xs text-[var(--color-text-muted)]">需要登录以继续</div>
+            <div className="truncate text-xs text-[var(--color-text-muted)]" title={activeProjectName}>登录项目：{activeProjectName}</div>
           </div>
         </div>
         <form onSubmit={onSubmit} className="space-y-3">
@@ -89,16 +172,16 @@ function LoginView() {
               <input
                 type={show ? 'text' : 'password'}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={authSubmitting}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={busy}
                 autoFocus
                 placeholder="请输入 CodeBuddy 服务密码"
-                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent-brand)] focus:outline-none"
+                className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 pr-14 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent-brand)] focus:outline-none"
                 aria-label="服务密码"
               />
               <button
                 type="button"
-                onClick={() => setShow((s) => !s)}
+                onClick={() => setShow((value) => !value)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
                 tabIndex={-1}
                 aria-label={show ? '隐藏密码' : '显示密码'}
@@ -109,13 +192,13 @@ function LoginView() {
           </label>
           {authError ? (
             <div className="rounded-md border border-[var(--color-accent-red)]/30 bg-[var(--color-accent-red)]/10 px-3 py-2 text-xs text-[var(--color-accent-red)]" role="alert">
-              {authError === 'login.error.incorrect' ? '密码不正确' : authError === 'app.connectFailed' ? '无法连接到服务，请稍后重试' : authError}
+              {authError === 'login.error.incorrect' ? '密码不正确' : authError === 'app.connectFailed' ? '无法连接到服务，请重试或重启运行时' : authError}
             </div>
           ) : null}
           <button
             type="submit"
-            disabled={authSubmitting || !password.trim()}
-            className="btn-primary w-full justify-center rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            disabled={busy || !password.trim()}
+            className="btn-primary w-full justify-center px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             style={{ background: 'var(--color-accent-brand)' }}
           >
             {authSubmitting ? (
@@ -126,6 +209,39 @@ function LoginView() {
             ) : '登录'}
           </button>
         </form>
+
+        <div className="mt-5 border-t border-[var(--color-border-default)] pt-4">
+          <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">无法登录当前项目</div>
+          {alternativeProjectIds.length ? (
+            <div className="mb-2 flex gap-2">
+              <select
+                className="min-w-0 flex-1 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1.5 text-xs text-[var(--color-text-primary)]"
+                value={selectedProjectId}
+                disabled={busy}
+                onChange={(event) => setSelectedProjectId(event.target.value)}
+                aria-label="选择其他项目"
+              >
+                {alternativeProjectIds.map((projectId) => (
+                  <option key={projectId} value={projectId}>{projectsById[projectId]?.name || projectId}</option>
+                ))}
+              </select>
+              <button type="button" className="btn-ghost shrink-0 px-3 py-1.5 text-xs" disabled={busy || !selectedProjectId} onClick={switchProject}>
+                {accessAction === 'switch' ? '切换中...' : '切换'}
+              </button>
+            </div>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" className="btn-ghost justify-center px-3 py-1.5 text-xs" disabled={busy} onClick={openOtherProject}>
+              {accessAction === 'workspace' ? '打开中...' : '打开其他项目'}
+            </button>
+            <button type="button" className="btn-ghost justify-center px-3 py-1.5 text-xs" disabled={busy || !activeProjectId} onClick={restartAndRecheck}>
+              {accessAction === 'restart' ? '重启中...' : '重启运行时'}
+            </button>
+          </div>
+          {accessError ? (
+            <div className="mt-2 text-xs text-[var(--color-accent-red)]" role="alert">{accessError}</div>
+          ) : null}
+        </div>
         <div className="mt-4 text-center text-[10px] text-[var(--color-text-muted)]">
           密码仅用于本次登录，应用不会保存
         </div>
@@ -367,7 +483,7 @@ function MainContent() {
           <div className="mb-5 text-sm leading-6 text-[var(--color-text-secondary)]">
             选择本地文件夹后，CodeBuddy 会为它保存独立的对话、草稿和工作区状态。
           </div>
-          <button className="btn-primary px-4 py-2 text-sm" onClick={chooseWorkspace}>
+          <button className="btn-primary px-4 py-2 text-sm" onClick={() => chooseWorkspace()}>
             打开文件夹
           </button>
         </div>
