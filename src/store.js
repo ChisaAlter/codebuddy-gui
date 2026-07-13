@@ -1326,6 +1326,10 @@ export const useStore = create((set, get) => ({
   },
 
   async newSession() {
+    if (get().projectNavigationBusy) {
+      set({ newSessionError: '请等待项目或会话切换完成' });
+      return false;
+    }
     if (get().newSessionBusy) return false;
     const projectId = get().activeProjectId;
     const previousThreadId = get().activeThreadId;

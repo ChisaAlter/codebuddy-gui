@@ -165,6 +165,7 @@ function StatusBar() {
   const newSessionBusy = useStore((s) => s.newSessionBusy);
   const newSessionProjectId = useStore((s) => s.newSessionProjectId);
   const newSessionError = useStore((s) => s.newSessionError);
+  const projectNavigationBusy = useStore((s) => s.projectNavigationBusy);
 
   return (
     <div className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] pl-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
@@ -207,17 +208,17 @@ function StatusBar() {
         <button
           type="button"
           className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
-          disabled={newSessionBusy}
+          disabled={newSessionBusy || projectNavigationBusy}
           onClick={async () => {
-            if (newSessionBusy) return;
+            if (newSessionBusy || projectNavigationBusy) return;
             const store = useStore.getState();
             store.setRoute('chat');
             await store.newSession();
           }}
-          title={newSessionError && newSessionProjectId === activeProjectId ? newSessionError : newSessionBusy ? '正在创建新对话' : '新对话'}
-          aria-label={newSessionBusy ? '正在创建新对话' : '新对话'}
+          title={projectNavigationBusy ? '请等待项目或会话切换完成' : newSessionError && newSessionProjectId === activeProjectId ? newSessionError : newSessionBusy ? '正在创建新对话' : '新对话'}
+          aria-label={projectNavigationBusy ? '项目或会话切换中' : newSessionBusy ? '正在创建新对话' : '新对话'}
         >
-          {newSessionBusy ? (
+          {newSessionBusy || projectNavigationBusy ? (
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
           ) : (
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
