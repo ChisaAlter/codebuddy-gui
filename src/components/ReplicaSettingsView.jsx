@@ -466,11 +466,11 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
-        {/* 外观 */}
+        {/* CodeBuddy GUI */}
         <div className="settings-group">
-          <h2 className="settings-heading">外观</h2>
+          <h2 className="settings-heading">CodeBuddy GUI</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-            <SettingRow label="界面主题" control={
+            <SettingRow label="界面主题" desc="立即应用于 CodeBuddy GUI" control={
               <div className="flex gap-1">
                 {['跟随系统', '暗色', '亮色'].map(theme => (
                   <button
@@ -486,22 +486,9 @@ export default function ReplicaSettingsView() {
                 ))}
               </div>
             } />
-            <SettingRow label="界面语言" control={
-              <div className="flex gap-1">
-                {['跟随系统', '简体中文', 'English'].map(lang => (
-                  <button
-                    key={lang}
-                    onClick={() => updateSetting('language', lang)}
-                    className={`rounded-md px-2.5 py-1 text-xs border transition-colors ${
-                    (settings?.language || '简体中文') === lang
-                      ? '' 
-                      : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
-                  }`}
-                  style={(settings?.language || '简体中文') === lang ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
-                  >{lang}</button>
-                ))}
-              </div>
-            } />
+            <SettingRow label="显示提示建议" desc="在输入框上方显示 CodeBuddy 返回的提示建议" control={<Toggle value={!!settings?.promptSuggestionEnabled} onChange={(v) => updateSetting('promptSuggestionEnabled', v)} />} />
+            <SettingRow label="允许剪贴板贴图" desc="允许从剪贴板添加当前运行时支持的图片附件" control={<Toggle value={!!settings?.enablePasteImageFromClipboard} onChange={(v) => updateSetting('enablePasteImageFromClipboard', v)} />} />
+            <SettingRow label="显示 Token 计数" desc="在对话输入区显示当前会话的 Token 使用量" control={<Toggle value={!!settings?.showTokensCounter} onChange={(v) => updateSetting('showTokensCounter', v)} />} />
           </div>
         </div>
 
@@ -533,9 +520,9 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
-        {/* 模型与推理 */}
+        {/* CodeBuddy CLI 模型与推理 */}
         <div className="settings-group">
-          <h2 className="settings-heading">模型与推理</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：模型与推理</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="默认模型" desc="设置默认使用的 AI 模型" control={
               <TextInput scopeKey={activeProjectId} value={settings?.model || currentModelName || currentModel || ''} onChange={(v) => updateSetting('model', v)} />
@@ -561,48 +548,58 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
-        {/* 行为 */}
+        {/* CodeBuddy CLI 行为 */}
         <div className="settings-group">
-          <h2 className="settings-heading">行为</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：行为</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="自动压缩上下文" control={<Toggle value={!!settings?.autoCompactEnabled} onChange={(v) => updateSetting('autoCompactEnabled', v)} />} />
             <SettingRow label="提交包含 Co-authored-by" control={<Toggle value={!!settings?.includeCoAuthoredBy} onChange={(v) => updateSetting('includeCoAuthoredBy', v)} />} />
             <SettingRow label="文件检查点" desc="启用文件版本回退功能" control={<Toggle value={!!settings?.fileCheckpointingEnabled} onChange={(v) => updateSetting('fileCheckpointingEnabled', v)} />} />
-            <SettingRow label="提示建议" control={<Toggle value={!!settings?.promptSuggestionEnabled} onChange={(v) => updateSetting('promptSuggestionEnabled', v)} />} />
-            <SettingRow label="折叠 Hook 输出" control={<Toggle value={!!settings?.hookOutputCollapsed} onChange={(v) => updateSetting('hookOutputCollapsed', v)} />} />
+            <SettingRow label="折叠 Hook 输出" desc="控制 CodeBuddy 返回的 Hook 输出默认展示方式" control={<Toggle value={!!settings?.hookOutputCollapsed} onChange={(v) => updateSetting('hookOutputCollapsed', v)} />} />
             <SettingRow label="忽略 .gitignore" desc="搜索文件时忽略 .gitignore 规则" control={<Toggle value={!!settings?.ignoreGitignore} onChange={(v) => updateSetting('ignoreGitignore', v)} />} />
             <SettingRow label="延迟加载工具" control={<Toggle value={!!settings?.lazyLoadTools} onChange={(v) => updateSetting('lazyLoadTools', v)} />} />
-            <SettingRow label="允许剪贴板贴图" control={<Toggle value={!!settings?.enablePasteImageFromClipboard} onChange={(v) => updateSetting('enablePasteImageFromClipboard', v)} />} />
-            <SettingRow label="终端进度条" control={<Toggle value={!!settings?.enableTerminalProgressBar} onChange={(v) => updateSetting('enableTerminalProgressBar', v)} />} />
-            <SettingRow label="显示 Token 计数" control={<Toggle value={!!settings?.showTokensCounter} onChange={(v) => updateSetting('showTokensCounter', v)} />} />
+            <SettingRow label="终端进度条" desc="控制 CodeBuddy 命令输出中的进度显示，不影响 GUI 内置终端" control={<Toggle value={!!settings?.enableTerminalProgressBar} onChange={(v) => updateSetting('enableTerminalProgressBar', v)} />} />
           </div>
         </div>
 
-        {/* 记忆 */}
+        {/* CodeBuddy CLI 记忆 */}
         <div className="settings-group">
-          <h2 className="settings-heading">记忆</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：记忆</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="启用记忆功能" control={<Toggle value={!!settings?.memory?.enabled} onChange={(v) => updateSetting('memory', { ...settings?.memory, enabled: v })} />} />
             <SettingRow label="自动记忆" desc="自动保存重要信息到记忆库" control={<Toggle value={!!settings?.memory?.autoMemoryEnabled} onChange={(v) => updateSetting('memory', { ...settings?.memory, autoMemoryEnabled: v })} />} />
           </div>
         </div>
 
-        {/* 语言 */}
+        {/* CodeBuddy CLI 语言与通知 */}
         <div className="settings-group">
-          <h2 className="settings-heading">语言</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：语言与通知</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-            <SettingRow label="响应语言" desc="设置 AI 回复使用的语言" control={
-              <span className="text-xs text-[var(--color-text-secondary)]">{settings?.language || '简体中文'}</span>
+            <SettingRow label="响应语言" desc="设置 AI 回复语言，不会翻译 CodeBuddy GUI 界面" control={
+              <div className="flex gap-1">
+                {['跟随系统', '简体中文', 'English'].map(lang => (
+                  <button
+                    key={lang}
+                    onClick={() => updateSetting('language', lang)}
+                    className={`rounded-md px-2.5 py-1 text-xs border transition-colors ${
+                    (settings?.language || '简体中文') === lang
+                      ? ''
+                      : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+                  }`}
+                  style={(settings?.language || '简体中文') === lang ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
+                  >{lang}</button>
+                ))}
+              </div>
             } />
-            <SettingRow label="通知渠道" control={
+            <SettingRow label="通知渠道" desc="传递给 CodeBuddy CLI；GUI 当前不会发送系统通知" control={
               <TextInput scopeKey={activeProjectId} value={settings?.preferredNotifChannel || 'Auto'} onChange={(value) => updateSetting('preferredNotifChannel', value)} />
             } />
           </div>
         </div>
 
-        {/* 高级 */}
+        {/* CodeBuddy CLI 高级 */}
         <div className="settings-group">
-          <h2 className="settings-heading">高级</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：高级</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="聊天记录保留天数" control={
               <SpinButton value={settings?.cleanupPeriodDays ?? 30} onChange={(v) => updateSetting('cleanupPeriodDays', v)} />
@@ -610,10 +607,10 @@ export default function ReplicaSettingsView() {
             <SettingRow label="图片保留轮数" desc="对话历史中保留图片的最近轮数" control={
               <SpinButton value={settings?.imageHistoryRetainRounds ?? 2} onChange={(v) => updateSetting('imageHistoryRetainRounds', v)} />
             } />
-            <SettingRow label="自动更新" control={<Toggle value={!!settings?.autoUpdates} onChange={(v) => updateSetting('autoUpdates', v)} />} />
-            <SettingRow label="启用全部项目 MCP" control={<Toggle value={!!settings?.enableAllProjectMcpServers} onChange={(v) => updateSetting('enableAllProjectMcpServers', v)} />} />
+            <SettingRow label="自动更新" desc="控制 CodeBuddy CLI 自身更新，不会更新 CodeBuddy GUI" control={<Toggle value={!!settings?.autoUpdates} onChange={(v) => updateSetting('autoUpdates', v)} />} />
+            <SettingRow label="启用全部项目 MCP" desc="由 CodeBuddy CLI 加载项目中配置的 MCP 服务" control={<Toggle value={!!settings?.enableAllProjectMcpServers} onChange={(v) => updateSetting('enableAllProjectMcpServers', v)} />} />
             <SettingRow label="信任全部目录" control={<Toggle value={!!settings?.trustAll} onChange={(value) => updateSetting('trustAll', value)} />} />
-            <SettingRow label="状态栏命令" control={
+            <SettingRow label="状态栏命令" desc="配置 CodeBuddy CLI 状态栏，不会改变 GUI 状态栏" control={
               <TextInput scopeKey={activeProjectId} value={settings?.statusLine?.command || ''} width="w-72" onChange={(value) => updateSetting('statusLine.command', value)} />
             } />
             <SettingRow label="网关认证" desc="CodeBuddy 网关使用的认证值，仅保存到 CodeBuddy 配置" control={
@@ -628,9 +625,9 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
-        {/* 安全沙箱 */}
+        {/* CodeBuddy CLI 安全沙箱 */}
         <div className="settings-group">
-          <h2 className="settings-heading">安全沙箱</h2>
+          <h2 className="settings-heading">CodeBuddy CLI：安全沙箱</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="启用安全沙箱" desc="在沙箱中运行 Bash 命令，限制文件和网络访问" control={<Toggle value={!!settings?.sandbox?.enabled} onChange={(v) => updateSetting('sandbox', { ...settings?.sandbox, enabled: v })} />} />
             <SettingRow label="沙箱内自动批准命令" desc="命令在沙箱中运行时自动批准" control={<Toggle value={!!settings?.sandbox?.autoAllowBashIfSandboxed} onChange={(v) => updateSetting('sandbox', { ...settings?.sandbox, autoAllowBashIfSandboxed: v })} />} />

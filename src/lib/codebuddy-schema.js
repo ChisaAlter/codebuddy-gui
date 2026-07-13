@@ -43,8 +43,18 @@ export const NAV_GROUPS = [
 
 export const SETTINGS_GROUPS = [
   {
+    id: 'gui',
+    title: 'CodeBuddy GUI',
+    items: [
+      { key: 'theme', label: '界面主题', type: 'text' },
+      { key: 'promptSuggestionEnabled', label: '显示提示建议', type: 'boolean' },
+      { key: 'enablePasteImageFromClipboard', label: '允许剪贴板贴图', type: 'boolean' },
+      { key: 'showTokensCounter', label: '显示 Token 计数', type: 'boolean' },
+    ],
+  },
+  {
     id: 'modelAndReasoning',
-    title: '模型与思考',
+    title: 'CodeBuddy CLI：模型与思考',
     items: [
       { key: 'model', label: '默认模型', type: 'text' },
       {
@@ -65,20 +75,18 @@ export const SETTINGS_GROUPS = [
   },
   {
     id: 'behavior',
-    title: '行为',
+    title: 'CodeBuddy CLI：行为',
     items: [
       { key: 'autoCompactEnabled', label: '自动压缩上下文', type: 'boolean' },
       { key: 'includeCoAuthoredBy', label: '包含 Co-authored-by', type: 'boolean' },
       { key: 'fileCheckpointingEnabled', label: '文件检查点', type: 'boolean' },
-      { key: 'promptSuggestionEnabled', label: '提示建议', type: 'boolean' },
       { key: 'hookOutputCollapsed', label: '折叠 Hook 输出', type: 'boolean' },
-      { key: 'enablePasteImageFromClipboard', label: '允许剪贴板贴图', type: 'boolean' },
       { key: 'enableTerminalProgressBar', label: '终端进度条', type: 'boolean' },
     ],
   },
   {
     id: 'memory',
-    title: '记忆',
+    title: 'CodeBuddy CLI：记忆',
     items: [
       { key: 'memory.enabled', label: '启用记忆', type: 'boolean' },
       { key: 'memory.autoMemoryEnabled', label: '自动记忆', type: 'boolean' },
@@ -86,16 +94,15 @@ export const SETTINGS_GROUPS = [
   },
   {
     id: 'language',
-    title: '语言',
+    title: 'CodeBuddy CLI：语言与通知',
     items: [
-      { key: 'theme', label: '主题', type: 'text' },
-      { key: 'language', label: '语言', type: 'text' },
-      { key: 'preferredNotifChannel', label: '通知渠道', type: 'text' },
+      { key: 'language', label: '响应语言', type: 'text' },
+      { key: 'preferredNotifChannel', label: 'CodeBuddy 通知渠道', type: 'text' },
     ],
   },
   {
     id: 'advanced',
-    title: '高级',
+    title: 'CodeBuddy CLI：高级',
     items: [
       { key: 'cleanupPeriodDays', label: '会话保留天数', type: 'number' },
       { key: 'imageHistoryRetainRounds', label: '图片保留轮数', type: 'number' },
@@ -108,7 +115,7 @@ export const SETTINGS_GROUPS = [
   },
   {
     id: 'sandbox',
-    title: '安全沙箱',
+    title: 'CodeBuddy CLI：安全沙箱',
     items: [
       { key: 'sandbox.enabled', label: '启用沙箱', type: 'boolean' },
       { key: 'sandbox.autoAllowBashIfSandboxed', label: '沙箱内自动允许 Bash', type: 'boolean' },

@@ -377,6 +377,15 @@ function DirtyFileConfirmDialog() {
   );
 }
 
+function readCachedTheme() {
+  try {
+    const cached = JSON.parse(localStorage.getItem('codebuddy-gui-settings') || '{}');
+    return ['dark', 'light', 'system'].includes(cached?.theme) ? cached.theme : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
   const settingsTheme = useStore((s) => s.settings?.theme);
@@ -407,7 +416,7 @@ export default function App() {
 
   // 主题切换：根据 settings.theme 设置 data-theme 属性
   useEffect(() => {
-    const theme = settingsTheme || 'dark';
+    const theme = settingsTheme || readCachedTheme() || 'dark';
     if (theme === 'system') {
       const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
       document.documentElement.dataset.theme = prefersLight ? 'light' : 'dark';
