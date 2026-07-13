@@ -618,11 +618,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let quitInProgress = false;
     const unsubscribe = window.electronAPI?.onQuitRequested?.(async () => {
-      const confirmed = await useStore.getState().confirmDirtyFileAction('退出应用');
-      if (confirmed) {
+      if (quitInProgress) return;
+      quitInProgress = true;
+      try {
+        const state = useStore.getState();
+        const confirmed = await state.confirmDirtyFileAction('退出应用');
+        if (!confirmed) return;
         await useStore.getState().persistActiveProjectWorkspaceState?.({ discardDirty: true });
-        window.electronAPI?.confirmQuit?.();
+        const saved = useStore.getState().flushProductStateSync?.();
+        if (!saved) {
+          useStore.setState({
+            error: useStore.getState().error || '退出已取消：无法保存最终项目状态，请处理保存问题后重试。',
+          });
+          return;
+        }
+        if (!window.electronAPI?.confirmQuit) throw new Error('应用退出接口不可用');
+        window.electronAPI.confirmQuit();
+      } catch (error) {
+        useStore.setState({ error: '退出已取消：' + (error?.message || '保存项目状态失败') });
+      } finally {
+        quitInProgress = false;
       }
     });
     return unsubscribe;
