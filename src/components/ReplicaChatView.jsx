@@ -282,6 +282,29 @@ function ActivityTimelineCard({ item }) {
   );
 }
 
+function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
+  const phase = typeof agentPhase === 'string' ? agentPhase : agentPhase?.type || agentPhase?.phase || '';
+  const progressType = typeof progress === 'string' ? progress : progress?.type || '';
+  const current = historyReplayActive ? 'history-replay' : progressType || phase;
+  if (!current || ['idle', 'completed', 'done', 'ready'].includes(current)) return null;
+  const labels = {
+    'history-replay': '正在恢复会话历史',
+    compacting: '正在压缩上下文',
+    thinking: '正在思考',
+    reasoning: '正在推理',
+    responding: '正在生成回复',
+    tool: '正在执行工具',
+    tool_use: '正在执行工具',
+    planning: '正在规划',
+  };
+  return (
+    <div className="mb-3 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--color-accent-blue)]" />
+      <span>{labels[current] || String(current)}</span>
+    </div>
+  );
+}
+
 function TeamStatusPanel({ teamState }) {
   if (!teamState) return null;
   const members = Array.isArray(teamState.members) ? teamState.members : [];
@@ -319,6 +342,14 @@ function InterruptionCard({ item }) {
   const interruptionId = item.meta?.interruptionId || item.meta?.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
   const resolved = item.status === 'resolved';
   const resolution = item.meta?.resolution;
+  const resolutionLabels = {
+    allow: '已允许',
+    allowAll: '已始终允许',
+    deny: '已拒绝',
+    reject: '已拒绝',
+    rejectAndExitPlan: '已拒绝并退出计划',
+  };
+  const resolutionDenied = ['deny', 'reject', 'rejectAndExitPlan'].includes(resolution);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -346,7 +377,7 @@ function InterruptionCard({ item }) {
         {JSON.stringify(item.meta || item.raw, null, 2)}
       </pre>
       {resolved ? (
-        <div className="text-xs font-medium text-[var(--color-accent-green)]">{resolution === 'deny' ? '已拒绝' : '已允许'}</div>
+        <div className={'text-xs font-medium ' + (resolutionDenied ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-accent-green)]')}>{resolutionLabels[resolution] || '已处理'}</div>
       ) : interruptionId ? (
         <div className="flex gap-2">
           <button disabled={busy} className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={() => resolve('allow')}>{busy ? '处理中...' : '允许'}</button>
@@ -543,6 +574,9 @@ export default function ReplicaChatView() {
   const promptSuggestion = useStore((s) => s.promptSuggestion);
   const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
   const teamState = useStore((s) => s.teamState);
+  const agentPhase = useStore((s) => s.agentPhase);
+  const progress = useStore((s) => s.progress);
+  const historyReplayActive = useStore((s) => s.historyReplayActive);
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -932,6 +966,7 @@ export default function ReplicaChatView() {
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
         <div className="mx-auto max-w-3xl px-6 py-4">
+          <SessionActivityStatus historyReplayActive={historyReplayActive} agentPhase={agentPhase} progress={progress} />
           <TeamStatusPanel teamState={teamState} />
           {timeline.length === 0 ? (
             connectionState === 'connecting' || runtimeStatus === 'starting' ? (

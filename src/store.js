@@ -223,6 +223,9 @@ function emptyThreadRuntime() {
     pendingAttachments: [],
     promptSuggestion: null,
     teamState: null,
+    agentPhase: null,
+    progress: null,
+    historyReplayActive: false,
     models: [],
     modes: [],
     currentModel: null,
@@ -243,6 +246,9 @@ const ACTIVE_THREAD_RUNTIME_KEYS = [
   'pendingAttachments',
   'promptSuggestion',
   'teamState',
+  'agentPhase',
+  'progress',
+  'historyReplayActive',
   'models',
   'modes',
   'currentModel',
@@ -485,6 +491,9 @@ export const useStore = create((set, get) => ({
   permissionRequests: [],
   questions: [],
   teamState: null,
+  agentPhase: null,
+  progress: null,
+  historyReplayActive: false,
   fileCwd: '.',
   // 工作区路径：决定 ACP 会话 agent 工具调用目录、Git cwd、文件树根的统一来源
   // 通过 setWorkspace(path) 切换 = 用新 cwd 起新会话；持久化在 localStorage
@@ -998,13 +1007,42 @@ export const useStore = create((set, get) => ({
     if (!su) return;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const metadata = update._meta && typeof update._meta === 'object' ? update._meta : {};
+    const runtimePatch = {};
     if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/promptSuggestion')) {
-      get().patchThreadRuntime(threadId, { promptSuggestion: metadata['codebuddy.ai/promptSuggestion'] || null });
+      runtimePatch.promptSuggestion = metadata['codebuddy.ai/promptSuggestion'] || null;
     }
     if (metadata['codebuddy.ai/teamUpdate']) {
-      get().patchThreadRuntime(threadId, {
-        teamState: mergeTeamState(runtime.teamState, metadata['codebuddy.ai/teamUpdate']),
-      });
+      runtimePatch.teamState = mergeTeamState(runtime.teamState, metadata['codebuddy.ai/teamUpdate']);
+    }
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/agentPhase')) {
+      runtimePatch.agentPhase = metadata['codebuddy.ai/agentPhase'] || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/progress')) {
+      runtimePatch.progress = metadata['codebuddy.ai/progress'] || null;
+    }
+    if (metadata['codebuddy.ai/historyReplay'] === 'start') runtimePatch.historyReplayActive = true;
+    if (metadata['codebuddy.ai/historyReplay'] === 'end') runtimePatch.historyReplayActive = false;
+    if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
+
+    if (metadata['codebuddy.ai/permissionResolved']) {
+      const interruptionId = metadata['codebuddy.ai/toolCallId'];
+      const decision = metadata['codebuddy.ai/decision'];
+      if (interruptionId && decision && get().applyInterruptionResolution(threadId, interruptionId, decision)) {
+        get().persistProductState();
+      }
+    }
+
+    for (const [metadataKey, eventType] of [
+      ['codebuddy.ai/goalProgress', 'goal-progress'],
+      ['codebuddy.ai/goalStatus', 'goal-status'],
+    ]) {
+      const goalEvent = metadata[metadataKey];
+      if (!goalEvent || typeof goalEvent !== 'object') continue;
+      const currentTimeline = get().threadRuntimeById[threadId]?.timeline || runtime.timeline;
+      const duplicate = goalEvent.id && currentTimeline.some((item) => (
+        item.type === eventType && (item.meta?.id === goalEvent.id || item.raw?.id === goalEvent.id)
+      ));
+      if (!duplicate) get().appendThreadTimelineEvent(threadId, eventType, { ...goalEvent, type: eventType });
     }
 
     if (su === 'config_option_update') {
@@ -1050,6 +1088,9 @@ export const useStore = create((set, get) => ({
           : ['error', 'failed'].includes(rawStatus)
             ? 'error'
             : rawStatus || 'running';
+      if (['idle', 'error', 'cancelled'].includes(normalizedStatus)) {
+        get().patchThreadRuntime(threadId, { agentPhase: null, progress: null, historyReplayActive: false });
+      }
       get().updateThreadRecord(threadId, {
         status: normalizedStatus,
         unread: get().activeThreadId !== threadId && ['idle', 'error', 'cancelled'].includes(normalizedStatus),
@@ -1061,7 +1102,12 @@ export const useStore = create((set, get) => ({
   handleConversationEvent({ threadId, type, detail }) {
     const client = conversations.peek(threadId);
     if (type === 'connected') {
-      get().patchThreadRuntime(threadId, { connectionState: 'connected' });
+      get().patchThreadRuntime(threadId, {
+        connectionState: 'connected',
+        agentPhase: null,
+        progress: null,
+        historyReplayActive: false,
+      });
       if (get().activeThreadId === threadId) {
         set({ sessionToken: client?.sessionToken || null, error: null });
         setAcpSessionToken(client?.sessionToken || null);
@@ -1077,7 +1123,12 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (type === 'reconnect_failed') {
-      get().patchThreadRuntime(threadId, { connectionState: 'error' });
+      get().patchThreadRuntime(threadId, {
+        connectionState: 'error',
+        agentPhase: null,
+        progress: null,
+        historyReplayActive: false,
+      });
       get().updateThreadRecord(threadId, { status: 'error', unread: get().activeThreadId !== threadId });
       return;
     }
@@ -2228,6 +2279,42 @@ export const useStore = create((set, get) => ({
     get().patchThreadRuntime(threadId, { timeline: closeAssistantStream(runtime.timeline) });
   },
 
+  applyInterruptionResolution(threadId, interruptionId, decision, resolvedAt = Date.now()) {
+    if (!threadId || !interruptionId) return false;
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    let timelineChanged = false;
+    const timeline = runtime.timeline.map((item) => {
+      if (item.type !== 'interruption' || sessionActionItemId(item) !== interruptionId) return item;
+      if (item.status === 'resolved' && item.meta?.resolution === decision) return item;
+      timelineChanged = true;
+      return {
+        ...item,
+        status: 'resolved',
+        meta: { ...(item.meta || {}), resolution: decision, resolvedAt },
+      };
+    });
+    const permissionRequests = runtime.permissionRequests.filter((item) => sessionActionItemId(item) !== interruptionId);
+    if (!timelineChanged && permissionRequests.length === runtime.permissionRequests.length) return false;
+    get().patchThreadRuntime(threadId, { permissionRequests, timeline });
+    set((state) => {
+      const record = state.threadsById[threadId];
+      if (!record) return {};
+      const stillWaiting = permissionRequests.length > 0 || runtime.questions.length > 0;
+      return {
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...record,
+            timeline: timeline.slice(-300),
+            status: record.status === 'waiting' && !stillWaiting ? 'running' : record.status,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      };
+    });
+    return true;
+  },
+
   async respondToInterruption(interruptionId, decision = 'allow') {
     const state = get();
     const projectId = state.activeProjectId;
@@ -2248,35 +2335,7 @@ export const useStore = create((set, get) => ({
         });
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== sessionId) return true;
-        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-        const timeline = runtime.timeline.map((item) => (
-          item.type === 'interruption' && sessionActionItemId(item) === interruptionId
-            ? {
-                ...item,
-                status: 'resolved',
-                meta: { ...(item.meta || {}), resolution: decision, resolvedAt: Date.now() },
-              }
-            : item
-        ));
-        get().patchThreadRuntime(threadId, {
-          permissionRequests: runtime.permissionRequests.filter((item) => sessionActionItemId(item) !== interruptionId),
-          timeline,
-        });
-        set((state) => {
-          const record = state.threadsById[threadId];
-          if (!record || record.sessionId !== sessionId) return {};
-          return {
-            threadsById: {
-              ...state.threadsById,
-              [threadId]: {
-                ...record,
-                timeline: timeline.slice(-300),
-                status: record.status === 'waiting' ? 'running' : record.status,
-                updatedAt: new Date().toISOString(),
-              },
-            },
-          };
-        });
+        get().applyInterruptionResolution(threadId, interruptionId, decision);
         await get().persistProductState();
         return true;
       } catch (error) {
