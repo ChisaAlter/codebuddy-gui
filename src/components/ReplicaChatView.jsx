@@ -342,6 +342,7 @@ function InterruptionCard({ item }) {
   const interruptionId = item.meta?.interruptionId || item.meta?.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
   const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId || null;
   const permissionOptions = item.meta?.options || item.raw?.options || [];
+  const expired = item.status === 'expired';
   const resolved = item.status === 'resolved';
   const resolution = item.meta?.resolution;
   const resolutionLabels = {
@@ -356,7 +357,7 @@ function InterruptionCard({ item }) {
   const [error, setError] = useState('');
 
   const resolve = async (decision) => {
-    if (!interruptionId || busy || resolved) return;
+    if (!interruptionId || busy || resolved || expired) return;
     setBusy(true);
     setError('');
     try {
@@ -378,7 +379,9 @@ function InterruptionCard({ item }) {
       <pre className="mb-3 max-h-24 overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--color-text-secondary)]">
         {JSON.stringify(item.meta || item.raw, null, 2)}
       </pre>
-      {resolved ? (
+      {expired ? (
+        <div className="text-xs font-medium text-[var(--color-text-muted)]">请求已失效，请重新发起对话</div>
+      ) : resolved ? (
         <div className={'text-xs font-medium ' + (resolutionDenied ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-accent-green)]')}>{resolutionLabels[resolution] || '已处理'}</div>
       ) : interruptionId ? (
         <div className="flex flex-wrap gap-2">
@@ -404,7 +407,7 @@ function QuestionCard({ item }) {
   const cancelQuestionAnswers = useStore((s) => s.cancelQuestionAnswers);
   const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId;
   const questions = item.meta?.questions || item.raw?.questions || [];
-  const resolved = item.status === 'answered' || item.status === 'cancelled';
+  const resolved = item.status === 'answered' || item.status === 'cancelled' || item.status === 'expired';
   const cancellable = (item.meta?.responseMode || item.raw?.responseMode) === 'json-rpc';
   const [answers, setAnswers] = useState(item.meta?.submittedAnswers || {});
   const [busy, setBusy] = useState(false);
@@ -459,7 +462,7 @@ function QuestionCard({ item }) {
         <span className="text-sm font-medium text-[var(--color-text-primary)]">问题</span>
       </div>
       {resolved ? (
-        <div className={'text-xs font-medium ' + (item.status === 'cancelled' ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-accent-green)]')}>{item.status === 'cancelled' ? '已取消' : '答案已提交'}</div>
+        <div className={'text-xs font-medium ' + (item.status === 'answered' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-text-muted)]')}>{item.status === 'expired' ? '请求已失效，请重新发起对话' : item.status === 'cancelled' ? '已取消' : '答案已提交'}</div>
       ) : (
         <>
           <div className="space-y-3">

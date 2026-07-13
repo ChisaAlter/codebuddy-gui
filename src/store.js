@@ -1168,6 +1168,56 @@ export const useStore = create((set, get) => ({
       get().handleThreadSessionUpdate(threadId, { ...(detail || {}), sessionUpdate: type });
       return;
     }
+    if (type === 'interaction_requests_invalidated') {
+      const interruptionIds = new Set(detail?.interruptionIds || []);
+      const questionToolCallIds = new Set(detail?.questionToolCallIds || []);
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const invalidatedAt = Date.now();
+      const invalidates = (item) => (
+        (item.type === 'interruption' && Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id)))
+        || (item.type === 'question' && Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)))
+      );
+      const timeline = runtime.timeline.map((item) => (
+        invalidates(item) && !['resolved', 'answered', 'cancelled', 'expired'].includes(item.status)
+          ? {
+              ...item,
+              status: 'expired',
+              meta: { ...(item.meta || {}), invalidatedAt, invalidationReason: detail?.reason || 'connection-replaced' },
+            }
+          : item
+      ));
+      const permissionRequests = runtime.permissionRequests.filter((item) => (
+        !Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id))
+      ));
+      const questions = runtime.questions.filter((item) => (
+        !Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id))
+      ));
+      const changed = permissionRequests.length !== runtime.permissionRequests.length
+        || questions.length !== runtime.questions.length
+        || timeline.some((item, index) => item !== runtime.timeline[index]);
+      if (!changed) return;
+      get().patchThreadRuntime(threadId, { permissionRequests, questions, timeline });
+      const message = '连接已更换，之前待处理的权限或问题请求已失效。';
+      set((state) => {
+        const record = state.threadsById[threadId];
+        if (!record) return {};
+        return {
+          threadsById: {
+            ...state.threadsById,
+            [threadId]: {
+              ...record,
+              timeline: timeline.slice(-300),
+              status: record.status === 'waiting' ? 'error' : record.status,
+              metadata: { ...(record.metadata || {}), lastError: message },
+              updatedAt: new Date().toISOString(),
+            },
+          },
+          ...(state.activeThreadId === threadId ? { error: message } : {}),
+        };
+      });
+      get().persistProductState();
+      return;
+    }
     if (type === 'model_update') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       get().patchThreadRuntime(threadId, {

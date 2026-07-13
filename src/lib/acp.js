@@ -333,6 +333,17 @@ export class AcpClient {
     });
   }
 
+  invalidateInteractiveRequests(reason = 'connection-replaced') {
+    const interruptionIds = Array.from(this.permissionRequestIds.keys());
+    const questionToolCallIds = Array.from(this.questionRequestIds.keys());
+    if (!interruptionIds.length && !questionToolCallIds.length) return false;
+    this.permissionRequestIds.clear();
+    this.permissionRequestToolCallIds.clear();
+    this.questionRequestIds.clear();
+    this.emit('interaction_requests_invalidated', { interruptionIds, questionToolCallIds, reason });
+    return true;
+  }
+
   async sendJsonRpcResult(requestId, result) {
     const response = await this.requestHttp('/api/v1/acp', {
       method: 'POST',
@@ -428,6 +439,7 @@ export class AcpClient {
       this.reconnecting = false;
       this._connectionError = false;
       if (previousConnectionId && previousConnectionId !== this.connectionId) {
+        this.invalidateInteractiveRequests('connection-replaced');
         this.releaseConnection(previousConnectionId);
         this.emit('connection/replaced', { previousConnectionId, connectionId: this.connectionId });
       }

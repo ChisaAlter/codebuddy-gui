@@ -9,6 +9,7 @@ const FORWARDED_EVENTS = [
   'session/update',
   'interruption_request',
   'question_request',
+  'interaction_requests_invalidated',
   'message',
   'thinking',
   'model_update',
@@ -62,6 +63,7 @@ export class ConversationManager {
     const entry = this.entries.get(threadId);
     if (!entry) return;
     this.entries.delete(threadId);
+    entry.client.invalidateInteractiveRequests('client-disposed');
     for (const dispose of entry.disposers) dispose();
     await entry.client.disconnect().catch(() => null);
   }
