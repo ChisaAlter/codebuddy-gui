@@ -1,4 +1,5 @@
 import React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import ActionConfirmDialog from './ActionConfirmDialog';
 import { useStore } from '../store';
 import { NAV_GROUPS } from '../lib/codebuddy-schema';
@@ -105,7 +106,42 @@ export default function ReplicaSidebar() {
     projectNavigationBusy, projectNavigationTargetId, projectNavigationError,
     workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId, fileDirty, selectedFile,
     threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
-  } = useStore();
+  } = useStore(useShallow((state) => ({
+    route: state.route,
+    setRoute: state.setRoute,
+    sidebarCollapsed: state.sidebarCollapsed,
+    info: state.info,
+    currentModel: state.currentModel,
+    currentMode: state.currentMode,
+    models: state.models,
+    modes: state.modes,
+    connectionState: state.connectionState,
+    newSession: state.newSession,
+    newSessionBusy: state.newSessionBusy,
+    newSessionProjectId: state.newSessionProjectId,
+    newSessionError: state.newSessionError,
+    setModel: state.setModel,
+    setMode: state.setMode,
+    changesCount: state.changesCount,
+    projectNavigationBusy: state.projectNavigationBusy,
+    projectNavigationTargetId: state.projectNavigationTargetId,
+    projectNavigationError: state.projectNavigationError,
+    workspacePath: state.workspacePath,
+    projectsById: state.projectsById,
+    projectOrder: state.projectOrder,
+    activeProjectId: state.activeProjectId,
+    activeThreadId: state.activeThreadId,
+    fileDirty: state.fileDirty,
+    selectedFile: state.selectedFile,
+    threadsById: state.threadsById,
+    threadOrderByProject: state.threadOrderByProject,
+    activateProject: state.activateProject,
+    activateThread: state.activateThread,
+    renameThread: state.renameThread,
+    deleteThread: state.deleteThread,
+    renameProject: state.renameProject,
+    removeProject: state.removeProject,
+  })));
   const projectThreads = (threadOrderByProject[activeProjectId] || [])
     .map((id) => threadsById[id])
     .filter(Boolean);

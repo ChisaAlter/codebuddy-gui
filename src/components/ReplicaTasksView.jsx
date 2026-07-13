@@ -1,9 +1,21 @@
 import React, { useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 export default function ReplicaTasksView() {
-  const { scheduledTasks, scheduledTasksError, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore();
+  const { scheduledTasks, scheduledTasksError, sessionId, refreshTasks, createTask, deleteTask, taskTemplates, taskTemplatesError, taskTemplatesLoading, refreshTaskTemplatesNow } = useStore(useShallow((state) => ({
+    scheduledTasks: state.scheduledTasks,
+    scheduledTasksError: state.scheduledTasksError,
+    sessionId: state.sessionId,
+    refreshTasks: state.refreshTasks,
+    createTask: state.createTask,
+    deleteTask: state.deleteTask,
+    taskTemplates: state.taskTemplates,
+    taskTemplatesError: state.taskTemplatesError,
+    taskTemplatesLoading: state.taskTemplatesLoading,
+    refreshTaskTemplatesNow: state.refreshTaskTemplatesNow,
+  })));
   const activeThreadId = useStore((state) => state.activeThreadId);
   const [cron, setCron] = useState('0 9 * * *');
   const [prompt, setPrompt] = useState('每日汇总当前会话进度');

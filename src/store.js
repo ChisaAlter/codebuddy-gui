@@ -25,6 +25,7 @@ const conversations = new ConversationManager();
 let routeListenerBound = false;
 let conversationEventsBound = false;
 let runtimeListenerBound = false;
+let authFailureListenerBound = false;
 const threadTimelinePersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
 let fileDirectoryRequestId = 0;
@@ -2660,6 +2661,23 @@ export const useStore = create((set, get) => ({
         set({ route: parseHashRoute() });
       });
     }
+    if (!authFailureListenerBound) {
+      authFailureListenerBound = true;
+      window.addEventListener('codebuddy:auth-required', () => {
+        authRequestVersion += 1;
+        setAcpSessionToken(null);
+        setAuthToken(null);
+        conversations.disposeAll().catch(() => null);
+        set({
+          authViewState: 'login',
+          authSubmitting: false,
+          authError: '登录已失效，请重新登录',
+          sessionId: null,
+          sessionToken: null,
+          connectionState: 'disconnected',
+        });
+      });
+    }
 
     // 1. 先恢复本地产品状态，再按活动项目惰性启动对应运行时。
     get().loadSettingsFromStorage();
@@ -2684,9 +2702,17 @@ export const useStore = create((set, get) => ({
 
     // 2. 鉴权态：运行时就绪后再检查当前项目服务。
     //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
-    const authState = await apiCheckAuth();
+    let authState;
+    try {
+      authState = await apiCheckAuth();
+    } catch (error) {
+      if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
+        set({ authViewState: 'error', authError: error?.message || '无法检查 CodeBuddy 登录状态', connectionState: 'error' });
+      }
+      return false;
+    }
     if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
-    set({ authViewState: authState });
+    set({ authViewState: authState, authError: null });
     if (authState === 'login') {
       // 等登录成功后再继续；App 登录页会调 store.login() 并重触发 bootstrap
       return false;
@@ -3713,13 +3739,25 @@ export const useStore = create((set, get) => ({
     const projectId = get().activeProjectId;
     const apiBase = getApiBase();
     set({ authViewState: 'loading', authError: null });
-    const authState = await apiCheckAuth();
+    let authState;
+    try {
+      authState = await apiCheckAuth();
+    } catch (error) {
+      if (
+        authRequest === authRequestVersion
+        && get().activeProjectId === projectId
+        && getApiBase() === apiBase
+      ) {
+        set({ authViewState: 'error', authError: error?.message || '无法检查 CodeBuddy 登录状态' });
+      }
+      return false;
+    }
     if (
       authRequest !== authRequestVersion
       || get().activeProjectId !== projectId
       || getApiBase() !== apiBase
     ) return false;
-    set({ authViewState: authState });
+    set({ authViewState: authState, authError: null });
     if (authState === 'authenticated') {
       get().bootstrap().catch((error) => console.error('bootstrap after refreshAuth failed:', error));
     }

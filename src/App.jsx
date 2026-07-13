@@ -133,6 +133,53 @@ function LoginView() {
   );
 }
 
+function AuthRecoveryView() {
+  const authError = useStore((s) => s.authError);
+  const refreshAuth = useStore((s) => s.refreshAuth);
+  const [retrying, setRetrying] = React.useState(false);
+
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await refreshAuth();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+      <div className="titlebar-drag absolute inset-x-0 top-0 flex h-10 justify-end border-b border-[var(--color-border-default)]">
+        <WindowControls height="h-10" />
+      </div>
+      <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
+        <div className="mb-3 text-base font-semibold">无法确认 CodeBuddy 服务状态</div>
+        <div className="mb-5 text-sm leading-6 text-[var(--color-text-secondary)]">
+          {authError || '当前项目服务暂时不可用。请确认 CodeBuddy CLI 已启动，然后重试。'}
+        </div>
+        <button className="btn-primary w-full justify-center px-4 py-2 text-sm" disabled={retrying} onClick={retry}>
+          {retrying ? '正在重试...' : '重试连接'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AuthLoadingView() {
+  return (
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+      <div className="titlebar-drag absolute inset-x-0 top-0 flex h-10 justify-end border-b border-[var(--color-border-default)]">
+        <WindowControls height="h-10" />
+      </div>
+      <div className="flex items-center gap-3 text-sm text-[var(--color-text-secondary)]">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--color-border-default)] border-t-[var(--color-accent-brand)]" />
+        正在连接 CodeBuddy...
+      </div>
+    </div>
+  );
+}
+
 const ROUTE_TITLES = {
   chat: '对话',
   instances: '实例',
@@ -385,7 +432,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
-      {authViewState === 'login' ? <LoginView /> : (
+      {authViewState === 'loading' ? <AuthLoadingView /> : authViewState === 'login' ? <LoginView /> : authViewState === 'error' ? <AuthRecoveryView /> : (
         <>
           <ReplicaSidebar />
           <div className="flex min-w-0 flex-1 flex-col">

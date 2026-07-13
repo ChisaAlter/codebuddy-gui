@@ -40,6 +40,12 @@ export function getAuthToken() {
 }
 export function clearAuthToken() { setAuthToken(null); }
 
+function announceAuthRequired(url, status) {
+  if (status !== 401 || typeof window === 'undefined') return;
+  if (url.includes('/api/v1/auth/login') || url.includes('/api/v1/auth/status')) return;
+  window.dispatchEvent(new CustomEvent('codebuddy:auth-required'));
+}
+
 function makeHeaders(extra = {}, includeAcpSessionToken = true, includeAuthToken = true) {
   const headers = {
     'X-CodeBuddy-Request': '1',
@@ -94,6 +100,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
         throw new Error(`CodeBuddy request timeout: ${request.method || 'GET'} ${url}`);
       }
       const headers = new Headers(proxied?.headers || {});
+      announceAuthRequired(url, proxied?.status || 0);
       const bodyBytes = proxied?.bodyBase64
         ? Uint8Array.from(atob(proxied.bodyBase64), (character) => character.charCodeAt(0))
         : null;
@@ -120,7 +127,9 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
   }
 
   try {
-    return await fetch(url, { ...request, signal: controller.signal });
+    const response = await fetch(url, { ...request, signal: controller.signal });
+    announceAuthRequired(url, response.status);
+    return response;
   } finally {
     cleanup();
   }
@@ -822,16 +831,16 @@ export async function authLogin(password, options = {}) {
 
 export function authLogout() { clearAuthToken(); }
 
-// 查后端鉴权态：对照源 GET /api/v1/auth/status -> {authEnabled, authenticated}
-// 任一为否（或请求失败）都视为已通过（不阻断，对照源同此）
+// 查后端鉴权态：GET /api/v1/auth/status -> {authEnabled, authenticated}。
+// 旧版服务没有该接口时继续兼容；其余网络或服务错误必须交给界面明确恢复。
 export async function checkAuth() {
-  try {
-    const payload = await fetchJson('/api/v1/auth/status');
-    const data = payload?.data ?? payload ?? {};
-    return data.authEnabled && !data.authenticated ? 'login' : 'authenticated';
-  } catch (_) {
-    return 'authenticated'; // 兜底：鉴权查询失败不阻断
-  }
+  const response = await requestCodeBuddy('/api/v1/auth/status');
+  if (response.status === 404) return 'authenticated';
+  if (response.status === 401) return 'login';
+  if (!response.ok) throw new Error(`无法检查 CodeBuddy 登录状态 (${response.status || '无响应'})`);
+  const payload = await response.json();
+  const data = payload?.data ?? payload ?? {};
+  return data.authEnabled && !data.authenticated ? 'login' : 'authenticated';
 }
 
 // API_BASE is now dynamic — use getApiBase() / setApiBase() instead

@@ -1,8 +1,22 @@
 import React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore();
+  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore(useShallow((state) => ({
+    plugins: state.plugins,
+    refreshPlugins: state.refreshPlugins,
+    marketplaces: state.marketplaces,
+    pluginError: state.pluginError,
+    marketplaceError: state.marketplaceError,
+    pluginBusy: state.pluginBusy,
+    installPluginByName: state.installPluginByName,
+    uninstallPluginByName: state.uninstallPluginByName,
+    togglePluginByName: state.togglePluginByName,
+    addMarketplaceById: state.addMarketplaceById,
+    removeMarketplaceById: state.removeMarketplaceById,
+    refreshMarketplaces: state.refreshMarketplaces,
+  })));
   const activeProjectId = useStore((state) => state.activeProjectId);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);

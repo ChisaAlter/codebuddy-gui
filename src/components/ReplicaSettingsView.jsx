@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 
 function Toggle({ value, onChange }) {
@@ -283,7 +284,23 @@ export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
     settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, refreshInfo, refreshSettings,
-  } = useStore();
+  } = useStore(useShallow((state) => ({
+    info: state.info,
+    connectionState: state.connectionState,
+    currentModel: state.currentModel,
+    models: state.models,
+    modes: state.modes,
+    currentMode: state.currentMode,
+    settings: state.settings,
+    infoLoaded: state.infoLoaded,
+    settingsLoaded: state.settingsLoaded,
+    sessionId: state.sessionId,
+    setModel: state.setModel,
+    setMode: state.setMode,
+    updateSetting: state.updateSetting,
+    refreshInfo: state.refreshInfo,
+    refreshSettings: state.refreshSettings,
+  })));
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [appInfo, setAppInfo] = useState(null);

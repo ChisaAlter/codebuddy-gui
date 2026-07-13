@@ -1,4 +1,5 @@
 import React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { fetchDaemonStatus, restartDaemon, startDaemon, stopDaemon, stopWorker } from '../lib/ops';
 import ActionConfirmDialog from './ActionConfirmDialog';
@@ -49,7 +50,12 @@ function formatDateTime(value) {
 }
 
 export default function ReplicaWorkersView() {
-  const { workers, refreshWorkers, workersError, setRoute } = useStore();
+  const { workers, refreshWorkers, workersError, setRoute } = useStore(useShallow((state) => ({
+    workers: state.workers,
+    refreshWorkers: state.refreshWorkers,
+    workersError: state.workersError,
+    setRoute: state.setRoute,
+  })));
   const activeProjectId = useStore((state) => state.activeProjectId);
   const [refreshing, setRefreshing] = React.useState(false);
   const [expandedPid, setExpandedPid] = React.useState(null);
