@@ -1111,16 +1111,19 @@ export const useStore = create((set, get) => ({
 
   async renameThread(threadId, name) {
     const thread = get().threadsById[threadId];
+    const projectId = thread?.projectId;
     const title = String(name || '').trim();
     if (!thread || !title) return false;
     if (thread.sessionId) {
+      if (projectId !== get().activeProjectId) return false;
       try {
         await apiRenameSession(thread.sessionId, title);
       } catch (error) {
-        set({ error: error.message || '重命名会话失败' });
+        if (projectId === get().activeProjectId) set({ error: error.message || '重命名会话失败' });
         return false;
       }
     }
+    if (!get().threadsById[threadId]) return false;
     set((state) => ({
       threadsById: {
         ...state.threadsById,
@@ -1137,15 +1140,18 @@ export const useStore = create((set, get) => ({
 
   async deleteThread(threadId) {
     const thread = get().threadsById[threadId];
+    const projectId = thread?.projectId;
     if (!thread) return false;
     if (thread.sessionId) {
+      if (projectId !== get().activeProjectId) return false;
       try {
         await apiDeleteSession(thread.sessionId);
       } catch (error) {
-        set({ error: error.message || '删除会话失败' });
+        if (projectId === get().activeProjectId) set({ error: error.message || '删除会话失败' });
         return false;
       }
     }
+    if (!get().threadsById[threadId]) return false;
     await conversations.dispose(threadId);
     const wasActive = get().activeThreadId === threadId;
     set((state) => {

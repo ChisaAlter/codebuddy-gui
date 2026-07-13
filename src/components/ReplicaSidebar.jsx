@@ -128,33 +128,76 @@ export default function ReplicaSidebar() {
   const [projectName, setProjectName] = React.useState('');
   const [projectActionBusy, setProjectActionBusy] = React.useState(false);
   const [projectActionError, setProjectActionError] = React.useState('');
+  const [threadRenameBusy, setThreadRenameBusy] = React.useState(false);
+  const [threadRenameError, setThreadRenameError] = React.useState('');
+  const [selectionBusy, setSelectionBusy] = React.useState(false);
+  const [selectionMessage, setSelectionMessage] = React.useState('');
+  const [selectionError, setSelectionError] = React.useState(false);
+  const scopeGenerationRef = React.useRef(0);
+  const renameRequestRef = React.useRef(0);
+  const renameInFlightRef = React.useRef(false);
 
   const startRename = (thread) => {
     setRenamingId(thread.id);
     setRenameValue(thread.title || '新对话');
+    setThreadRenameError('');
     setMenuOpenId(null);
   };
 
   const submitRename = async (id) => {
-    const ok = await renameThread(id, renameValue);
-    if (ok) setRenamingId(null);
+    if (renameInFlightRef.current) return;
+    const value = renameValue.trim();
+    if (!value) {
+      setThreadRenameError('会话名称不能为空');
+      return;
+    }
+    const projectId = activeProjectId;
+    const generation = scopeGenerationRef.current;
+    const requestId = ++renameRequestRef.current;
+    renameInFlightRef.current = true;
+    setThreadRenameBusy(true);
+    setThreadRenameError('');
+    const isCurrent = () => (
+      requestId === renameRequestRef.current
+      && generation === scopeGenerationRef.current
+      && projectId === useStore.getState().activeProjectId
+    );
+    try {
+      const ok = await renameThread(id, value);
+      if (!isCurrent()) return;
+      if (ok) setRenamingId(null);
+      else setThreadRenameError(useStore.getState().error || '重命名会话失败');
+    } catch (error) {
+      if (isCurrent()) setThreadRenameError(error?.message || '重命名会话失败');
+    } finally {
+      if (isCurrent()) {
+        setThreadRenameBusy(false);
+        renameInFlightRef.current = false;
+      }
+    }
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete || threadDeleteBusy) return;
+    const projectId = activeProjectId;
+    const generation = scopeGenerationRef.current;
+    const thread = pendingDelete;
     setThreadDeleteBusy(true);
     setThreadDeleteError('');
     try {
-      const deleted = await deleteThread(pendingDelete.id);
+      const deleted = await deleteThread(thread.id);
+      if (generation !== scopeGenerationRef.current || projectId !== useStore.getState().activeProjectId) return;
       if (!deleted) {
         setThreadDeleteError(useStore.getState().error || '删除会话失败，请重试');
         return;
       }
       setPendingDelete(null);
     } catch (error) {
-      setThreadDeleteError(error?.message || '删除会话失败，请重试');
+      if (generation === scopeGenerationRef.current && projectId === useStore.getState().activeProjectId) {
+        setThreadDeleteError(error?.message || '删除会话失败，请重试');
+      }
     } finally {
-      setThreadDeleteBusy(false);
+      if (generation === scopeGenerationRef.current && projectId === useStore.getState().activeProjectId) setThreadDeleteBusy(false);
     }
   };
 
@@ -173,7 +216,9 @@ export default function ReplicaSidebar() {
 
   const submitProjectDialog = async () => {
     if (!projectDialog || projectActionBusy) return;
-    const { mode, project } = projectDialog;
+    const generation = scopeGenerationRef.current;
+    const dialog = projectDialog;
+    const { mode, project } = dialog;
     if (mode === 'rename' && !projectName.trim()) {
       setProjectActionError('项目名称不能为空');
       return;
@@ -184,17 +229,71 @@ export default function ReplicaSidebar() {
       const ok = mode === 'rename'
         ? await renameProject(project.id, projectName.trim())
         : await removeProject(project.id, { skipDirtyCheck: true });
+      if (generation !== scopeGenerationRef.current) return;
       if (!ok) {
         setProjectActionError(mode === 'rename' ? '重命名失败，请重试' : '移除失败，请重试');
         return;
       }
       setProjectDialog(null);
     } catch (error) {
-      setProjectActionError(error.message || (mode === 'rename' ? '重命名失败' : '移除失败'));
+      if (generation === scopeGenerationRef.current) {
+        setProjectActionError(error.message || (mode === 'rename' ? '重命名失败' : '移除失败'));
+      }
     } finally {
-      setProjectActionBusy(false);
+      if (generation === scopeGenerationRef.current) setProjectActionBusy(false);
     }
   };
+
+  const changeSessionSetting = async (kind, value) => {
+    if (selectionBusy || connectionState !== 'connected' || !activeThreadId) return;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const generation = scopeGenerationRef.current;
+    const isCurrent = () => (
+      generation === scopeGenerationRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setSelectionBusy(true);
+    setSelectionError(false);
+    setSelectionMessage(kind === 'model' ? '正在切换模型...' : '正在切换模式...');
+    try {
+      const changed = kind === 'model' ? await setModel(value) : await setMode(value);
+      if (!isCurrent()) return;
+      setSelectionError(!changed);
+      setSelectionMessage(changed
+        ? (kind === 'model' ? '模型已切换' : '模式已切换')
+        : (useStore.getState().error || (kind === 'model' ? '模型切换失败' : '模式切换失败'))
+      );
+    } catch (error) {
+      if (!isCurrent()) return;
+      setSelectionError(true);
+      setSelectionMessage(error?.message || (kind === 'model' ? '模型切换失败' : '模式切换失败'));
+    } finally {
+      if (isCurrent()) setSelectionBusy(false);
+    }
+  };
+
+  React.useEffect(() => {
+    scopeGenerationRef.current += 1;
+    renameRequestRef.current += 1;
+    renameInFlightRef.current = false;
+    setRenamingId(null);
+    setRenameValue('');
+    setThreadRenameBusy(false);
+    setThreadRenameError('');
+    setPendingDelete(null);
+    setThreadDeleteBusy(false);
+    setThreadDeleteError('');
+    setMenuOpenId(null);
+    setProjectMenuOpenId(null);
+    setProjectDialog(null);
+    setProjectActionBusy(false);
+    setProjectActionError('');
+    setSelectionBusy(false);
+    setSelectionMessage('');
+    setSelectionError(false);
+  }, [activeProjectId, activeThreadId]);
 
   // 点击外部关菜单
   React.useEffect(() => {
@@ -356,23 +455,30 @@ export default function ReplicaSidebar() {
                 <select
                   className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
                   value={currentModel || ''}
-                  onChange={(e) => setModel(e.target.value)}
+                  disabled={selectionBusy || connectionState !== 'connected' || !activeThreadId}
+                  onChange={(e) => changeSessionSetting('model', e.target.value)}
                 >
                   <option value="">选择模型</option>
                   {models.map((m, i) => (
-                    <option key={m.id || i} value={m.id}>{m.name}</option>
+                    <option key={m.id || m.modelId || i} value={m.id || m.modelId}>{m.name || m.id || m.modelId}</option>
                   ))}
                 </select>
                 <select
                   className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
                   value={currentMode || ''}
-                  onChange={(e) => setMode(e.target.value)}
+                  disabled={selectionBusy || connectionState !== 'connected' || !activeThreadId}
+                  onChange={(e) => changeSessionSetting('mode', e.target.value)}
                 >
                   <option value="">选择模式</option>
                   {modes.map((m, i) => (
-                    <option key={m.id || i} value={m.id}>{m.name}</option>
+                    <option key={m.id || m.modeId || i} value={m.id || m.modeId}>{m.name || m.id || m.modeId}</option>
                   ))}
                 </select>
+                {selectionMessage ? (
+                  <div className={`px-0.5 text-[10px] ${selectionError ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-muted)]'}`}>
+                    {selectionMessage}
+                  </div>
+                ) : null}
               </>
             )}
           </div>
@@ -397,29 +503,39 @@ export default function ReplicaSidebar() {
                   return (
                     <div key={threadId} className={`relative flex items-center rounded-md transition-colors hover:bg-[var(--color-bg-hover)] ${threadId === activeThreadId ? 'bg-[var(--color-bg-hover)]' : ''}`}>
                       {isRenaming ? (
-                        <div className="flex w-full items-center gap-1 px-2 py-1">
-                          <input
-                            autoFocus
-                            value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') { e.preventDefault(); submitRename(threadId); }
-                              else if (e.key === 'Escape') { setRenamingId(null); }
-                            }}
-                            onBlur={() => { if (renamingId === threadId) submitRename(threadId); }}
-                            className="w-full rounded border border-[var(--color-accent-brand)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none"
-                            aria-label="会话新名称"
-                          />
-                          <button
-                            onClick={() => submitRename(threadId)}
-                            className="text-xs text-[var(--color-accent-green)] hover:text-[var(--color-text-primary)]"
-                            title="确认"
-                          >✓</button>
-                          <button
-                            onClick={() => setRenamingId(null)}
-                            className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-                            title="取消"
-                          >×</button>
+                        <div className="w-full px-2 py-1">
+                          <div className="flex items-center gap-1">
+                            <input
+                              autoFocus
+                              value={renameValue}
+                              disabled={threadRenameBusy}
+                              onChange={(e) => { setRenameValue(e.target.value); setThreadRenameError(''); }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') { e.preventDefault(); submitRename(threadId); }
+                                else if (e.key === 'Escape' && !threadRenameBusy) { setRenamingId(null); setThreadRenameError(''); }
+                              }}
+                              onBlur={() => { if (renamingId === threadId && !threadRenameBusy) submitRename(threadId); }}
+                              className="w-full rounded border border-[var(--color-accent-brand)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)] focus:outline-none disabled:opacity-60"
+                              aria-label="会话新名称"
+                            />
+                            <button
+                              disabled={threadRenameBusy}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => submitRename(threadId)}
+                              className="text-xs text-[var(--color-accent-green)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                              title="确认"
+                            >{threadRenameBusy ? '…' : '✓'}</button>
+                            <button
+                              disabled={threadRenameBusy}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => { setRenamingId(null); setThreadRenameError(''); }}
+                              className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                              title="取消"
+                            >×</button>
+                          </div>
+                          {threadRenameError ? (
+                            <div className="mt-1 text-[10px] text-[var(--color-accent-red)]">{threadRenameError}</div>
+                          ) : null}
                         </div>
                       ) : (
                         <>
