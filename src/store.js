@@ -1811,33 +1811,41 @@ export const useStore = create((set, get) => ({
     get().scheduleTerminalStatePersist();
   },
 
-  bindPtyToPane(paneId, sessionId) {
+  bindPtyToPane(paneId, sessionId, projectId = get().activeProjectId) {
+    if (projectId !== get().activeProjectId) return false;
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
       ptySessionId: sessionId,
     }));
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
-  setPaneStatus(paneId, status) {
+  setPaneStatus(paneId, status, projectId = get().activeProjectId) {
+    if (projectId !== get().activeProjectId) return false;
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, status } : pane),
     }));
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
-  setPaneSession(paneId, sessionId) {
+  setPaneSession(paneId, sessionId, projectId = get().activeProjectId) {
+    if (projectId !== get().activeProjectId) return false;
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
     }));
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
-  appendPaneOutput(paneId, chunk) {
+  appendPaneOutput(paneId, chunk, projectId = get().activeProjectId) {
+    if (projectId !== get().activeProjectId) return false;
     set((state) => ({
       terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, output: `${pane.output || ''}${chunk}`.slice(-200000) } : pane),
     }));
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
   appendTimelineEvent(eventType, payload) {
@@ -2554,33 +2562,74 @@ export const useStore = create((set, get) => ({
   },
 
   async createPty(cols = 120, rows = 32) {
+    const state = get();
+    const projectId = state.activeProjectId;
+    const apiBase = state.apiBase;
+    const authToken = getAuthToken();
+    const acpSessionToken = getAcpSessionToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(acpSessionToken ? { 'acp-session-token': acpSessionToken } : {}),
+    };
     try {
-      const payload = await fetchJson('/api/v1/pty', {
+      const payload = await fetchJson(`${apiBase}/api/v1/pty`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
+        omitAuthToken: true,
+        omitAcpSessionToken: true,
         body: JSON.stringify({ cols, rows }),
       });
       const data = payload.data || payload;
-      set((state) => ({
+      if (projectId !== get().activeProjectId || apiBase !== get().apiBase) {
+        if (data?.sessionId) {
+          await requestCodeBuddy(`${apiBase}/api/v1/pty/${encodeURIComponent(data.sessionId)}`, {
+            method: 'DELETE',
+            headers,
+            omitAuthToken: true,
+            omitAcpSessionToken: true,
+            timeoutMs: 10000,
+          }).catch(() => null);
+        }
+        return null;
+      }
+      set((current) => ({
         ptySessionId: data.sessionId,
-        terminalSessions: [...state.terminalSessions.filter((x) => x.sessionId !== data.sessionId), data],
+        terminalSessions: [...current.terminalSessions.filter((item) => item.sessionId !== data.sessionId), data],
       }));
       return data;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && apiBase === get().apiBase) set({ error: error.message });
       return null;
     }
   },
 
   async releasePty(sessionId) {
-    if (!sessionId) return;
+    if (!sessionId) return false;
+    const state = get();
+    const projectId = state.activeProjectId;
+    const apiBase = state.apiBase;
+    const authToken = getAuthToken();
+    const acpSessionToken = getAcpSessionToken();
+    const headers = {
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(acpSessionToken ? { 'acp-session-token': acpSessionToken } : {}),
+    };
     try {
-      await fetchJson(`/api/v1/pty/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      await requestCodeBuddy(`${apiBase}/api/v1/pty/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+        headers,
+        omitAuthToken: true,
+        omitAcpSessionToken: true,
+        timeoutMs: 10000,
+      });
     } catch (_) {}
-    set((state) => ({
-      terminalSessions: state.terminalSessions.filter((x) => x.sessionId !== sessionId),
-      ptySessionId: state.ptySessionId === sessionId ? null : state.ptySessionId,
+    if (projectId !== get().activeProjectId || apiBase !== get().apiBase) return false;
+    set((current) => ({
+      terminalSessions: current.terminalSessions.filter((item) => item.sessionId !== sessionId),
+      ptySessionId: current.ptySessionId === sessionId ? null : current.ptySessionId,
     }));
+    return true;
   },
 
   async cancelSession() {
