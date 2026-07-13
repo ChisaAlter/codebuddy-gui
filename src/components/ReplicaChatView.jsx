@@ -649,9 +649,9 @@ export default function ReplicaChatView() {
   const currentMode = useStore((s) => s.currentMode);
   const sessionTitle = useStore((s) => s.sessionTitle);
   const usage = useStore((s) => s.usage);
-  const showTokensCounter = useStore((s) => Boolean(s.settings?.showTokensCounter));
-  const pasteImageEnabled = useStore((s) => Boolean(s.settings?.enablePasteImageFromClipboard));
-  const promptSuggestionEnabled = useStore((s) => Boolean(s.settings?.promptSuggestionEnabled));
+  const showTokensCounter = useStore((s) => Boolean(s.guiSettings?.showTokensCounter));
+  const pasteImageEnabled = useStore((s) => Boolean(s.guiSettings?.enablePasteImageFromClipboard));
+  const promptSuggestionEnabled = useStore((s) => Boolean(s.guiSettings?.promptSuggestionEnabled));
   const promptSuggestion = useStore((s) => s.promptSuggestion);
   const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
   const teamState = useStore((s) => s.teamState);

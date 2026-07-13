@@ -20,6 +20,7 @@ import {
   productStateSnapshot,
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
+import { isGuiSettingKey, loadGuiSettings, saveGuiSettings, stripGuiSettings } from './lib/gui-settings';
 
 const conversations = new ConversationManager();
 let routeListenerBound = false;
@@ -311,7 +312,7 @@ function readSettingPath(settings, path) {
 }
 
 function settingsCacheSnapshot(settings) {
-  const next = { ...(settings || {}) };
+  const next = stripGuiSettings(settings);
   delete next['gateway.auth'];
   if (next.gateway && typeof next.gateway === 'object' && !Array.isArray(next.gateway)) {
     const gateway = { ...next.gateway };
@@ -492,6 +493,7 @@ export const useStore = create((set, get) => ({
   projectNavigationError: null,
   info: null,
   settings: null,
+  guiSettings: loadGuiSettings(),
   infoLoaded: false,
   settingsLoaded: false,
   sessionTitle: null,
@@ -922,7 +924,7 @@ export const useStore = create((set, get) => ({
       set({ error: '请先创建或选择一个会话' });
       return [];
     }
-    if (!state.settings?.enablePasteImageFromClipboard) {
+    if (!state.guiSettings?.enablePasteImageFromClipboard) {
       set({ error: '剪贴板贴图未启用，请先在设置中开启' });
       return [];
     }
@@ -3067,7 +3069,7 @@ export const useStore = create((set, get) => ({
     const request = beginScopedRequest('settings', get());
     const payload = await fetchJson('/api/v1/settings');
     if (!isScopedRequestCurrent(request, get())) return false;
-    const loaded = payload.data || payload;
+    const loaded = stripGuiSettings(payload.data || payload);
     const projectPrefix = `${request.projectId || 'global'}:`;
     for (const storedKey of confirmedSettingValues.keys()) {
       if (storedKey.startsWith(projectPrefix)) confirmedSettingValues.delete(storedKey);
@@ -3091,8 +3093,21 @@ export const useStore = create((set, get) => ({
     } catch (_) {}
   },
 
+  updateGuiSetting(key, value) {
+    if (!isGuiSettingKey(key)) return false;
+    try {
+      const next = saveGuiSettings({ ...get().guiSettings, [key]: value });
+      set({ guiSettings: next });
+      return true;
+    } catch (error) {
+      set({ error: `GUI 设置保存失败: ${error.message}` });
+      return false;
+    }
+  },
+
   // 乐观更新 UI，后端失败时回滚到最后一次确认值。版本号避免迟到响应覆盖更新的操作。
   async updateSetting(key, value) {
+    if (isGuiSettingKey(key)) return get().updateGuiSetting(key, value);
     const state = get();
     const projectId = state.activeProjectId;
     const apiBase = state.apiBase;

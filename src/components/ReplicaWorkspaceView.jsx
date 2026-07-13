@@ -223,7 +223,7 @@ export function EditorPane() {
   const fileDirty = useStore((s) => s.fileDirty);
   const fileSaving = useStore((s) => s.fileSaving);
   const fileExternalChange = useStore((s) => s.fileExternalChange);
-  const settingsTheme = useStore((s) => s.settings?.theme);
+  const settingsTheme = useStore((s) => s.guiSettings?.theme);
   const setFilePreview = useStore((s) => s.setFilePreview);
   const saveSelectedFile = useStore((s) => s.saveSelectedFile);
   const checkSelectedFileForExternalChanges = useStore((s) => s.checkSelectedFileForExternalChanges);

@@ -563,18 +563,9 @@ function isShortcutInputTarget(target) {
   return Boolean(target?.closest?.('input, textarea, select, [contenteditable="true"], .monaco-editor, .xterm'));
 }
 
-function readCachedTheme() {
-  try {
-    const cached = JSON.parse(localStorage.getItem('codebuddy-gui-settings') || '{}');
-    return ['dark', 'light', 'system'].includes(cached?.theme) ? cached.theme : null;
-  } catch (_) {
-    return null;
-  }
-}
-
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
-  const settingsTheme = useStore((s) => s.settings?.theme);
+  const settingsTheme = useStore((s) => s.guiSettings?.theme);
   const authViewState = useStore((s) => s.authViewState);
 
   useEffect(() => {
@@ -600,9 +591,9 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // 主题切换：根据 settings.theme 设置 data-theme 属性
+  // 主题切换：根据 GUI 本地偏好设置 data-theme 属性
   useEffect(() => {
-    const theme = settingsTheme || readCachedTheme() || 'dark';
+    const theme = settingsTheme || 'dark';
     if (theme === 'system') {
       const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
       document.documentElement.dataset.theme = prefersLight ? 'light' : 'dark';

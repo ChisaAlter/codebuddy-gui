@@ -283,7 +283,7 @@ function JsonArrayEditor({ value, onSave, ariaLabel, scopeKey }) {
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
-    settings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, refreshInfo, refreshSettings,
+    settings, guiSettings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, updateGuiSetting: persistGuiSetting, refreshInfo, refreshSettings,
   } = useStore(useShallow((state) => ({
     info: state.info,
     connectionState: state.connectionState,
@@ -292,12 +292,14 @@ export default function ReplicaSettingsView() {
     modes: state.modes,
     currentMode: state.currentMode,
     settings: state.settings,
+    guiSettings: state.guiSettings,
     infoLoaded: state.infoLoaded,
     settingsLoaded: state.settingsLoaded,
     sessionId: state.sessionId,
     setModel: state.setModel,
     setMode: state.setMode,
     updateSetting: state.updateSetting,
+    updateGuiSetting: state.updateGuiSetting,
     refreshInfo: state.refreshInfo,
     refreshSettings: state.refreshSettings,
   })));
@@ -325,6 +327,16 @@ export default function ReplicaSettingsView() {
     }
     return saved;
   }, [activeProjectId, persistSetting]);
+
+  const updateGuiSetting = useCallback(async (key, value) => {
+    const feedbackVersion = ++saveFeedbackVersionRef.current;
+    setSaveError('');
+    const saved = await persistGuiSetting(key, value);
+    if (saved === false && mountedRef.current && feedbackVersion === saveFeedbackVersionRef.current) {
+      setSaveError(useStore.getState().error || `GUI 设置“${key}”保存失败`);
+    }
+    return saved;
+  }, [persistGuiSetting]);
 
   const reload = useCallback(async () => {
     const projectId = activeProjectId;
@@ -522,20 +534,20 @@ export default function ReplicaSettingsView() {
                 {['跟随系统', '暗色', '亮色'].map(theme => (
                   <button
                     key={theme}
-                    onClick={() => updateSetting('theme', theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')}
+                    onClick={() => updateGuiSetting('theme', theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')}
                     className={`rounded-md px-2.5 py-1 text-xs border transition-colors ${
-                    (settings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')
+                    (guiSettings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system')
                       ? '' 
                       : 'border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
                   }`}
-                  style={(settings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system') ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
+                  style={(guiSettings?.theme || 'dark') === (theme === '暗色' ? 'dark' : theme === '亮色' ? 'light' : 'system') ? {borderColor:'var(--color-accent-blue)', background:'rgba(59,130,246,0.1)', color:'var(--color-accent-blue)'} : undefined}
                   >{theme}</button>
                 ))}
               </div>
             } />
-            <SettingRow label="显示提示建议" desc="在输入框上方显示 CodeBuddy 返回的提示建议" control={<Toggle value={!!settings?.promptSuggestionEnabled} onChange={(v) => updateSetting('promptSuggestionEnabled', v)} />} />
-            <SettingRow label="允许剪贴板贴图" desc="允许从剪贴板添加当前运行时支持的图片附件" control={<Toggle value={!!settings?.enablePasteImageFromClipboard} onChange={(v) => updateSetting('enablePasteImageFromClipboard', v)} />} />
-            <SettingRow label="显示 Token 计数" desc="在对话输入区显示当前会话的 Token 使用量" control={<Toggle value={!!settings?.showTokensCounter} onChange={(v) => updateSetting('showTokensCounter', v)} />} />
+            <SettingRow label="显示提示建议" desc="在输入框上方显示 CodeBuddy 返回的提示建议" control={<Toggle value={!!guiSettings?.promptSuggestionEnabled} onChange={(v) => updateGuiSetting('promptSuggestionEnabled', v)} />} />
+            <SettingRow label="允许剪贴板贴图" desc="允许从剪贴板添加当前运行时支持的图片附件" control={<Toggle value={!!guiSettings?.enablePasteImageFromClipboard} onChange={(v) => updateGuiSetting('enablePasteImageFromClipboard', v)} />} />
+            <SettingRow label="显示 Token 计数" desc="在对话输入区显示当前会话的 Token 使用量" control={<Toggle value={!!guiSettings?.showTokensCounter} onChange={(v) => updateGuiSetting('showTokensCounter', v)} />} />
           </div>
         </div>
 
