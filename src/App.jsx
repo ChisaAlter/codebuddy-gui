@@ -136,32 +136,97 @@ function LoginView() {
 
 function AuthRecoveryView() {
   const authError = useStore((s) => s.authError);
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const activeProjectName = useStore((s) => s.projectsById[s.activeProjectId]?.name || '当前项目');
+  const projectNavigationBusy = useStore((s) => s.projectNavigationBusy);
   const refreshAuth = useStore((s) => s.refreshAuth);
-  const [retrying, setRetrying] = React.useState(false);
+  const restartProjectRuntime = useStore((s) => s.restartProjectRuntime);
+  const chooseWorkspace = useStore((s) => s.chooseWorkspace);
+  const [action, setAction] = React.useState(null);
+  const [actionError, setActionError] = React.useState('');
+  const mountedRef = React.useRef(true);
+  const busy = Boolean(action) || projectNavigationBusy;
+
+  React.useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   const retry = async () => {
-    if (retrying) return;
-    setRetrying(true);
+    if (busy) return;
+    setAction('retry');
+    setActionError('');
     try {
       await refreshAuth();
     } finally {
-      setRetrying(false);
+      if (mountedRef.current) setAction(null);
+    }
+  };
+
+  const restartAndRetry = async () => {
+    if (busy || !activeProjectId) return;
+    setAction('restart');
+    setActionError('');
+    try {
+      const restarted = await restartProjectRuntime(activeProjectId);
+      if (!restarted) {
+        const state = useStore.getState();
+        setActionError(state.projectsById[activeProjectId]?.runtimeError || state.error || '重启项目运行时失败');
+        return;
+      }
+      await refreshAuth();
+    } catch (error) {
+      setActionError(error?.message || '重启项目运行时失败');
+    } finally {
+      if (mountedRef.current) setAction(null);
+    }
+  };
+
+  const openOtherProject = async () => {
+    if (busy) return;
+    setAction('workspace');
+    setActionError('');
+    try {
+      const opened = await chooseWorkspace();
+      if (opened === true) {
+        await refreshAuth();
+      } else if (opened === false) {
+        const state = useStore.getState();
+        setActionError(state.projectNavigationError || state.error || '打开项目失败');
+      }
+    } catch (error) {
+      setActionError(error?.message || '打开项目失败');
+    } finally {
+      if (mountedRef.current) setAction(null);
     }
   };
 
   return (
-    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[var(--color-bg-primary)] px-6 text-[var(--color-text-primary)]">
       <div className="titlebar-drag absolute inset-x-0 top-0 flex h-10 justify-end border-b border-[var(--color-border-default)]">
         <WindowControls height="h-10" />
       </div>
-      <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
-        <div className="mb-3 text-base font-semibold">无法确认 CodeBuddy 服务状态</div>
+      <div className="w-full max-w-md rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
+        <div className="mb-2 text-base font-semibold">无法确认 CodeBuddy 服务状态</div>
+        <div className="mb-2 text-xs text-[var(--color-text-muted)]">项目：{activeProjectName}</div>
         <div className="mb-5 text-sm leading-6 text-[var(--color-text-secondary)]">
-          {authError || '当前项目服务暂时不可用。请确认 CodeBuddy CLI 已启动，然后重试。'}
+          {authError || '当前项目服务暂时不可用。可以重试连接、重启项目运行时，或打开其他项目。'}
         </div>
-        <button className="btn-primary w-full justify-center px-4 py-2 text-sm" disabled={retrying} onClick={retry}>
-          {retrying ? '正在重试...' : '重试连接'}
-        </button>
+        {actionError ? (
+          <div className="mb-4 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]" role="alert">
+            {actionError}
+          </div>
+        ) : null}
+        <div className="space-y-2">
+          <button className="btn-primary w-full justify-center px-4 py-2 text-sm" disabled={busy} onClick={retry}>
+            {action === 'retry' ? '正在重试...' : '重试连接'}
+          </button>
+          <button className="btn-ghost w-full justify-center px-4 py-2 text-sm" disabled={busy || !activeProjectId} onClick={restartAndRetry}>
+            {action === 'restart' ? '正在重启运行时...' : '重启运行时并重试'}
+          </button>
+          <button className="btn-ghost w-full justify-center px-4 py-2 text-sm" disabled={busy} onClick={openOtherProject}>
+            {action === 'workspace' || projectNavigationBusy ? '正在打开项目...' : '打开其他项目'}
+          </button>
+        </div>
       </div>
     </div>
   );

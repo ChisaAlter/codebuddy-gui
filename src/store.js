@@ -1693,17 +1693,17 @@ export const useStore = create((set, get) => ({
   async chooseWorkspace() {
     if (!window.electronAPI?.chooseWorkspace) {
       set({ error: '工作区选择不可用（IPC 缺失）' });
-      return;
+      return false;
     }
     let path = null;
     try {
       path = await window.electronAPI.chooseWorkspace();
     } catch (err) {
       set({ error: '工作区选择失败: ' + err.message });
-      return;
+      return false;
     }
-    if (!path) return; // 用户取消
-    await get().setWorkspace(path);
+    if (!path) return null; // 用户取消
+    return get().setWorkspace(path);
   },
 
   async setWorkspace(path) {
