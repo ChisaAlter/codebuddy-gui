@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 function Toggle({ value, onChange }) {
   return (
@@ -428,7 +429,7 @@ export default function ReplicaSettingsView() {
     if (!value) return;
     setSystemAction(null);
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       if (mountedRef.current) setSystemAction({ type: 'success', message: `已复制${label}` });
     } catch (error) {
       if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || `复制${label}失败` });

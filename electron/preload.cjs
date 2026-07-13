@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const activeCodeBuddyStreams = new Set();
 
@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runGit: (request) => ipcRenderer.invoke('git:run', request),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),
+  readDroppedAttachments: (files = []) => {
+    const filePaths = Array.from(files || [], (file) => webUtils.getPathForFile(file)).filter(Boolean);
+    return ipcRenderer.invoke('attachment:read', filePaths);
+  },
   readAttachments: (filePaths) => ipcRenderer.invoke('attachment:read', filePaths),
   saveClipboardImage: (payload) => ipcRenderer.invoke('attachment:saveClipboardImage', payload),
   loadProductState: () => ipcRenderer.invoke('productState:load'),

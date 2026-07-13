@@ -669,6 +669,7 @@ export default function ReplicaChatView() {
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || []);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
+  const addDroppedAttachments = useStore((s) => s.addDroppedAttachments);
   const addClipboardImageAttachment = useStore((s) => s.addClipboardImageAttachment);
   const removePendingAttachment = useStore((s) => s.removePendingAttachment);
   const capabilities = useStore((s) => s.capabilities || {});
@@ -680,6 +681,8 @@ export default function ReplicaChatView() {
   const input = useStore((s) => s.threadsById[s.activeThreadId]?.draft || '');
   const setInput = useStore((s) => s.setThreadDraft);
   const [chatError, setChatError] = useState(null);
+  const [draggingAttachments, setDraggingAttachments] = useState(false);
+  const [droppingAttachments, setDroppingAttachments] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
@@ -696,6 +699,7 @@ export default function ReplicaChatView() {
   const recoveryInFlightRef = useRef(null);
   const sendLaunchInFlightRef = useRef(null);
   const pasteImageInFlightRef = useRef(null);
+  const dropAttachmentsInFlightRef = useRef(null);
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
@@ -712,6 +716,9 @@ export default function ReplicaChatView() {
     recoveryInFlightRef.current = null;
     sendLaunchInFlightRef.current = null;
     pasteImageInFlightRef.current = null;
+    dropAttachmentsInFlightRef.current = null;
+    setDraggingAttachments(false);
+    setDroppingAttachments(false);
     setSessionSelectionStatus(null);
     setRecovering(false);
     setChatError(null);
@@ -1034,6 +1041,56 @@ export default function ReplicaChatView() {
     }
   };
 
+  const hasDraggedFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+
+  const handleDragEnter = (event) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    setDraggingAttachments(true);
+  };
+
+  const handleDragOver = (event) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    if (!draggingAttachments) setDraggingAttachments(true);
+  };
+
+  const handleDragLeave = (event) => {
+    if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
+    setDraggingAttachments(false);
+  };
+
+  const handleDrop = async (event) => {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    setDraggingAttachments(false);
+    if (dropAttachmentsInFlightRef.current) return;
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) return;
+    const operation = {};
+    dropAttachmentsInFlightRef.current = operation;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setDroppingAttachments(true);
+    setChatError(null);
+    try {
+      const result = await addDroppedAttachments(files);
+      if (isCurrent() && result?.error) setChatError(result.error);
+    } catch (error) {
+      if (isCurrent()) setChatError(error?.message || '读取拖放附件失败');
+    } finally {
+      if (dropAttachmentsInFlightRef.current === operation) {
+        dropAttachmentsInFlightRef.current = null;
+        if (isCurrent()) setDroppingAttachments(false);
+      }
+    }
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1234,7 +1291,18 @@ export default function ReplicaChatView() {
               </div>
             </div>
           ) : null}
-          <div className="relative rounded-2xl border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-sm transition-all focus-within:shadow-md focus-within:border-[var(--color-border-focus)]">
+          <div
+            className={`relative rounded-2xl border bg-[var(--color-bg-secondary)] shadow-sm transition-all focus-within:shadow-md ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-focus)]'}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {draggingAttachments || droppingAttachments ? (
+              <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-[var(--color-bg-secondary)]/95 text-sm font-medium text-[var(--color-accent-blue)]">
+                {droppingAttachments ? '正在读取附件...' : '释放以添加附件'}
+              </div>
+            ) : null}
             {slashSuggestions.length > 0 ? (
               <div className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl">
                 {slashSuggestions.map((command) => (
@@ -1265,6 +1333,7 @@ export default function ReplicaChatView() {
                   type="button"
                   className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
                   onClick={chooseAttachments}
+                  disabled={droppingAttachments}
                   title={capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image ? '添加文本文件或图片' : '添加文本文件（当前运行时未声明图片输入能力）'}
                   aria-label="添加附件"
                 >

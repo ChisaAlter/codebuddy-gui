@@ -215,6 +215,31 @@ function serializePromptQueue(queue) {
     }));
 }
 
+function mergeAttachmentSelection(runtime, selection) {
+  const imageSupported = Boolean(
+    runtime.capabilities?.promptCapabilities?.image
+    || runtime.capabilities?.prompt_capabilities?.image,
+  );
+  const accepted = [];
+  const rejected = [];
+  for (const attachment of selection || []) {
+    if (attachment.kind === 'unsupported') rejected.push(`${attachment.name}: ${attachment.error}`);
+    else if (attachment.kind === 'image' && !imageSupported) rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
+    else accepted.push(attachment);
+  }
+  const pendingAttachments = [...runtime.pendingAttachments];
+  const added = [];
+  for (const attachment of accepted) {
+    const duplicate = pendingAttachments.some((item) => (
+      item.path === attachment.path && item.kind === attachment.kind
+    ));
+    if (duplicate) continue;
+    pendingAttachments.push(attachment);
+    added.push(attachment);
+  }
+  return { pendingAttachments, added, rejected };
+}
+
 function mergeTeamState(current, update) {
   if (!update || typeof update !== 'object') return current || null;
   if (update.type === 'team_deleted') return null;
@@ -882,27 +907,7 @@ export const useStore = create((set, get) => ({
       const thread = get().threadsById[threadId];
       if (!thread || thread.projectId !== projectId) return [];
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const imageSupported = Boolean(
-        runtime.capabilities?.promptCapabilities?.image
-        || runtime.capabilities?.prompt_capabilities?.image,
-      );
-      const accepted = [];
-      const rejected = [];
-      for (const attachment of selected || []) {
-        if (attachment.kind === 'unsupported') rejected.push(`${attachment.name}: ${attachment.error}`);
-        else if (attachment.kind === 'image' && !imageSupported) rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
-        else accepted.push(attachment);
-      }
-      const pendingAttachments = [...runtime.pendingAttachments];
-      const added = [];
-      for (const attachment of accepted) {
-        const duplicate = pendingAttachments.some((item) => (
-          item.path === attachment.path && item.kind === attachment.kind
-        ));
-        if (duplicate) continue;
-        pendingAttachments.push(attachment);
-        added.push(attachment);
-      }
+      const { pendingAttachments, added, rejected } = mergeAttachmentSelection(runtime, selected);
       get().patchThreadRuntime(threadId, { pendingAttachments });
       if (rejected.length && get().activeProjectId === projectId && get().activeThreadId === threadId) {
         set({ error: rejected.join('\n') });
@@ -913,6 +918,42 @@ export const useStore = create((set, get) => ({
         set({ error: error.message || '选择附件失败' });
       }
       return [];
+    }
+  },
+
+  async addDroppedAttachments(files) {
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    if (!threadId || !state.threadsById[threadId]) {
+      const message = '请先创建或选择一个会话';
+      set({ error: message });
+      return { added: [], error: message };
+    }
+    if (!window.electronAPI?.readDroppedAttachments) {
+      const message = '附件拖放接口不可用';
+      set({ error: message });
+      return { added: [], error: message };
+    }
+    set({ error: null });
+    try {
+      const selected = await window.electronAPI.readDroppedAttachments(files);
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId) return { added: [], error: null };
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const { pendingAttachments, added, rejected } = mergeAttachmentSelection(runtime, selected);
+      get().patchThreadRuntime(threadId, { pendingAttachments });
+      const message = rejected.length ? rejected.join('\n') : null;
+      if (message && get().activeProjectId === projectId && get().activeThreadId === threadId) {
+        set({ error: message });
+      }
+      return { added, error: message };
+    } catch (error) {
+      const message = error.message || '读取拖放附件失败';
+      if (get().activeProjectId === projectId && get().activeThreadId === threadId) {
+        set({ error: message });
+      }
+      return { added: [], error: message };
     }
   },
 

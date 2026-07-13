@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-gui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Multi-project desktop client for CodeBuddy CLI",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
@@ -18,7 +18,7 @@
     "dev:electron": "electron .",
     "build": "vite build && electron-builder --publish never",
     "build:dir": "vite build && electron-builder --dir --publish never",
-    "release:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-release.ps1",
+    "release:prepare": "node scripts/run-release.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e:baseline": "node scripts/test/e2e-baseline.cjs",
