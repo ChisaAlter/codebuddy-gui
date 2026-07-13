@@ -23,8 +23,14 @@ export default function ReplicaPluginsView() {
   const [mktMsg, setMktMsg] = React.useState(null);
   const projectGenerationRef = React.useRef(0);
   const refreshRequestRef = React.useRef(0);
+  const refreshInFlightRef = React.useRef(null);
+  const pluginActionInFlightRef = React.useRef(null);
+  const marketplaceActionInFlightRef = React.useRef(null);
 
   const handleRefresh = React.useCallback(async () => {
+    if (refreshInFlightRef.current) return false;
+    const operation = {};
+    refreshInFlightRef.current = operation;
     const projectId = activeProjectId;
     const requestId = ++refreshRequestRef.current;
     setRefreshing(true);
@@ -44,9 +50,12 @@ export default function ReplicaPluginsView() {
       setActionError(error?.message || '插件数据加载失败');
       return false;
     } finally {
-      if (requestId === refreshRequestRef.current && useStore.getState().activeProjectId === projectId) {
-        setRefreshing(false);
-        setLoading(false);
+      if (refreshInFlightRef.current === operation) {
+        refreshInFlightRef.current = null;
+        if (requestId === refreshRequestRef.current && useStore.getState().activeProjectId === projectId) {
+          setRefreshing(false);
+          setLoading(false);
+        }
       }
     }
   }, [activeProjectId, refreshMarketplaces, refreshPlugins]);
@@ -68,6 +77,9 @@ export default function ReplicaPluginsView() {
     setNewMktUrl('');
     setMktBusy(false);
     setMktMsg(null);
+    refreshInFlightRef.current = null;
+    pluginActionInFlightRef.current = null;
+    marketplaceActionInFlightRef.current = null;
     handleRefresh();
   }, [activeProjectId, handleRefresh]);
 
@@ -95,39 +107,68 @@ export default function ReplicaPluginsView() {
 
   const pluginOperationActive = Boolean(pluginBusy);
 
+  const beginPluginAction = () => {
+    if (pluginActionInFlightRef.current || marketplaceActionInFlightRef.current || useStore.getState().pluginBusy) return null;
+    const operation = {};
+    pluginActionInFlightRef.current = operation;
+    return operation;
+  };
+
+  const finishPluginAction = (operation) => {
+    if (pluginActionInFlightRef.current === operation) pluginActionInFlightRef.current = null;
+  };
+
+  const beginMarketplaceAction = () => {
+    if (marketplaceActionInFlightRef.current || pluginActionInFlightRef.current || useStore.getState().pluginBusy) return null;
+    const operation = {};
+    marketplaceActionInFlightRef.current = operation;
+    return operation;
+  };
+
+  const finishMarketplaceAction = (operation) => {
+    if (marketplaceActionInFlightRef.current === operation) marketplaceActionInFlightRef.current = null;
+  };
+
   const openActionDialog = (action) => {
-    if (pluginOperationActive || mktBusy) return;
+    if (pluginActionInFlightRef.current || marketplaceActionInFlightRef.current || useStore.getState().pluginBusy || mktBusy) return;
     setActionDialog(action);
     setActionDialogError('');
   };
 
   const closeActionDialog = () => {
-    if (pluginOperationActive) return;
+    if (pluginActionInFlightRef.current || useStore.getState().pluginBusy) return;
     setActionDialog(null);
     setActionDialogError('');
   };
 
   const confirmActionDialog = async () => {
-    if (!actionDialog || pluginOperationActive) return;
+    if (!actionDialog || marketplaceActionInFlightRef.current) return;
+    const operation = beginPluginAction();
+    if (!operation) return;
     const projectId = activeProjectId;
     const generation = projectGenerationRef.current;
     const action = actionDialog;
     setActionDialogError('');
     setActionError(null);
     setMktMsg(null);
-    const ok = action.type === 'uninstall'
-      ? await uninstallPluginByName(action.id)
-      : await removeMarketplaceById(action.id);
-    if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
-    if (!ok) {
-      const current = useStore.getState();
-      const message = (action.type === 'uninstall' ? current.pluginError : current.marketplaceError)
-        || (action.type === 'uninstall' ? '卸载插件失败' : '删除市场失败');
-      setActionDialogError(message);
-      return;
+    try {
+      const ok = action.type === 'uninstall'
+        ? await uninstallPluginByName(action.id)
+        : await removeMarketplaceById(action.id);
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+      if (!ok) {
+        const current = useStore.getState();
+        const message = (action.type === 'uninstall' ? current.pluginError : current.marketplaceError)
+          || (action.type === 'uninstall' ? '卸载插件失败' : '删除市场失败');
+        setActionDialogError(message);
+        return;
+      }
+      setActionDialog(null);
+    } finally {
+      finishPluginAction(operation);
     }
-    setActionDialog(null);
   };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
       <div className="mx-auto w-full max-w-5xl px-8 py-8">
@@ -274,12 +315,18 @@ export default function ReplicaPluginsView() {
                       className={`toggle-switch shrink-0 ${enabled ? 'toggle-switch-on' : 'toggle-switch-off'} ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
                       disabled={pluginOperationActive}
                       onClick={async () => {
+                        const operation = beginPluginAction();
+                        if (!operation) return;
                         const projectId = activeProjectId;
                         const generation = projectGenerationRef.current;
                         setActionError(null);
-                        const ok = await togglePluginByName(p.name, !enabled);
-                        if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
-                        if (!ok) setActionError(useStore.getState().pluginError || '操作失败');
+                        try {
+                          const ok = await togglePluginByName(p.name, !enabled);
+                          if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+                          if (!ok) setActionError(useStore.getState().pluginError || '操作失败');
+                        } finally {
+                          finishPluginAction(operation);
+                        }
                       }}
                       title={enabled ? '点击禁用' : '点击启用'}
                     >
@@ -372,19 +419,27 @@ export default function ReplicaPluginsView() {
                   className="btn-primary text-xs"
                   disabled={!installId.trim() || installing || pluginOperationActive}
                   onClick={async () => {
-                    if (!installId.trim()) return;
+                    const pluginId = installId.trim();
+                    if (!pluginId || installing) return;
+                    const operation = beginPluginAction();
+                    if (!operation) return;
+                    const marketplace = installMarketplace;
                     const projectId = activeProjectId;
                     const generation = projectGenerationRef.current;
                     setInstalling(true);
                     setInstallMsg(null);
-                    const ok = await installPluginByName(installId.trim(), installMarketplace);
-                    if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
-                    setInstalling(false);
-                    if (ok) {
-                      setShowInstallModal(false);
-                      setInstallId('');
-                    } else {
-                      setInstallMsg(useStore.getState().pluginError || '安装失败');
+                    try {
+                      const ok = await installPluginByName(pluginId, marketplace);
+                      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+                      if (ok) {
+                        setShowInstallModal(false);
+                        setInstallId('');
+                      } else {
+                        setInstallMsg(useStore.getState().pluginError || '安装失败');
+                      }
+                    } finally {
+                      finishPluginAction(operation);
+                      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setInstalling(false);
                     }
                   }}
                 >
@@ -441,6 +496,8 @@ export default function ReplicaPluginsView() {
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">插件市场</h2>
             <button
               onClick={async () => {
+                const operation = beginMarketplaceAction();
+                if (!operation) return;
                 const projectId = activeProjectId;
                 const generation = projectGenerationRef.current;
                 setMktBusy(true);
@@ -455,6 +512,7 @@ export default function ReplicaPluginsView() {
                     setMktMsg(error?.message || '刷新市场失败');
                   }
                 } finally {
+                  finishMarketplaceAction(operation);
                   if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMktBusy(false);
                 }
               }}
@@ -490,16 +548,26 @@ export default function ReplicaPluginsView() {
               className="btn-primary text-xs"
               disabled={mktBusy || pluginOperationActive || !newMktId.trim() || !newMktUrl.trim()}
               onClick={async () => {
+                const marketplaceId = newMktId.trim();
+                const marketplaceUrl = newMktUrl.trim();
+                if (!marketplaceId || !marketplaceUrl) return;
+                const operation = beginMarketplaceAction();
+                if (!operation) return;
                 const projectId = activeProjectId;
                 const generation = projectGenerationRef.current;
                 setMktBusy(true);
                 setMktMsg(null);
                 try {
-                  const ok = await addMarketplaceById(newMktId.trim(), newMktUrl.trim() ? { url: newMktUrl.trim() } : {});
+                  const ok = await addMarketplaceById(marketplaceId, { url: marketplaceUrl });
                   if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
-                  if (ok) { setNewMktId(''); setNewMktUrl(''); }
-                  else setMktMsg(useStore.getState().marketplaceError || '新增市场失败');
+                  if (ok) {
+                    setNewMktId((current) => current.trim() === marketplaceId ? '' : current);
+                    setNewMktUrl((current) => current.trim() === marketplaceUrl ? '' : current);
+                  } else {
+                    setMktMsg(useStore.getState().marketplaceError || '新增市场失败');
+                  }
                 } finally {
+                  finishMarketplaceAction(operation);
                   if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMktBusy(false);
                 }
               }}

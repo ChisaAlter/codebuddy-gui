@@ -3,87 +3,120 @@ import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
 
-function ChannelCard({ channel, onRefresh, onWechatQrRequested, onDeleted }) {
+function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh, onWechatQrRequested, onDeleted }) {
   const type = channel.clientType || 'unknown';
-  const displayName = channel.displayName || `${type}:${channel.instanceId || ''}`;
+  const instanceId = channel.instanceId;
+  const displayName = channel.displayName || `${type}:${instanceId || ''}`;
   const status = channel.status || 'unknown';
   const color = status === 'connected' ? '#22c55e' : status === 'connecting' ? '#f59e0b' : '#8e8e93';
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
   const [confirmAction, setConfirmAction] = useState('');
   const [confirmError, setConfirmError] = useState('');
+  const mountedRef = useRef(true);
+  const actionInFlightRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionInFlightRef.current = false;
+    };
+  }, []);
+
+  const isCurrentScope = () => (
+    mountedRef.current && isScopeCurrent(projectId, generation)
+  );
+
+  const beginAction = (action) => {
+    if (!instanceId || actionInFlightRef.current || !isCurrentScope()) return false;
+    actionInFlightRef.current = true;
+    setBusy(action);
+    setMessage('');
+    setConfirmError('');
+    return true;
+  };
+
+  const finishAction = () => {
+    actionInFlightRef.current = false;
+    if (isCurrentScope()) setBusy('');
+  };
 
   // 当前后端契约仅提供 start/stop 两个连接状态动作。
   const pickToggleAction = (currentStatus) => currentStatus === 'connected' ? 'stop' : 'start';
 
   const handleToggle = async () => {
-    if (!channel.instanceId) return;
-    setBusy('toggle');
-    setMessage('');
+    const action = pickToggleAction(status);
+    if (!beginAction('toggle')) return false;
     try {
-      const action = pickToggleAction(status);
-      const result = await channelAction(type, channel.instanceId, action);
+      const result = await channelAction(type, instanceId, action);
+      if (!isCurrentScope()) return false;
       setMessage(result?.message || (action === 'start' ? '已发起连接' : '已断开'));
-      await onRefresh();
+      await onRefresh?.();
+      return isCurrentScope();
     } catch (err) {
-      setMessage(err.message || '操作失败');
+      if (isCurrentScope()) setMessage(err.message || '操作失败');
+      return false;
     } finally {
-      setBusy('');
+      finishAction();
     }
   };
 
   const handleUnbind = async () => {
-    if (!channel.instanceId) return;
-    setBusy('unbind');
-    setMessage('');
-    setConfirmError('');
+    if (!beginAction('unbind')) return false;
     try {
-      const result = await channelAction(type, channel.instanceId, 'unbind');
+      const result = await channelAction(type, instanceId, 'unbind');
+      if (!isCurrentScope()) return false;
       if (type === 'wechat' && result?.needsQrScan) {
         setMessage('旧凭据已清除，请重新扫码');
-        onWechatQrRequested?.(channel.instanceId, displayName);
+        onWechatQrRequested?.(instanceId, displayName);
       } else {
         setMessage(result?.message || '已解绑');
       }
-      await onRefresh();
-      return true;
+      await onRefresh?.();
+      return isCurrentScope();
     } catch (err) {
-      setConfirmError(err.message || '解绑失败');
+      if (isCurrentScope()) setConfirmError(err.message || '解绑失败');
       return false;
     } finally {
-      setBusy('');
+      finishAction();
     }
   };
 
   const handleDelete = async () => {
-    if (!channel.instanceId) return;
-    setBusy('delete');
-    setMessage('');
-    setConfirmError('');
+    if (!beginAction('delete')) return false;
     try {
-      await deleteChannelInstance(type, channel.instanceId);
+      await deleteChannelInstance(type, instanceId);
+      if (!isCurrentScope()) return false;
       setMessage('已删除');
-      onDeleted?.(channel.instanceId);
-      await onRefresh();
-      return true;
+      onDeleted?.(instanceId);
+      await onRefresh?.();
+      return isCurrentScope();
     } catch (err) {
-      setConfirmError(err.message || '删除失败');
+      if (isCurrentScope()) setConfirmError(err.message || '删除失败');
       return false;
     } finally {
-      setBusy('');
+      finishAction();
     }
   };
 
+  const openConfirm = (action) => {
+    if (actionInFlightRef.current || !isCurrentScope()) return;
+    setConfirmAction(action);
+    setConfirmError('');
+  };
+
   const closeConfirm = () => {
-    if (busy) return;
+    if (actionInFlightRef.current || !isCurrentScope()) return;
     setConfirmAction('');
     setConfirmError('');
   };
 
   const confirmDestructiveAction = async () => {
-    if (!confirmAction || busy) return;
-    const ok = confirmAction === 'unbind' ? await handleUnbind() : await handleDelete();
-    if (ok) {
+    if (!confirmAction || actionInFlightRef.current || !isCurrentScope()) return;
+    const action = confirmAction;
+    const ok = action === 'unbind' ? await handleUnbind() : await handleDelete();
+    if (ok && isCurrentScope()) {
       setConfirmAction('');
       setConfirmError('');
     }
@@ -100,7 +133,7 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested, onDeleted }) {
         </span>
       </div>
       <div className="space-y-1 text-xs text-[var(--color-text-secondary)]">
-        <div>instanceId: {channel.instanceId || '-'}</div>
+        <div>instanceId: {instanceId || '-'}</div>
         <div>hidden: {String(!!channel.hidden)}</div>
       </div>
       <div className="mt-3 flex gap-2 flex-wrap">
@@ -108,12 +141,12 @@ function ChannelCard({ channel, onRefresh, onWechatQrRequested, onDeleted }) {
         <button
           className="btn-ghost"
           disabled={!!busy}
-          onClick={() => { setConfirmAction('unbind'); setConfirmError(''); }}
+          onClick={() => openConfirm('unbind')}
           title={type === 'wechat' ? '清除旧凭据并重新扫码' : '清除已保存的渠道凭据'}
         >
           {busy === 'unbind' ? '处理中...' : '解绑'}
         </button>
-        <button className="btn-ghost" disabled={!!busy} onClick={() => { setConfirmAction('delete'); setConfirmError(''); }}>{busy === 'delete' ? '处理中...' : '删除'}</button>
+        <button className="btn-ghost" disabled={!!busy} onClick={() => openConfirm('delete')}>{busy === 'delete' ? '处理中...' : '删除'}</button>
       </div>
       {message ? <div className="mt-2 text-xs text-[var(--color-text-secondary)]">{message}</div> : null}
 
@@ -456,8 +489,11 @@ export default function ReplicaRemoteControlView() {
           <div className="text-sm font-medium text-[var(--color-text-secondary)]">微信机器人</div>
           {wechat.length ? wechat.map((item) => (
             <ChannelCard
-              key={`${item.clientType}-${item.instanceId}`}
+              key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`}
               channel={item}
+              projectId={renderProjectId}
+              generation={renderGeneration}
+              isScopeCurrent={isScopeCurrent}
               onRefresh={load}
               onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`, renderProjectId, renderGeneration)}
               onDeleted={(instanceId) => handleChannelDeleted(instanceId, renderProjectId, renderGeneration)}
@@ -467,13 +503,13 @@ export default function ReplicaRemoteControlView() {
 
         <section className="space-y-3">
           <div className="text-sm font-medium text-[var(--color-text-secondary)]">企业微信机器人</div>
-          {wecom.length ? wecom.map((item) => <ChannelCard key={`${item.clientType}-${item.instanceId}`} channel={item} onRefresh={load} />) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
+          {wecom.length ? wecom.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
         </section>
 
         {others.length ? (
           <section className="space-y-3">
             <div className="text-sm font-medium text-[var(--color-text-secondary)]">更多渠道</div>
-            {others.map((item) => <ChannelCard key={`${item.clientType}-${item.instanceId}`} channel={item} onRefresh={load} />)}
+            {others.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />)}
           </section>
         ) : null}
 

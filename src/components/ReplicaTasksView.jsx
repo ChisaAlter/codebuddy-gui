@@ -16,6 +16,10 @@ export default function ReplicaTasksView() {
   const [pendingDeleteTask, setPendingDeleteTask] = useState(null);
   const [deleteError, setDeleteError] = useState('');
   const sessionGenerationRef = React.useRef(0);
+  const createInFlightRef = React.useRef(null);
+  const refreshInFlightRef = React.useRef(null);
+  const templateRefreshInFlightRef = React.useRef(null);
+  const deleteInFlightRef = React.useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -31,6 +35,10 @@ export default function ReplicaTasksView() {
     setDeleteError('');
     setCron('0 9 * * *');
     setPrompt('每日汇总当前会话进度');
+    createInFlightRef.current = null;
+    refreshInFlightRef.current = null;
+    templateRefreshInFlightRef.current = null;
+    deleteInFlightRef.current = null;
     refreshTasks().finally(() => {
       if (active && generation === sessionGenerationRef.current && useStore.getState().activeThreadId === threadId) setLoading(false);
     });
@@ -38,36 +46,53 @@ export default function ReplicaTasksView() {
   }, [activeThreadId, sessionId, refreshTasks]);
 
   const handleCreate = async () => {
+    if (createInFlightRef.current) return;
+    const operation = {};
+    createInFlightRef.current = operation;
     const threadId = activeThreadId;
     const generation = sessionGenerationRef.current;
+    const nextCron = cron.trim();
+    const nextPrompt = prompt.trim();
     setCreating(true);
     setLocalError(null);
     try {
-      await createTask(cron.trim(), prompt.trim());
+      await createTask(nextCron, nextPrompt);
       if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) {
-        setPrompt('每日汇总当前会话进度');
+        setPrompt((current) => current.trim() === nextPrompt ? '每日汇总当前会话进度' : current);
       }
     } catch (err) {
       if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) {
         setLocalError(err.message || '创建失败');
       }
     } finally {
-      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setCreating(false);
+      if (createInFlightRef.current === operation) {
+        createInFlightRef.current = null;
+        if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setCreating(false);
+      }
     }
   };
 
   const handleRefreshTemplates = async () => {
+    if (templateRefreshInFlightRef.current) return;
+    const operation = {};
+    templateRefreshInFlightRef.current = operation;
     const threadId = activeThreadId;
     const generation = sessionGenerationRef.current;
     setRefreshingTemplates(true);
     try {
       await refreshTaskTemplatesNow();
     } finally {
-      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshingTemplates(false);
+      if (templateRefreshInFlightRef.current === operation) {
+        templateRefreshInFlightRef.current = null;
+        if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshingTemplates(false);
+      }
     }
   };
 
   const handleRefresh = async () => {
+    if (refreshInFlightRef.current) return;
+    const operation = {};
+    refreshInFlightRef.current = operation;
     const threadId = activeThreadId;
     const generation = sessionGenerationRef.current;
     setRefreshing(true);
@@ -75,19 +100,24 @@ export default function ReplicaTasksView() {
     try {
       await refreshTasks();
     } finally {
-      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshing(false);
+      if (refreshInFlightRef.current === operation) {
+        refreshInFlightRef.current = null;
+        if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setRefreshing(false);
+      }
     }
   };
 
   const closeDeleteDialog = () => {
-    if (busyTaskId) return;
+    if (deleteInFlightRef.current) return;
     setPendingDeleteTask(null);
     setDeleteError('');
   };
 
   const confirmDeleteTask = async () => {
     const taskId = pendingDeleteTask?.taskId;
-    if (!taskId || busyTaskId) return;
+    if (!taskId || deleteInFlightRef.current) return;
+    const operation = {};
+    deleteInFlightRef.current = operation;
     const threadId = activeThreadId;
     const generation = sessionGenerationRef.current;
     setBusyTaskId(taskId);
@@ -100,7 +130,10 @@ export default function ReplicaTasksView() {
         setDeleteError(err.message || '删除定时任务失败');
       }
     } finally {
-      if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setBusyTaskId(null);
+      if (deleteInFlightRef.current === operation) {
+        deleteInFlightRef.current = null;
+        if (threadId === useStore.getState().activeThreadId && generation === sessionGenerationRef.current) setBusyTaskId(null);
+      }
     }
   };
 
@@ -119,7 +152,7 @@ export default function ReplicaTasksView() {
         {(localError || scheduledTasksError) && (
           <div className="mb-4 rounded-lg border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.1)] px-4 py-2.5 text-sm text-[#f87171]">
             {localError || scheduledTasksError}
-            <button className="ml-3 underline text-xs" onClick={() => { setLocalError(null); refreshTasks(); }}>重试</button>
+            <button className="ml-3 underline text-xs" onClick={handleRefresh}>重试</button>
           </div>
         )}
 
@@ -188,6 +221,7 @@ export default function ReplicaTasksView() {
                           className="btn-ghost text-xs text-[var(--color-error)]"
                           disabled={busy}
                           onClick={() => {
+                            if (deleteInFlightRef.current) return;
                             setPendingDeleteTask({ ...task, taskId });
                             setDeleteError('');
                           }}

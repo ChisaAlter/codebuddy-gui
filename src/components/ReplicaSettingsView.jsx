@@ -41,21 +41,48 @@ function SpinButton({ value, onChange, min = 1, max = 999 }) {
   );
 }
 
-function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56' }) {
+function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56', scopeKey }) {
   const normalized = String(value ?? '');
   const [draft, setDraft] = useState(normalized);
   const [saving, setSaving] = useState(false);
+  const mountedRef = useRef(true);
+  const saveInFlightRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      saveInFlightRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    saveInFlightRef.current = null;
+    setSaving(false);
+    setDraft(normalized);
+  }, [scopeKey]);
 
   useEffect(() => {
     if (!saving) setDraft(normalized);
   }, [normalized, saving]);
 
   const commit = async () => {
-    if (saving || draft === normalized) return;
+    if (saveInFlightRef.current || draft === normalized) return;
+    const operation = {};
+    saveInFlightRef.current = operation;
     setSaving(true);
-    const saved = await onChange(draft);
-    setSaving(false);
-    if (saved === false) setDraft(normalized);
+    let saved = false;
+    try {
+      saved = await onChange(draft);
+    } catch (_) {
+      saved = false;
+    } finally {
+      if (mountedRef.current && saveInFlightRef.current === operation) {
+        saveInFlightRef.current = null;
+        setSaving(false);
+        if (saved === false) setDraft(normalized);
+      }
+    }
   };
   return (
     <input
@@ -100,17 +127,35 @@ function SettingRow({ label, desc, control }) {
   );
 }
 
-function JsonObjectEditor({ value, onSave }) {
+function JsonObjectEditor({ value, onSave, scopeKey }) {
   const serialized = JSON.stringify(value || {}, null, 2);
   const [draft, setDraft] = useState(serialized);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const mountedRef = useRef(true);
+  const saveInFlightRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      saveInFlightRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    saveInFlightRef.current = null;
+    setSaving(false);
+    setMessage('');
+    setDraft(serialized);
+  }, [scopeKey]);
 
   useEffect(() => {
     setDraft(serialized);
   }, [serialized]);
 
   const save = async () => {
+    if (saveInFlightRef.current) return;
     let parsed;
     try {
       parsed = JSON.parse(draft || '{}');
@@ -119,11 +164,22 @@ function JsonObjectEditor({ value, onSave }) {
       setMessage(error.message || 'JSON 格式无效');
       return;
     }
+    const operation = {};
+    saveInFlightRef.current = operation;
     setSaving(true);
     setMessage('');
-    const saved = await onSave(parsed);
-    setSaving(false);
-    setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
+    let saved = false;
+    try {
+      saved = await onSave(parsed);
+    } catch (_) {
+      saved = false;
+    } finally {
+      if (mountedRef.current && saveInFlightRef.current === operation) {
+        saveInFlightRef.current = null;
+        setSaving(false);
+        setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
+      }
+    }
   };
 
   return (
@@ -145,17 +201,35 @@ function JsonObjectEditor({ value, onSave }) {
   );
 }
 
-function JsonArrayEditor({ value, onSave, ariaLabel }) {
+function JsonArrayEditor({ value, onSave, ariaLabel, scopeKey }) {
   const serialized = JSON.stringify(Array.isArray(value) ? value : [], null, 2);
   const [draft, setDraft] = useState(serialized);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const mountedRef = useRef(true);
+  const saveInFlightRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      saveInFlightRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    saveInFlightRef.current = null;
+    setSaving(false);
+    setMessage('');
+    setDraft(serialized);
+  }, [scopeKey]);
 
   useEffect(() => {
     setDraft(serialized);
   }, [serialized]);
 
   const save = async () => {
+    if (saveInFlightRef.current) return;
     let parsed;
     try {
       parsed = JSON.parse(draft || '[]');
@@ -166,11 +240,22 @@ function JsonArrayEditor({ value, onSave, ariaLabel }) {
       setMessage(parseError.message || 'JSON 格式无效');
       return;
     }
+    const operation = {};
+    saveInFlightRef.current = operation;
     setSaving(true);
     setMessage('');
-    const saved = await onSave(parsed);
-    setSaving(false);
-    setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
+    let saved = false;
+    try {
+      saved = await onSave(parsed);
+    } catch (_) {
+      saved = false;
+    } finally {
+      if (mountedRef.current && saveInFlightRef.current === operation) {
+        saveInFlightRef.current = null;
+        setSaving(false);
+        setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
+      }
+    }
   };
 
   return (
@@ -191,6 +276,7 @@ function JsonArrayEditor({ value, onSave, ariaLabel }) {
     </div>
   );
 }
+
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
@@ -433,7 +519,7 @@ export default function ReplicaSettingsView() {
           <h2 className="settings-heading">模型与推理</h2>
           <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
             <SettingRow label="默认模型" desc="设置默认使用的 AI 模型" control={
-              <TextInput value={settings?.model || currentModelName || currentModel || ''} onChange={(v) => updateSetting('model', v)} />
+              <TextInput scopeKey={activeProjectId} value={settings?.model || currentModelName || currentModel || ''} onChange={(v) => updateSetting('model', v)} />
             } />
             <SettingRow label="推理努力级别" desc="控制模型的推理深度" control={
               <select
@@ -490,7 +576,7 @@ export default function ReplicaSettingsView() {
               <span className="text-xs text-[var(--color-text-secondary)]">{settings?.language || '简体中文'}</span>
             } />
             <SettingRow label="通知渠道" control={
-              <TextInput value={settings?.preferredNotifChannel || 'Auto'} onChange={(value) => updateSetting('preferredNotifChannel', value)} />
+              <TextInput scopeKey={activeProjectId} value={settings?.preferredNotifChannel || 'Auto'} onChange={(value) => updateSetting('preferredNotifChannel', value)} />
             } />
           </div>
         </div>
@@ -509,13 +595,13 @@ export default function ReplicaSettingsView() {
             <SettingRow label="启用全部项目 MCP" control={<Toggle value={!!settings?.enableAllProjectMcpServers} onChange={(v) => updateSetting('enableAllProjectMcpServers', v)} />} />
             <SettingRow label="信任全部目录" control={<Toggle value={!!settings?.trustAll} onChange={(value) => updateSetting('trustAll', value)} />} />
             <SettingRow label="状态栏命令" control={
-              <TextInput value={settings?.statusLine?.command || ''} width="w-72" onChange={(value) => updateSetting('statusLine.command', value)} />
+              <TextInput scopeKey={activeProjectId} value={settings?.statusLine?.command || ''} width="w-72" onChange={(value) => updateSetting('statusLine.command', value)} />
             } />
             <SettingRow label="环境变量" desc="应用于每个会话的环境变量 (JSON)" control={
-              <JsonObjectEditor value={settings?.env} onSave={(value) => updateSetting('env', value)} />
+              <JsonObjectEditor scopeKey={activeProjectId} value={settings?.env} onSave={(value) => updateSetting('env', value)} />
             } />
             <SettingRow label="可信目录" control={
-              <JsonArrayEditor value={settings?.trustedDirectories} ariaLabel="可信目录 JSON" onSave={(value) => updateSetting('trustedDirectories', value)} />
+              <JsonArrayEditor scopeKey={activeProjectId} value={settings?.trustedDirectories} ariaLabel="可信目录 JSON" onSave={(value) => updateSetting('trustedDirectories', value)} />
             } />
           </div>
         </div>
