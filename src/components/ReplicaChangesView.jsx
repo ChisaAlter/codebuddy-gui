@@ -26,13 +26,13 @@ function DiffBlock({ diff }) {
 
   const lines = diff.split(/\r?\n/);
   return (
-    <div className="min-h-0 flex-1 overflow-auto bg-[#161616] p-4 font-mono text-[12px] leading-6 text-[#f8f8f8]">
+    <div className="min-h-0 flex-1 overflow-auto bg-[var(--color-bg-code)] p-4 font-mono text-[12px] leading-6 text-[var(--color-text-primary)]">
       {lines.map((line, index) => {
         let style = {};
-        if (line.startsWith('+') && !line.startsWith('+++')) style = { background: '#22c55e1a', color: '#4ade80' };
-        else if (line.startsWith('-') && !line.startsWith('---')) style = { background: '#ef44441a', color: '#fca5a5' };
+        if (line.startsWith('+') && !line.startsWith('+++')) style = { background: 'rgba(34,197,94,0.1)', color: 'var(--color-accent-green)' };
+        else if (line.startsWith('-') && !line.startsWith('---')) style = { background: 'rgba(239,68,68,0.1)', color: 'var(--color-accent-red)' };
         else if (line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('@@'))
-          style = { color: '#0078d4' };
+          style = { color: 'var(--color-accent-blue)' };
         return (
           <div key={index} style={style}>
             {line || ' '}
@@ -44,6 +44,34 @@ function DiffBlock({ diff }) {
 }
 
 const UNTRACKED_PREVIEW_LIMIT = 500000;
+
+function normalizeGitPath(value) {
+  let normalized = String(value || '').replaceAll('\\', '/');
+  if (normalized.startsWith('./')) normalized = normalized.slice(2);
+  while (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function selectedFileMatchesItem(selectedFile, workspacePath, item) {
+  if (!selectedFile || !item) return false;
+  const selected = normalizeGitPath(selectedFile);
+  const workspace = normalizeGitPath(workspacePath);
+  const windowsWorkspace = /^[A-Za-z]:/.test(workspace);
+  let relative = selected;
+  if (workspace && (selected === workspace || selected.startsWith(`${workspace}/`))) {
+    relative = selected.slice(workspace.length);
+    while (relative.startsWith('/')) relative = relative.slice(1);
+  }
+  return [item.path, item.originalPath]
+    .filter(Boolean)
+    .some((candidate) => {
+      const normalized = normalizeGitPath(candidate);
+      const candidateKey = windowsWorkspace ? normalized.toLowerCase() : normalized;
+      const selectedKey = windowsWorkspace ? selected.toLowerCase() : selected;
+      const relativeKey = windowsWorkspace ? relative.toLowerCase() : relative;
+      return candidateKey === selectedKey || candidateKey === relativeKey;
+    });
+}
 
 function formatUntrackedPreview(path, content) {
   const text = String(content || '');
@@ -159,7 +187,38 @@ export default function ReplicaChangesView() {
     loadDiff();
   }, [selected, workspacePath]);
 
-  async function perform(action) {
+  async function prepareWorktreeMutation(options = {}) {
+    const state = useStore.getState();
+    const selectedFile = state.selectedFile;
+    const affected = Boolean(selectedFile && (
+      options.all || selectedFileMatchesItem(selectedFile, workspacePath, options.item)
+    ));
+    if (!affected) return { proceed: true, selectedFile: null, closeSelected: false };
+    if (state.fileDirty) {
+      const confirmed = await state.confirmDirtyFileAction(options.actionLabel || '执行 Git 操作');
+      if (!confirmed) return { proceed: false, selectedFile: null, closeSelected: false };
+    }
+    const matchedItem = options.item || items.find((item) => selectedFileMatchesItem(selectedFile, workspacePath, item));
+    const closeSelected = Boolean(options.removeUntracked
+      && matchedItem?.indexStatus === '?'
+      && matchedItem?.worktreeStatus === '?');
+    return { proceed: true, selectedFile, closeSelected };
+  }
+
+  async function syncEditorAfterWorktreeMutation(context) {
+    if (!context?.selectedFile) return '';
+    const state = useStore.getState();
+    state.setSelectedFile(null);
+    if (context.closeSelected) return '；已关闭被删除的文件';
+    const reopened = await state.openFile(context.selectedFile, { skipDirtyCheck: true });
+    if (!reopened) {
+      useStore.getState().setSelectedFile(null);
+      return '；原文件在新工作树中不可用';
+    }
+    return '；编辑器已同步';
+  }
+
+  async function perform(action, options = {}) {
     if (writeBusyRef.current) return { ok: false, ignored: true };
     const cwd = workspacePath || '.';
     const requestId = ++writeRequestRef.current;
@@ -168,11 +227,24 @@ export default function ReplicaChangesView() {
     );
     writeBusyRef.current = true;
     setBusy(true);
-    setStatusText('执行中...');
+    setStatusText(options.worktreeMutation ? '等待确认...' : '执行中...');
     try {
+      const worktreeContext = options.worktreeMutation
+        ? await prepareWorktreeMutation(options)
+        : { proceed: true, selectedFile: null, closeSelected: false };
+      if (!isCurrent()) return { ok: false, stale: true };
+      if (!worktreeContext.proceed) {
+        setStatusText('已取消');
+        return { ok: false, cancelled: true };
+      }
+      setStatusText('执行中...');
       await action(cwd);
       if (!isCurrent()) return { ok: false, stale: true };
-      setStatusText('已完成');
+      const editorStatus = options.worktreeMutation
+        ? await syncEditorAfterWorktreeMutation(worktreeContext)
+        : '';
+      if (!isCurrent()) return { ok: false, stale: true };
+      setStatusText(`已完成${editorStatus}`);
       await loadAll(true);
       return { ok: true };
     } catch (error) {
@@ -228,17 +300,24 @@ export default function ReplicaChangesView() {
     }
 
     let action;
-    if (operationDialog.type === 'switch') action = (cwd) => switchBranch(value, cwd);
-    else if (operationDialog.type === 'create') action = (cwd) => createBranch(value, cwd);
-    else if (operationDialog.type === 'discard-all') action = (cwd) => discardAll(cwd);
-    else {
+    let options = {};
+    if (operationDialog.type === 'switch') {
+      action = (cwd) => switchBranch(value, cwd);
+      options = { worktreeMutation: true, all: true, actionLabel: '切换 Git 分支' };
+    } else if (operationDialog.type === 'create') {
+      action = (cwd) => createBranch(value, cwd);
+    } else if (operationDialog.type === 'discard-all') {
+      action = (cwd) => discardAll(cwd);
+      options = { worktreeMutation: true, all: true, removeUntracked: true, actionLabel: '丢弃全部 Git 修改' };
+    } else {
       const item = operationDialog.item;
       action = (cwd) => discardFile(item, cwd);
+      options = { worktreeMutation: true, item, removeUntracked: true, actionLabel: '丢弃 Git 文件修改' };
     }
 
     setOperationError('');
-    const result = await perform(action);
-    if (result.stale || result.ignored) return;
+    const result = await perform(action, options);
+    if (result.stale || result.ignored || result.cancelled) return;
     if (!result.ok) {
       setOperationError(result.error);
       return;
@@ -315,7 +394,7 @@ export default function ReplicaChangesView() {
               <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={onCreateBranch}>
                 新建分支
               </button>
-              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pullBranch(cwd))}>
+              <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pullBranch(cwd), { worktreeMutation: true, all: true, actionLabel: '执行 Git Pull' })}>
                 Pull
               </button>
               <button className="btn-ghost" disabled={writeBusy || !!loadError} onClick={() => perform((cwd) => pushBranch(cwd))}>
@@ -395,7 +474,7 @@ export default function ReplicaChangesView() {
                   >
                     <button
                       className="block w-full text-left text-sm"
-                      style={{ color: selected?.path === item.path ? '#fff' : 'var(--color-text-secondary)' }}
+                      style={{ color: selected?.path === item.path ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
                       onClick={() => setSelected(item)}
                     >
                       <div className="flex items-center justify-between gap-2">

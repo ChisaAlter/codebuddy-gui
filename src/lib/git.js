@@ -131,7 +131,14 @@ export async function createBranch(name, cwd = getWorkspaceCwd()) {
 }
 
 export async function pushBranch(cwd = getWorkspaceCwd()) {
-  return await runGit(['push'], cwd);
+  try {
+    return await runGit(['push'], cwd);
+  } catch (error) {
+    if (!/no upstream branch|has no upstream branch|set-upstream/i.test(error?.message || '')) throw error;
+    const branch = await getCurrentBranch(cwd);
+    if (!branch) throw new Error('当前处于 detached HEAD，无法自动建立远程跟踪分支');
+    return await runGit(['push', '-u', 'origin', branch], cwd);
+  }
 }
 
 export async function pullBranch(cwd = getWorkspaceCwd()) {
