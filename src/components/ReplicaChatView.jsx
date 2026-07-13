@@ -19,6 +19,15 @@ function getDayLabel(ts) {
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
+function readClipboardImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('读取剪贴板图片失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
@@ -349,6 +358,7 @@ export default function ReplicaChatView() {
   const sessionTitle = useStore((s) => s.sessionTitle);
   const usage = useStore((s) => s.usage);
   const showTokensCounter = useStore((s) => Boolean(s.settings?.showTokensCounter));
+  const pasteImageEnabled = useStore((s) => Boolean(s.settings?.enablePasteImageFromClipboard));
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -359,6 +369,7 @@ export default function ReplicaChatView() {
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || []);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
+  const addClipboardImageAttachment = useStore((s) => s.addClipboardImageAttachment);
   const removePendingAttachment = useStore((s) => s.removePendingAttachment);
   const capabilities = useStore((s) => s.capabilities || {});
   const models = useStore((s) => s.models);
@@ -384,6 +395,7 @@ export default function ReplicaChatView() {
   const queueActionInFlightRef = useRef(null);
   const recoveryInFlightRef = useRef(null);
   const sendLaunchInFlightRef = useRef(null);
+  const pasteImageInFlightRef = useRef(null);
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
@@ -399,6 +411,7 @@ export default function ReplicaChatView() {
     queueActionInFlightRef.current = null;
     recoveryInFlightRef.current = null;
     sendLaunchInFlightRef.current = null;
+    pasteImageInFlightRef.current = null;
     setSessionSelectionStatus(null);
     setRecovering(false);
     setChatError(null);
@@ -642,6 +655,45 @@ export default function ReplicaChatView() {
     }
   };
 
+  const handlePaste = async (event) => {
+    if (!pasteImageEnabled) return;
+    const files = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    if (!event.clipboardData?.getData('text/plain')) event.preventDefault();
+    if (pasteImageInFlightRef.current) return;
+    const operation = {};
+    pasteImageInFlightRef.current = operation;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setChatError(null);
+    try {
+      for (const file of files) {
+        if (file.size > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+        const dataBase64 = await readClipboardImage(file);
+        if (!isCurrent()) return;
+        const added = await addClipboardImageAttachment({
+          name: file.name || 'clipboard-image',
+          mimeType: file.type,
+          size: file.size,
+          dataBase64,
+        });
+        if (!isCurrent()) return;
+        if (!added.length) throw new Error(useStore.getState().error || '粘贴图片失败');
+      }
+    } catch (error) {
+      if (isCurrent()) setChatError(error?.message || '粘贴图片失败');
+    } finally {
+      if (pasteImageInFlightRef.current === operation) pasteImageInFlightRef.current = null;
+    }
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -809,6 +861,7 @@ export default function ReplicaChatView() {
               rows={2}
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
               className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"

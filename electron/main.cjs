@@ -609,6 +609,14 @@ const ATTACHMENT_IMAGE_TYPES = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+const ATTACHMENT_IMAGE_EXTENSIONS = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+const CLIPBOARD_ATTACHMENT_DIR = path.join(app.getPath('userData'), 'clipboard-attachments');
+const CLIPBOARD_ATTACHMENT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const ATTACHMENT_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
   '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
@@ -621,6 +629,21 @@ const ATTACHMENT_TEXT_FILE_NAMES = new Set([
   'dockerfile', 'makefile', 'license', 'notice', 'readme', '.gitignore', '.gitattributes',
   '.gitmodules', '.npmrc', '.editorconfig', '.prettierrc', '.eslintrc',
 ]);
+
+async function pruneClipboardAttachments() {
+  try {
+    const entries = await fs.promises.readdir(CLIPBOARD_ATTACHMENT_DIR, { withFileTypes: true });
+    const cutoff = Date.now() - CLIPBOARD_ATTACHMENT_MAX_AGE_MS;
+    await Promise.allSettled(entries.map(async (entry) => {
+      if (!entry.isFile()) return;
+      const filePath = path.join(CLIPBOARD_ATTACHMENT_DIR, entry.name);
+      const stat = await fs.promises.stat(filePath);
+      if (stat.mtimeMs < cutoff) await fs.promises.rm(filePath, { force: true });
+    }));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') logStartup(`Clipboard attachment cleanup failed: ${error.message}`);
+  }
+}
 
 async function readAttachmentFiles(filePaths) {
   const attachments = [];
@@ -673,6 +696,27 @@ ipcMain.handle('attachment:choose', async () => {
   return readAttachmentFiles(result.filePaths);
 });
 ipcMain.handle('attachment:read', (_event, filePaths) => readAttachmentFiles(filePaths));
+ipcMain.handle('attachment:saveClipboardImage', async (_event, payload = {}) => {
+  const mimeType = String(payload.mimeType || '').toLowerCase();
+  const extension = ATTACHMENT_IMAGE_EXTENSIONS[mimeType];
+  if (!extension) throw new Error('剪贴板图片格式不受支持');
+  const encoded = String(payload.dataBase64 || '').replace(/^data:[^;]+;base64,/, '');
+  if (encoded.length > 28 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+  const data = Buffer.from(encoded, 'base64');
+  if (!data.length) throw new Error('剪贴板图片为空');
+  if (data.length > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+  await fs.promises.mkdir(CLIPBOARD_ATTACHMENT_DIR, { recursive: true });
+  await pruneClipboardAttachments();
+  const fileName = `clipboard-image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extension}`;
+  const filePath = path.join(CLIPBOARD_ATTACHMENT_DIR, fileName);
+  await fs.promises.writeFile(filePath, data, { flag: 'wx' });
+  const [attachment] = await readAttachmentFiles([filePath]);
+  if (!attachment || attachment.kind === 'unsupported') {
+    await fs.promises.rm(filePath, { force: true }).catch(() => {});
+    throw new Error(attachment?.error || '剪贴板图片读取失败');
+  }
+  return attachment;
+});
 
 ipcMain.handle('productState:load', () => productStateStore.load());
 ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));

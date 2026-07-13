@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),
   readAttachments: (filePaths) => ipcRenderer.invoke('attachment:read', filePaths),
+  saveClipboardImage: (payload) => ipcRenderer.invoke('attachment:saveClipboardImage', payload),
   loadProductState: () => ipcRenderer.invoke('productState:load'),
   saveProductState: (state) => ipcRenderer.invoke('productState:save', state),
   saveProductStateSync: (state) => ipcRenderer.sendSync('productState:saveSync', state),

@@ -832,6 +832,52 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  async addClipboardImageAttachment(payload) {
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    if (!threadId || !state.threadsById[threadId]) {
+      set({ error: '请先创建或选择一个会话' });
+      return [];
+    }
+    if (!state.settings?.enablePasteImageFromClipboard) {
+      set({ error: '剪贴板贴图未启用，请先在设置中开启' });
+      return [];
+    }
+    const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
+    const imageSupported = Boolean(
+      runtime.capabilities?.promptCapabilities?.image
+      || runtime.capabilities?.prompt_capabilities?.image,
+    );
+    if (!imageSupported) {
+      set({ error: '当前运行时未声明图片输入能力' });
+      return [];
+    }
+    if (!window.electronAPI?.saveClipboardImage) {
+      set({ error: '剪贴板图片保存接口不可用' });
+      return [];
+    }
+    set({ error: null });
+    try {
+      const attachment = await window.electronAPI.saveClipboardImage(payload);
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId || get().activeThreadId !== threadId) return [];
+      if (!attachment || attachment.kind === 'unsupported') {
+        set({ error: attachment?.error || '剪贴板图片读取失败' });
+        return [];
+      }
+      const currentRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const pendingAttachments = [...currentRuntime.pendingAttachments, attachment];
+      get().patchThreadRuntime(threadId, { pendingAttachments });
+      return [attachment];
+    } catch (error) {
+      if (get().activeProjectId === projectId && get().activeThreadId === threadId) {
+        set({ error: error.message || '粘贴图片失败' });
+      }
+      return [];
+    }
+  },
+
   removePendingAttachment(attachmentPath) {
     const threadId = get().activeThreadId;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
