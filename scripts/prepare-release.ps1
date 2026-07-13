@@ -1,6 +1,7 @@
 param(
   [switch]$SkipBuild,
-  [switch]$AllowUnsigned
+  [switch]$AllowUnsigned,
+  [string]$ExpectedSignerSubject = $env:CODEBUDDY_SIGNER_SUBJECT
 )
 
 Set-StrictMode -Version Latest
@@ -35,8 +36,19 @@ try {
   }
 
   $signature = Get-AuthenticodeSignature -LiteralPath $sourceInstaller
-  if ($signature.Status -ne 'Valid' -and -not $AllowUnsigned) {
-    throw "Installer signature status is $($signature.Status). Configure CSC_LINK/CSC_KEY_PASSWORD or rerun with -AllowUnsigned for an explicit preview release."
+  $signerCertificate = $signature.SignerCertificate
+  $selfSigned = $null -ne $signerCertificate -and $signerCertificate.Subject -eq $signerCertificate.Issuer
+  $subjectMismatch = $signature.Status -eq 'Valid' -and -not [string]::IsNullOrWhiteSpace($ExpectedSignerSubject) -and $signerCertificate.Subject -notlike "*$ExpectedSignerSubject*"
+  $releaseSignatureValid = $signature.Status -eq 'Valid' -and -not $selfSigned -and -not $subjectMismatch
+  if (-not $releaseSignatureValid -and -not $AllowUnsigned) {
+    $reason = if ($selfSigned) {
+      "self-signed certificate $($signerCertificate.Subject)"
+    } elseif ($subjectMismatch) {
+      "signer $($signerCertificate.Subject) does not match expected subject $ExpectedSignerSubject"
+    } else {
+      "signature status $($signature.Status)"
+    }
+    throw "Installer is not ready for a signed release: $reason. Configure CSC_LINK/CSC_KEY_PASSWORD or rerun with -AllowUnsigned for an explicit preview release."
   }
 
   Copy-Item -LiteralPath $sourceInstaller -Destination $assetInstaller -Force
@@ -52,10 +64,10 @@ try {
 
   $releaseNotes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Encoding UTF8
   $releaseBody = Join-Path 'dist' "release-notes-v$version.md"
-  $signatureLine = if ($signature.Status -eq 'Valid') {
-    "> Installer signature: valid ($($signature.SignerCertificate.Subject))"
+  $signatureLine = if ($releaseSignatureValid) {
+    "> Installer signature: valid ($($signerCertificate.Subject))"
   } else {
-    '> Installer signature: unavailable. Windows SmartScreen may show a warning; verify the SHA256 checksum below.'
+    '> Installer signature: unavailable or not suitable for a trusted release. Windows SmartScreen may show a warning; verify the SHA256 checksum below.'
   }
   $header = @(
     "# CodeBuddy GUI $version",
@@ -81,7 +93,8 @@ try {
     Metadata = (Resolve-Path $latestMetadata).Path
     Checksums = (Resolve-Path (Join-Path 'dist' 'SHA256SUMS.txt')).Path
     ReleaseNotes = (Resolve-Path $releaseBody).Path
-    Signature = [string]$signature.Status
+    Signature = if ($releaseSignatureValid) { 'Valid' } elseif ($selfSigned) { 'SelfSigned' } elseif ($subjectMismatch) { 'SubjectMismatch' } else { [string]$signature.Status }
+    Signer = if ($null -ne $signerCertificate) { $signerCertificate.Subject } else { $null }
     SHA256 = $hash
   } | Format-List
 } finally {

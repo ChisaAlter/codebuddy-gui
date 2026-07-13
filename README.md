@@ -58,7 +58,7 @@ npm run build:dir
 npm run release:prepare
 ```
 
-该命令会运行生产构建，检查 Windows 代码签名，并在 `dist/` 中生成连字符资产名、`latest.yml`、`SHA256SUMS.txt` 和 Release 说明。正式发布默认要求有效签名；仅预览版可显式允许未签名安装包：
+该命令会运行生产构建，检查 Windows 代码签名，并在 `dist/` 中生成连字符资产名、`latest.yml`、`SHA256SUMS.txt` 和 Release 说明。正式发布默认要求受信任的非自签名证书；可通过 `CODEBUDDY_SIGNER_SUBJECT` 进一步约束发布者名称。仅预览版可显式允许未签名安装包：
 
 ```powershell
 npm run release:prepare -- -AllowUnsigned
