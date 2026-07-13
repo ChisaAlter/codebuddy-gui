@@ -581,6 +581,43 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let opening = false;
+    let pendingTarget = null;
+    let retryTimer = null;
+    let disposed = false;
+    const openPendingNotification = async () => {
+      if (disposed || opening || !window.electronAPI?.consumeTaskNotificationTarget) return;
+      opening = true;
+      try {
+        if (!pendingTarget) pendingTarget = await window.electronAPI.consumeTaskNotificationTarget();
+        if (!pendingTarget?.threadId) return;
+        const state = useStore.getState();
+        if (!state.productStateLoaded) {
+          retryTimer = window.setTimeout(openPendingNotification, 250);
+          return;
+        }
+        const target = pendingTarget;
+        pendingTarget = null;
+        state.setRoute('chat');
+        if (!state.threadsById[target.threadId]) return;
+        const opened = await state.activateThread(target.threadId);
+        if (!opened) {
+          useStore.setState({ error: useStore.getState().error || '无法打开通知对应的对话' });
+        }
+      } finally {
+        opening = false;
+      }
+    };
+    window.addEventListener('focus', openPendingNotification);
+    openPendingNotification();
+    return () => {
+      disposed = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      window.removeEventListener('focus', openPendingNotification);
+    };
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = window.electronAPI?.onQuitRequested?.(async () => {
       const confirmed = await useStore.getState().confirmDirtyFileAction('退出应用');
       if (confirmed) {

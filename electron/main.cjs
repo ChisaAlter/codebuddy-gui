@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, net, dialog, session, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net, dialog, session, Tray, Menu, Notification } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -18,6 +18,8 @@ let tray = null;
 let pendingWindowShow = false;
 let windowCreationPromise = null;
 let closeToTrayHintShown = false;
+const activeTaskNotifications = new Set();
+let pendingNotificationTarget = null;
 // startup.log 放 userData：打包后 __dirname 在 asar 内（只读虚拟路径），相对路径写失败被静默吞
 const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
 
@@ -98,6 +100,50 @@ ipcMain.handle('runtime:ensure', (_event, request = {}) => runtimeManager.ensure
 ipcMain.handle('runtime:list', () => runtimeManager.list());
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
 ipcMain.handle('runtime:restart', (_event, request = {}) => runtimeManager.restart(request.projectId, request.cwd));
+ipcMain.handle('notification:consumeOpenThread', () => {
+  const target = pendingNotificationTarget;
+  pendingNotificationTarget = null;
+  return target;
+});
+
+ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
+  if (reallyQuitting || !Notification.isSupported()) return { shown: false, reason: 'unsupported' };
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()) {
+    return { shown: false, reason: 'window-focused' };
+  }
+
+  const title = String(payload.title || 'CodeBuddy GUI').trim().slice(0, 120);
+  const body = String(payload.body || '').trim().slice(0, 500);
+  const target = {
+    projectId: typeof payload.projectId === 'string' ? payload.projectId : null,
+    threadId: typeof payload.threadId === 'string' ? payload.threadId : null,
+  };
+
+  try {
+    const notification = new Notification({
+      title,
+      body,
+      icon: path.join(__dirname, '..', 'build', 'icon.png'),
+      silent: false,
+    });
+    activeTaskNotifications.add(notification);
+    const release = () => activeTaskNotifications.delete(notification);
+    notification.once('close', release);
+    notification.once('failed', release);
+    notification.once('click', async () => {
+      release();
+      pendingNotificationTarget = target;
+      const windowResult = showOrCreateMainWindow();
+      if (windowResult && typeof windowResult.then === 'function') await windowResult;
+    });
+    notification.show();
+    return { shown: true };
+  } catch (error) {
+    logStartup(`Task notification failed: ${error?.message || error}`);
+    return { shown: false, reason: error?.message || String(error) };
+  }
+});
+
 ipcMain.handle('app:getInfo', () => ({
   name: app.getName(),
   version: app.getVersion(),
@@ -795,6 +841,8 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === 'win32') app.setAppUserModelId('com.codebuddy.gui');
+
   // 注入 Content-Security-Policy：覆盖 dev/prod 双路，消除 Electron 安全告警
   // - 'wasm-unsafe-eval' 足 monaco-editor wasm，不开 'unsafe-eval'（Electron 告警源）
   // - connect-src：渲染层 REST/SSE 请求全部经 IPC（window.electronAPI.requestCodeBuddy → 主进程
@@ -878,6 +926,11 @@ app.on('before-quit', () => {
     try { staticServer.close(); } catch (_) {}
     staticServer = null;
   }
+  for (const notification of activeTaskNotifications) {
+    try { notification.close(); } catch (_) {}
+  }
+  activeTaskNotifications.clear();
+  pendingNotificationTarget = null;
   for (const controller of codebuddyStreams.values()) {
     try { controller.abort(); } catch (_) {}
   }

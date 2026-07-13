@@ -548,6 +548,7 @@ export default function ReplicaSettingsView() {
             <SettingRow label="显示提示建议" desc="在输入框上方显示 CodeBuddy 返回的提示建议" control={<Toggle value={!!guiSettings?.promptSuggestionEnabled} onChange={(v) => updateGuiSetting('promptSuggestionEnabled', v)} />} />
             <SettingRow label="允许剪贴板贴图" desc="允许从剪贴板添加当前运行时支持的图片附件" control={<Toggle value={!!guiSettings?.enablePasteImageFromClipboard} onChange={(v) => updateGuiSetting('enablePasteImageFromClipboard', v)} />} />
             <SettingRow label="显示 Token 计数" desc="在对话输入区显示当前会话的 Token 使用量" control={<Toggle value={!!guiSettings?.showTokensCounter} onChange={(v) => updateGuiSetting('showTokensCounter', v)} />} />
+            <SettingRow label="桌面通知" desc="窗口隐藏或未聚焦时，在后台任务完成或失败后通知" control={<Toggle value={guiSettings?.desktopNotificationsEnabled !== false} onChange={(v) => updateGuiSetting('desktopNotificationsEnabled', v)} />} />
           </div>
         </div>
 

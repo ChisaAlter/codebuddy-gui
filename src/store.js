@@ -979,6 +979,25 @@ export const useStore = create((set, get) => ({
     set({ error: null });
   },
 
+  notifyThreadResult(threadId, outcome) {
+    const state = get();
+    if (!state.guiSettings?.desktopNotificationsEnabled || !window.electronAPI?.showTaskNotification) return false;
+    const thread = state.threadsById[threadId];
+    const project = thread ? state.projectsById[thread.projectId] : null;
+    if (!thread) return false;
+    const failed = outcome === 'error';
+    const context = [project?.name, thread.title || '新对话'].filter(Boolean).join(' · ');
+    const body = `${context}\n${failed ? '后台任务失败，点击进入应用查看详情。' : '后台任务已完成，点击进入应用查看结果。'}`;
+    window.electronAPI.showTaskNotification({
+      projectId: thread.projectId,
+      threadId,
+      title: failed ? 'CodeBuddy 任务失败' : 'CodeBuddy 任务已完成',
+      body,
+      outcome,
+    }).catch(() => null);
+    return true;
+  },
+
   getModelDisplayName() {
     const { currentModel, models } = get();
     return models.find(m => m.id === currentModel || m.modelId === currentModel)?.name || currentModel || '';
@@ -3882,6 +3901,13 @@ export const useStore = create((set, get) => ({
         prompt,
       });
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      if (get().threadsById[threadId]?.status === 'cancelled') {
+        get().patchThreadRuntime(threadId, {
+          timeline: closeAssistantStream(completedRuntime.timeline),
+          isAwaitingResponse: false,
+        });
+        return false;
+      }
       get().patchThreadRuntime(threadId, {
         timeline: closeAssistantStream(completedRuntime.timeline),
         isAwaitingResponse: false,
@@ -3892,11 +3918,22 @@ export const useStore = create((set, get) => ({
       });
       if ((get().threadRuntimeById[threadId]?.promptQueue || []).length > 0) {
         setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+      } else {
+        get().notifyThreadResult(threadId, 'success');
       }
       return true;
     } catch (error) {
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const currentThread = get().threadsById[threadId] || thread;
+      const userCancelled = currentThread.status === 'cancelled'
+        || /cancelled|canceled|aborted by user|用户取消|已取消/i.test(error.message || '');
+      if (userCancelled) {
+        get().patchThreadRuntime(threadId, {
+          timeline: closeAssistantStream(failedRuntime.timeline),
+          isAwaitingResponse: false,
+        });
+        return false;
+      }
       const failedDraft = String(draftText || '').trim();
       const currentDraft = String(currentThread.draft || '').trim();
       const restoredDraft = failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
@@ -3915,6 +3952,7 @@ export const useStore = create((set, get) => ({
         draft: restoredDraft,
         metadata: { ...(currentThread.metadata || {}), lastError: error.message },
       });
+      get().notifyThreadResult(threadId, 'error');
       return false;
     }
   },
