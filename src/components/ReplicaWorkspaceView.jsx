@@ -16,9 +16,18 @@ function normalizeComparablePath(value) {
   return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
+function comparablePathKey(value) {
+  const normalized = normalizeComparablePath(value);
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function pathsEqual(left, right) {
+  return comparablePathKey(left) === comparablePathKey(right);
+}
+
 function pathContains(root, candidate) {
-  const normalizedRoot = normalizeComparablePath(root);
-  const normalizedCandidate = normalizeComparablePath(candidate);
+  const normalizedRoot = comparablePathKey(root);
+  const normalizedCandidate = comparablePathKey(candidate);
   if (!normalizedRoot || !normalizedCandidate) return false;
   return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
 }
@@ -30,6 +39,7 @@ function SearchPanel() {
   const fileSearchResults = useStore((s) => s.fileSearchResults);
   const fileSearching = useStore((s) => s.fileSearching);
   const openFile = useStore((s) => s.openFile);
+  const openDirectory = useStore((s) => s.openDirectory);
 
   // 文件名搜索（对照源 GET /api/v1/fs/search?query&limit=15）
   const fileNameQuery = useStore((s) => s.fileNameQuery);
@@ -73,15 +83,19 @@ function SearchPanel() {
           {fileNameResults.slice(0, 15).map((item, idx) => {
             const p = item.path || item.file || item.name || '';
             const name = item.name || (p.split('/').pop() || p);
+            const isDirectory = item.type === 'directory' || item.type === 'dir' || item.is_dir || p.endsWith('/');
             return (
               <button
                 key={`${p}-${idx}`}
                 className="block w-full border-b border-[var(--color-border-muted)] px-3 py-1.5 text-left last:border-b-0 hover:bg-[var(--color-bg-hover)]"
-                onClick={() => { openFile(p); setFileNameQuery(''); }}
+                onClick={async () => {
+                  const opened = isDirectory ? await openDirectory(p) : await openFile(p);
+                  if (opened) setFileNameQuery('');
+                }}
                 title={p}
               >
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xs">{item.type === 'directory' || p.endsWith('/') ? '📁' : '📄'}</span>
+                  <span className="text-xs">{isDirectory ? '📁' : '📄'}</span>
                   <span className="truncate text-xs text-[var(--color-text-primary)]">{name}</span>
                 </div>
                 <div className="truncate text-[11px] text-[var(--color-text-muted)]">{p}</div>
@@ -149,6 +163,9 @@ function FileTree({ onContextMenu }) {
   if (fileLoading) {
     return <div className="p-4 text-sm text-[var(--color-text-muted)]">加载文件中...</div>;
   }
+  if (fileEntries.length === 0) {
+    return <div className="flex flex-1 items-center justify-center p-4 text-sm text-[var(--color-text-muted)]">当前目录为空</div>;
+  }
 
   return (
     <div className="flex-1 overflow-y-auto p-2">
@@ -163,7 +180,7 @@ function FileTree({ onContextMenu }) {
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition"
               style={{
                 background: active ? 'rgba(0,120,212,0.12)' : 'transparent',
-                color: active ? '#ffffff' : 'var(--color-text-secondary)',
+                color: active ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
               }}
               onClick={() => (isDirectory ? openDirectory(path) : openFile(path))}
               onContextMenu={(e) => onContextMenu && onContextMenu(e, entry)}
@@ -206,18 +223,30 @@ export function EditorPane() {
   const fileDirty = useStore((s) => s.fileDirty);
   const fileSaving = useStore((s) => s.fileSaving);
   const fileExternalChange = useStore((s) => s.fileExternalChange);
+  const settingsTheme = useStore((s) => s.settings?.theme);
   const setFilePreview = useStore((s) => s.setFilePreview);
   const saveSelectedFile = useStore((s) => s.saveSelectedFile);
   const checkSelectedFileForExternalChanges = useStore((s) => s.checkSelectedFileForExternalChanges);
   const reloadExternalFileContent = useStore((s) => s.reloadExternalFileContent);
   const keepCurrentFileContent = useStore((s) => s.keepCurrentFileContent);
   const [saveStatus, setSaveStatus] = useState(null);
+  const [systemPrefersLight, setSystemPrefersLight] = useState(() => window.matchMedia('(prefers-color-scheme: light)').matches);
 
   const language = useMemo(() => detectLanguage(selectedFile || ''), [selectedFile]);
+  const resolvedTheme = settingsTheme || document.documentElement.dataset.theme || 'dark';
+  const editorTheme = resolvedTheme === 'light' || (resolvedTheme === 'system' && systemPrefersLight) ? 'vs' : 'vs-dark';
 
   useEffect(() => {
     setSaveStatus(null);
   }, [selectedFile]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const handleChange = (event) => setSystemPrefersLight(event.matches);
+    setSystemPrefersLight(media.matches);
+    media.addEventListener('change', handleChange);
+    return () => media.removeEventListener('change', handleChange);
+  }, []);
 
   useEffect(() => {
     if (!saveStatus || saveStatus.type === 'error') return undefined;
@@ -308,7 +337,7 @@ export function EditorPane() {
             <div className="p-4 text-sm text-[var(--color-text-muted)]">读取文件中...</div>
           ) : (
             <Editor
-              theme="vs-dark"
+              theme={editorTheme}
               language={language}
               value={filePreview}
               onChange={handleEditorChange}
@@ -340,6 +369,7 @@ export default function ReplicaWorkspaceView() {
   const activeProjectId = useStore((s) => s.activeProjectId);
   const runtimePort = useStore((s) => s.projectsById[s.activeProjectId]?.runtimePort || null);
   const fileCwd = useStore((s) => s.fileCwd);
+  const fileEntries = useStore((s) => s.fileEntries);
   const fileLoading = useStore((s) => s.fileLoading);
   const openDirectory = useStore((s) => s.openDirectory);
   const refreshFileEntries = useStore((s) => s.refreshFileEntries);
@@ -458,21 +488,31 @@ export default function ReplicaWorkspaceView() {
     return () => clearTimeout(timer);
   }, [workspaceError]);
 
+  useEffect(() => {
+    if (!statusMessage) return undefined;
+    const timer = setTimeout(() => setStatusMessage(''), 4000);
+    return () => clearTimeout(timer);
+  }, [statusMessage]);
+
   const handleNewFile = () => {
-    if (workspaceMutationBusy) return;
+    if (workspaceMutationBusy || fileLoading) return;
     setShowNewFolderInput(false);
     setShowNewFileInput(!showNewFileInput);
     setNewFileName('');
   };
 
   const handleNewFolder = () => {
-    if (workspaceMutationBusy) return;
+    if (workspaceMutationBusy || fileLoading) return;
     setShowNewFileInput(false);
     setShowNewFolderInput(!showNewFolderInput);
     setNewFolderName('');
   };
 
-  const handleRefresh = () => refreshFileEntries();
+  const handleRefresh = async () => {
+    setWorkspaceError(null);
+    const refreshed = await refreshFileEntries();
+    if (!refreshed) setWorkspaceError(useStore.getState().error || '刷新目录失败');
+  };
 
   const validateEntryName = (value) => {
     const name = String(value || '').trim();
@@ -483,11 +523,23 @@ export default function ReplicaWorkspaceView() {
 
   const pathForEntry = (entry) => entry?.path || joinPath(fileCwd || '.', entry?.name || '');
 
+  const findNameConflict = (name, sourcePath = null) => fileEntries.find((entry) => {
+    const entryPath = pathForEntry(entry);
+    if (sourcePath && pathsEqual(entryPath, sourcePath)) return false;
+    const normalizedEntryPath = normalizeComparablePath(entryPath);
+    const left = String(entry?.name || normalizedEntryPath.split('/').pop() || '');
+    const right = String(name || '');
+    const windowsDirectory = /^[A-Za-z]:/.test(String(fileCwd || ''));
+    return windowsDirectory ? left.toLowerCase() === right.toLowerCase() : left === right;
+  }) || null;
+
   const handleCreateFile = async () => {
     if (createInFlightRef.current) return;
     const name = newFileName.trim();
     const nameError = validateEntryName(name);
     if (nameError) { setWorkspaceError(nameError); return; }
+    const conflict = findNameConflict(name);
+    if (conflict) { setWorkspaceError(`“${name}”已存在，不会覆盖原文件或目录`); return; }
     const scope = { projectId: activeProjectId, cwd: fileCwd, generation: workspaceGenerationRef.current };
     const isCurrent = () => (
       scope.generation === workspaceGenerationRef.current
@@ -501,7 +553,7 @@ export default function ReplicaWorkspaceView() {
     try {
       const created = await createFile(path, '');
       if (!isCurrent()) return;
-      if (!created) { setWorkspaceError('创建文件失败'); return; }
+      if (!created) { setWorkspaceError(useStore.getState().error || '创建文件失败'); return; }
       setShowNewFileInput(false);
       setNewFileName('');
       setStatusMessage(`已创建 ${name}`);
@@ -520,6 +572,8 @@ export default function ReplicaWorkspaceView() {
     const name = newFolderName.trim();
     const nameError = validateEntryName(name);
     if (nameError) { setWorkspaceError(nameError); return; }
+    const conflict = findNameConflict(name);
+    if (conflict) { setWorkspaceError(`“${name}”已存在，不会覆盖原文件或目录`); return; }
     const scope = { projectId: activeProjectId, cwd: fileCwd, generation: workspaceGenerationRef.current };
     const isCurrent = () => (
       scope.generation === workspaceGenerationRef.current
@@ -532,7 +586,7 @@ export default function ReplicaWorkspaceView() {
     try {
       const created = await createFolder(joinPath(scope.cwd || '.', name));
       if (!isCurrent()) return;
-      if (!created) { setWorkspaceError('创建目录失败'); return; }
+      if (!created) { setWorkspaceError(useStore.getState().error || '创建目录失败'); return; }
       setShowNewFolderInput(false);
       setNewFolderName('');
       setStatusMessage(`已创建目录 ${name}`);
@@ -564,7 +618,9 @@ export default function ReplicaWorkspaceView() {
     );
     const source = renameEntry?.path || joinPath(scope.cwd || '.', renameEntry?.name || '');
     const destination = joinPath(scope.cwd || '.', nextName);
-    if (source === destination) { setRenameEntry(null); return; }
+    if (pathsEqual(source, destination)) { setRenameEntry(null); return; }
+    const conflict = findNameConflict(nextName, source);
+    if (conflict) { setRenameError(`“${nextName}”已存在，不会覆盖原文件或目录`); return; }
 
     const state = useStore.getState();
     const selectedFile = state.selectedFile;
@@ -580,7 +636,7 @@ export default function ReplicaWorkspaceView() {
     try {
       const moved = await moveEntry(source, destination);
       if (!isCurrent()) return;
-      if (!moved) throw new Error('重命名失败');
+      if (!moved) throw new Error(useStore.getState().error || '重命名失败');
       if (affectsSelectedFile) {
         const normalizedSource = normalizeComparablePath(source);
         const normalizedSelected = normalizeComparablePath(selectedFile);
@@ -637,7 +693,7 @@ export default function ReplicaWorkspaceView() {
     try {
       const removed = await removeEntry(target.path);
       if (!isCurrent()) return;
-      if (!removed) throw new Error('删除失败');
+      if (!removed) throw new Error(useStore.getState().error || '删除失败');
       if (target.affectsSelectedFile) setSelectedFile(null);
       setStatusMessage(`已删除 ${target.entry?.name || target.path}`);
       setPendingDeleteEntry(null);
@@ -671,7 +727,7 @@ export default function ReplicaWorkspaceView() {
           <div className="flex items-center gap-0.5 ml-auto pr-2 shrink-0">
             <button
               onClick={handleNewFile}
-              disabled={workspaceMutationBusy}
+              disabled={workspaceMutationBusy || fileLoading}
               className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:cursor-wait disabled:opacity-50"
               title="新建文件"
             >
@@ -682,7 +738,7 @@ export default function ReplicaWorkspaceView() {
             </button>
             <button
               onClick={handleNewFolder}
-              disabled={workspaceMutationBusy}
+              disabled={workspaceMutationBusy || fileLoading}
               className="flex h-6 w-6 items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:cursor-wait disabled:opacity-50"
               title="新建文件夹"
             >
