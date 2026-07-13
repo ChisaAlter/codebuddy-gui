@@ -397,7 +397,10 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onQuitRequested?.(async () => {
       const confirmed = await useStore.getState().confirmDirtyFileAction('退出应用');
-      if (confirmed) window.electronAPI?.confirmQuit?.();
+      if (confirmed) {
+        await useStore.getState().persistActiveProjectWorkspaceState?.({ discardDirty: true });
+        window.electronAPI?.confirmQuit?.();
+      }
     });
     return unsubscribe;
   }, []);
