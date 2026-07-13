@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCliMaintenanceInfo: () => ipcRenderer.invoke('cliMaintenance:getInfo'),
   runCliDoctor: () => ipcRenderer.invoke('cliMaintenance:doctor'),
   updateCodeBuddyCli: () => ipcRenderer.invoke('cliMaintenance:update'),
+  installCodeBuddyCli: (target) => ipcRenderer.invoke('cliMaintenance:install', target),
   updateInstalledPlugin: (payload) => ipcRenderer.invoke('pluginMaintenance:update', payload),
   previewPluginDependencyPrune: (payload) => ipcRenderer.invoke('pluginMaintenance:previewPrune', payload),
   prunePluginDependencies: (payload) => ipcRenderer.invoke('pluginMaintenance:prune', payload),

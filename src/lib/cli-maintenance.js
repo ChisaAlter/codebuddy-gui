@@ -15,3 +15,12 @@ export async function runCliDoctor() {
 export async function updateCodeBuddyCli() {
   return requireCliMaintenanceApi('updateCodeBuddyCli')();
 }
+
+export async function installCodeBuddyCli(target) {
+  const raw = String(target || '').trim();
+  const normalized = raw.toLowerCase() === 'latest' ? 'latest' : raw.replace(/^v/i, '');
+  if (normalized !== 'latest' && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(normalized)) {
+    throw new Error('请输入 latest 或完整版本号，例如 2.120.0');
+  }
+  return requireCliMaintenanceApi('installCodeBuddyCli')(normalized);
+}

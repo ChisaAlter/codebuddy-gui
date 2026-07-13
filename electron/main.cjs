@@ -808,6 +808,35 @@ async function updateCodeBuddyCli() {
   };
 }
 
+function validateCodeBuddyInstallTarget(value) {
+  const target = String(value || '').trim();
+  if (target.toLowerCase() === 'latest') return 'latest';
+  const version = target.replace(/^v/i, '');
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error('安装目标必须是 latest 或完整版本号，例如 2.120.0');
+  }
+  return version;
+}
+
+async function installCodeBuddyCli(targetValue) {
+  const target = validateCodeBuddyInstallTarget(targetValue);
+  const before = await getCodeBuddyCliInfo();
+  const result = await runCodeBuddyCli(['install', target], {
+    timeoutMs: 10 * 60 * 1000,
+    maxOutputBytes: 1024 * 1024,
+    timeoutMessage: 'CodeBuddy CLI 安装超过 10 分钟，已停止命令。请在终端中检查当前安装状态。',
+  });
+  const after = await getCodeBuddyCliInfo();
+  return {
+    target,
+    beforeVersion: before.version,
+    afterVersion: after.version,
+    changed: before.version !== after.version,
+    output: stripTerminalFormatting(result.output).trim() || '安装命令已完成，CodeBuddy CLI 未返回文本输出。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
 let cliMaintenanceOperation = null;
 
 async function runExclusiveCliMaintenanceOperation(operation) {
@@ -1057,6 +1086,7 @@ ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperati
 ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
 ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor()));
 ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
+ipcMain.handle('cliMaintenance:install', (_event, target) => runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target)));
 ipcMain.handle('pluginMaintenance:update', (_event, payload) => runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)));
 ipcMain.handle('pluginMaintenance:previewPrune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload)));
 ipcMain.handle('pluginMaintenance:prune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload)));

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { getCliMaintenanceInfo, runCliDoctor, updateCodeBuddyCli } from '../lib/cli-maintenance';
+import { getCliMaintenanceInfo, installCodeBuddyCli, runCliDoctor, updateCodeBuddyCli } from '../lib/cli-maintenance';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 function Toggle({ value, onChange }) {
@@ -283,6 +283,48 @@ function JsonArrayEditor({ value, onSave, ariaLabel, scopeKey }) {
   );
 }
 
+function CliVersionInstallDialog({ open, busy, error, currentVersion, onCancel, onSubmit }) {
+  const [target, setTarget] = useState('latest');
+  const [validationError, setValidationError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setTarget('latest');
+    setValidationError('');
+  }, [open]);
+
+  if (!open) return null;
+
+  const submit = () => {
+    const raw = target.trim();
+    const normalized = raw.toLowerCase() === 'latest' ? 'latest' : raw.replace(/^v/i, '');
+    if (normalized !== 'latest' && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(normalized)) {
+      setValidationError('请输入 latest 或完整版本号，例如 2.120.0');
+      return;
+    }
+    setValidationError('');
+    onSubmit(normalized);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4" role="dialog" aria-modal="true" aria-label="安装 CodeBuddy CLI 版本" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel(); }}>
+      <div className="w-full max-w-md rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+        <div className="text-sm font-semibold text-[var(--color-text-primary)]">安装 CodeBuddy CLI 版本</div>
+        <div className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">运行真实的 <span className="font-mono text-[var(--color-text-primary)]">codebuddy install &lt;target&gt;</span>。填写 <span className="font-mono">latest</span> 安装最新版，填写旧版本号可执行回滚。</div>
+        <label className="mt-4 block text-xs text-[var(--color-text-secondary)]">安装目标
+          <input className="input-field mt-1 w-full font-mono" value={target} disabled={busy} placeholder="latest 或 2.120.0" onChange={(event) => { setTarget(event.target.value); setValidationError(''); }} onKeyDown={(event) => { if (event.key === 'Enter' && !busy) submit(); }} />
+        </label>
+        <div className="mt-2 text-[11px] text-[var(--color-text-muted)]">当前版本：{currentVersion ? `v${currentVersion}` : '未知'}。安装完成后，已运行的项目进程仍需重启。</div>
+        {(validationError || error) ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{validationError || error}</div> : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn-ghost px-3 py-1.5 text-xs" disabled={busy} onClick={onCancel}>取消</button>
+          <button className="btn-primary px-3 py-1.5 text-xs" disabled={busy || !target.trim()} onClick={submit}>{busy ? '安装中...' : '安装版本'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
@@ -325,6 +367,8 @@ export default function ReplicaSettingsView() {
   const [cliOutput, setCliOutput] = useState(null);
   const [cliUpdateOpen, setCliUpdateOpen] = useState(false);
   const [cliUpdateError, setCliUpdateError] = useState('');
+  const [cliInstallOpen, setCliInstallOpen] = useState(false);
+  const [cliInstallError, setCliInstallError] = useState('');
   const [cliRestartNeeded, setCliRestartNeeded] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [selectionStatus, setSelectionStatus] = useState(null);
@@ -627,6 +671,38 @@ export default function ReplicaSettingsView() {
     }
   };
 
+  const confirmCliInstall = async (target) => {
+    if (cliOperationRef.current) return;
+    cliOperationRef.current = 'install';
+    setCliOperation('install');
+    setCliInstallError('');
+    setCliNotice({ type: 'busy', message: `正在安装 CodeBuddy CLI ${target}，请勿关闭应用...` });
+    setCliOutput(null);
+    try {
+      const result = await installCodeBuddyCli(target);
+      if (!mountedRef.current) return;
+      setCliInfo((current) => ({ ...(current || {}), version: result.afterVersion, output: result.afterVersion }));
+      setCliOutput({ title: `安装输出 · ${result.target}`, content: result.output, truncated: result.truncated });
+      setCliInstallOpen(false);
+      setCliRestartNeeded(true);
+      setCliNotice({
+        type: 'success',
+        message: result.changed
+          ? `CodeBuddy CLI 已从 ${result.beforeVersion} 切换到 ${result.afterVersion}。现有项目运行时仍在使用安装前的进程。`
+          : `CodeBuddy CLI ${result.afterVersion} 安装命令已完成。请重启现有项目运行时以重新加载安装结果。`,
+      });
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const message = error?.message || 'CodeBuddy CLI 版本安装失败';
+      setCliInstallError(message);
+      setCliNotice({ type: 'error', message });
+      await loadCliInfo({ showLoading: false });
+    } finally {
+      if (cliOperationRef.current === 'install') cliOperationRef.current = '';
+      if (mountedRef.current) setCliOperation('');
+    }
+  };
+
   const restartCurrentRuntimeAfterCliUpdate = async () => {
     if (cliOperationRef.current) return;
     const projectId = activeProjectId;
@@ -925,13 +1001,16 @@ export default function ReplicaSettingsView() {
                 </button>
               </div>
             } />
-            <SettingRow label="诊断与更新" desc="诊断最多运行 45 秒；检查更新会在有新版本时直接安装" control={
-              <div className="flex items-center gap-1">
+            <SettingRow label="维护操作" desc="可诊断、更新到最新版，或安装指定版本进行回滚" control={
+              <div className="flex flex-wrap items-center justify-end gap-1">
                 <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={runCliDiagnostics}>
                   {cliOperation === 'doctor' ? '诊断中...' : '运行诊断'}
                 </button>
                 <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={() => { setCliUpdateError(''); setCliUpdateOpen(true); }}>
                   {cliOperation === 'update' ? '更新中...' : '检查并更新'}
+                </button>
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={() => { setCliInstallError(''); setCliInstallOpen(true); }}>
+                  {cliOperation === 'install' ? '安装中...' : '安装版本'}
                 </button>
               </div>
             } />
@@ -1035,6 +1114,14 @@ export default function ReplicaSettingsView() {
         danger={false}
         onCancel={() => { if (cliOperation !== 'update') { setCliUpdateOpen(false); setCliUpdateError(''); } }}
         onConfirm={confirmCliUpdate}
+      />
+      <CliVersionInstallDialog
+        open={cliInstallOpen}
+        busy={cliOperation === 'install'}
+        error={cliInstallError}
+        currentVersion={cliInfo?.version}
+        onCancel={() => { if (cliOperation !== 'install') { setCliInstallOpen(false); setCliInstallError(''); } }}
+        onSubmit={confirmCliInstall}
       />
     </div>
   );
