@@ -102,6 +102,7 @@ export default function ReplicaSidebar() {
     route, setRoute, sidebarCollapsed,
     info, currentModel, currentMode, models, modes,
     connectionState, newSession, newSessionBusy, newSessionProjectId, newSessionError, setModel, setMode, changesCount,
+    projectNavigationBusy, projectNavigationTargetId, projectNavigationError,
     workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId, fileDirty, selectedFile,
     threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
   } = useStore();
@@ -352,7 +353,8 @@ export default function ReplicaSidebar() {
             <div className="mb-1 flex items-center justify-between">
               <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">项目</div>
               <button
-                className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                disabled={projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:')}
                 onClick={() => useStore.getState().chooseWorkspace()}
                 title="添加项目"
               >
@@ -367,14 +369,20 @@ export default function ReplicaSidebar() {
                 if (!project) return null;
                 const selected = projectId === activeProjectId;
                 const projectMenuOpen = projectMenuOpenId === projectId;
+                const switching = projectNavigationBusy && projectNavigationTargetId === `project:${projectId}`;
                 return (
                   <div key={projectId} className="relative flex items-center">
                     <button
-                      className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${selected ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'}`}
+                      className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs disabled:cursor-wait disabled:opacity-60 ${selected ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'}`}
+                      disabled={switching}
                       onClick={() => activateProject(projectId)}
-                      title={project.workspacePath}
+                      title={switching ? '正在切换项目' : project.workspacePath}
                     >
-                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 4h5l1.2 1.5h6.8v7.5h-13V4z" /></svg>
+                      {switching ? (
+                        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
+                      ) : (
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 4h5l1.2 1.5h6.8v7.5h-13V4z" /></svg>
+                      )}
                       <span className="truncate">{project.name}</span>
                       <span className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${project.runtimeStatus === 'running' ? 'bg-[var(--color-accent-green)]' : project.runtimeStatus === 'error' ? 'bg-[var(--color-accent-red)]' : project.runtimeStatus === 'starting' ? 'bg-[var(--color-accent-yellow)]' : 'bg-[var(--color-text-muted)]'}`} title={project.runtimeError || project.runtimeStatus || 'idle'} />
                     </button>
@@ -395,6 +403,9 @@ export default function ReplicaSidebar() {
                 );
               })}
             </div>
+            {projectNavigationError ? (
+              <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{projectNavigationError}</div>
+            ) : null}
           </div>
         )}
 
@@ -442,11 +453,12 @@ export default function ReplicaSidebar() {
             <div className="flex items-center justify-between mb-1">
               <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">工作区</div>
               <button
-                className="btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                className="btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                disabled={projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:')}
                 title="切换工作区目录"
                 onClick={() => useStore.getState().chooseWorkspace()}
               >
-                切换
+                {projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:') ? '切换中...' : '切换'}
               </button>
             </div>
             <div className="truncate text-[var(--color-text-secondary)]" title={workspacePath || info?.cwd || ''}>
@@ -512,6 +524,7 @@ export default function ReplicaSidebar() {
                   const threadId = thread.id;
                   const isRenaming = renamingId === threadId;
                   const isMenuOpen = menuOpenId === threadId;
+                  const switching = projectNavigationBusy && projectNavigationTargetId === `thread:${threadId}`;
                   return (
                     <div key={threadId} className={`relative flex items-center rounded-md transition-colors hover:bg-[var(--color-bg-hover)] ${threadId === activeThreadId ? 'bg-[var(--color-bg-hover)]' : ''}`}>
                       {isRenaming ? (
@@ -552,11 +565,13 @@ export default function ReplicaSidebar() {
                       ) : (
                         <>
                           <button
-                            className="block flex-1 min-w-0 rounded-md px-2 py-1 text-left transition-colors"
+                            className="block min-w-0 flex-1 rounded-md px-2 py-1 text-left transition-colors disabled:cursor-wait disabled:opacity-60"
+                            disabled={switching}
                             onClick={() => activateThread(threadId)}
-                            title={thread.sessionId || thread.title}
+                            title={switching ? '正在切换会话' : (thread.sessionId || thread.title)}
                           >
                             <div className="flex items-center gap-1.5">
+                              {switching ? <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" /> : null}
                               <div className="truncate text-xs text-[var(--color-text-primary)]">{thread.title || '新对话'}</div>
                               {thread.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--color-accent-blue)]" title="未读更新" /> : null}
                             </div>

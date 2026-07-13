@@ -34,6 +34,7 @@ let fileNameSearchRequestId = 0;
 let fileSaveRequestId = 0;
 let fileDiskSyncRequestId = 0;
 let fileWatcherRequestId = 0;
+let projectNavigationVersion = 0;
 const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
@@ -42,6 +43,21 @@ const runtimeOperationChains = new Map();
 const sessionSettingChains = new Map();
 const sessionActionOperations = new Map();
 let dirtyFileConfirmationResolve = null;
+
+function beginProjectNavigation(set, targetId) {
+  const token = { version: ++projectNavigationVersion, targetId };
+  set({ projectNavigationBusy: true, projectNavigationTargetId: targetId, projectNavigationError: null, error: null });
+  return token;
+}
+
+function isProjectNavigationCurrent(token) {
+  return token.version === projectNavigationVersion;
+}
+
+function finishProjectNavigation(set, token, error = null) {
+  if (!isProjectNavigationCurrent(token)) return;
+  set({ projectNavigationBusy: false, projectNavigationError: error });
+}
 
 function beginScopedRequest(key, state, scope = 'project') {
   const version = (scopedRequestVersions.get(key) || 0) + 1;
@@ -347,6 +363,9 @@ export const useStore = create((set, get) => ({
   newSessionBusy: false,
   newSessionProjectId: null,
   newSessionError: null,
+  projectNavigationBusy: false,
+  projectNavigationTargetId: null,
+  projectNavigationError: null,
   info: null,
   settings: null,
   infoLoaded: false,
@@ -1140,28 +1159,55 @@ export const useStore = create((set, get) => ({
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project) return false;
-    const projectChanged = thread.projectId !== get().activeProjectId;
-    if (projectChanged && !await requestDirtyFileConfirmation(set, get, '切换项目')) return false;
-    if (projectChanged) await get().persistActiveProjectTerminalState();
-    set({
-      activeProjectId: project.id,
-      activeThreadId: thread.id,
-      workspacePath: project.workspacePath,
-      ...(projectChanged ? resetProjectRuntimeViews() : {}),
-      ...(projectChanged ? resetFileWorkspace(project.workspacePath) : {}),
-    });
-    if (projectChanged) get().loadProjectTerminalState(project.id);
-    get().activateThreadRuntime(thread.id);
-    await get().persistProductState();
-    const runtime = await get().ensureProjectRuntime(project.id);
-    if (!runtime) return false;
-    if (projectChanged) await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
-    const initialized = await get().initializeActiveThread(thread.sessionId);
-    if (initialized) {
+    if (threadId === get().activeThreadId) return true;
+    const navigation = beginProjectNavigation(set, `thread:${threadId}`);
+    try {
+      const projectChanged = thread.projectId !== get().activeProjectId;
+      if (projectChanged) {
+        const confirmed = await requestDirtyFileConfirmation(set, get, '切换项目');
+        if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
+        await get().persistActiveProjectTerminalState();
+        if (!isProjectNavigationCurrent(navigation)) return false;
+      }
+      const currentThread = get().threadsById[threadId];
+      const currentProject = get().projectsById[project.id];
+      if (!currentThread || !currentProject || currentThread.projectId !== project.id) return false;
+      set({
+        activeProjectId: project.id,
+        activeThreadId: thread.id,
+        workspacePath: project.workspacePath,
+        ...(projectChanged ? resetProjectRuntimeViews() : {}),
+        ...(projectChanged ? resetFileWorkspace(project.workspacePath) : {}),
+      });
+      if (projectChanged) get().loadProjectTerminalState(project.id);
+      get().activateThreadRuntime(thread.id);
+      const persisted = await get().persistProductState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!persisted) throw new Error(get().error || '保存会话状态失败');
+      const runtime = await get().ensureProjectRuntime(project.id);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!runtime) throw new Error(get().error || '项目运行时启动失败');
+      if (projectChanged) {
+        const opened = await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
+        if (!isProjectNavigationCurrent(navigation)) return false;
+        if (!opened) throw new Error(get().error || '打开项目目录失败');
+      }
+      const initialized = await get().initializeActiveThread(thread.sessionId);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!initialized) throw new Error(get().error || '会话连接失败');
       if (projectChanged) await get().refreshProjectViews();
       else await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
+      return true;
+    } catch (error) {
+      if (isProjectNavigationCurrent(navigation)) {
+        const message = error?.message || '切换会话失败';
+        set({ error: message });
+        finishProjectNavigation(set, navigation, message);
+      }
+      return false;
+    } finally {
+      finishProjectNavigation(set, navigation, get().projectNavigationError);
     }
-    return initialized;
   },
 
   async renameThread(threadId, name) {
@@ -1357,90 +1403,127 @@ export const useStore = create((set, get) => ({
 
   async setWorkspace(path) {
     if (!path) return false;
-    const currentProject = activeProject(get());
-    if (currentProject?.workspacePath?.toLowerCase() !== String(path).toLowerCase() && !await requestDirtyFileConfirmation(set, get, '切换工作区')) return false;
-    await get().persistActiveProjectTerminalState();
     const normalizedPath = String(path);
-    let project = Object.values(get().projectsById).find((item) => (
-      item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
-    ));
-    let thread = project
-      ? get().threadsById[get().threadOrderByProject[project.id]?.[0]]
-      : null;
-    if (!project) project = createProjectRecord(normalizedPath);
-    if (!thread) thread = createThreadRecord(project.id);
-    const projectChanged = currentProject?.id !== project.id;
+    const navigation = beginProjectNavigation(set, `workspace:${normalizedPath}`);
+    try {
+      const currentProject = activeProject(get());
+      if (currentProject?.workspacePath?.toLowerCase() !== normalizedPath.toLowerCase()) {
+        const confirmed = await requestDirtyFileConfirmation(set, get, '切换工作区');
+        if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
+      }
+      await get().persistActiveProjectTerminalState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      let project = Object.values(get().projectsById).find((item) => (
+        item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
+      ));
+      let thread = project
+        ? get().threadsById[get().threadOrderByProject[project.id]?.[0]]
+        : null;
+      if (!project) project = createProjectRecord(normalizedPath);
+      if (!thread) thread = createThreadRecord(project.id);
+      const projectChanged = currentProject?.id !== project.id;
 
-    set((state) => ({
-      projectsById: {
-        ...state.projectsById,
-        [project.id]: { ...project, lastOpenedAt: new Date().toISOString() },
-      },
-      projectOrder: state.projectOrder.includes(project.id)
-        ? state.projectOrder
-        : [...state.projectOrder, project.id],
-      threadsById: { ...state.threadsById, [thread.id]: thread },
-      threadOrderByProject: {
-        ...state.threadOrderByProject,
-        [project.id]: state.threadOrderByProject[project.id]?.includes(thread.id)
-          ? state.threadOrderByProject[project.id]
-          : [...(state.threadOrderByProject[project.id] || []), thread.id],
-      },
-      activeProjectId: project.id,
-      activeThreadId: thread.id,
-      workspacePath: normalizedPath,
-      ...(projectChanged ? resetProjectRuntimeViews() : {}),
-      ...resetFileWorkspace(normalizedPath),
-    }));
-    get().loadProjectTerminalState(project.id);
-    try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
-    await get().persistProductState();
-    const runtime = await get().ensureProjectRuntime(project.id);
-    if (!runtime) return false;
-    await get().openDirectory(normalizedPath, { skipDirtyCheck: true });
-    const initialized = await get().initializeActiveThread(thread.sessionId);
-    if (initialized) {
+      set((state) => ({
+        projectsById: {
+          ...state.projectsById,
+          [project.id]: { ...project, lastOpenedAt: new Date().toISOString() },
+        },
+        projectOrder: state.projectOrder.includes(project.id)
+          ? state.projectOrder
+          : [...state.projectOrder, project.id],
+        threadsById: { ...state.threadsById, [thread.id]: thread },
+        threadOrderByProject: {
+          ...state.threadOrderByProject,
+          [project.id]: state.threadOrderByProject[project.id]?.includes(thread.id)
+            ? state.threadOrderByProject[project.id]
+            : [...(state.threadOrderByProject[project.id] || []), thread.id],
+        },
+        activeProjectId: project.id,
+        activeThreadId: thread.id,
+        workspacePath: normalizedPath,
+        ...(projectChanged ? resetProjectRuntimeViews() : {}),
+        ...resetFileWorkspace(normalizedPath),
+      }));
+      get().loadProjectTerminalState(project.id);
+      try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
+      const persisted = await get().persistProductState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!persisted) throw new Error(get().error || '保存项目状态失败');
+      const runtime = await get().ensureProjectRuntime(project.id);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!runtime) throw new Error(get().error || '项目运行时启动失败');
+      const opened = await get().openDirectory(normalizedPath, { skipDirtyCheck: true });
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!opened) throw new Error(get().error || '打开工作区失败');
+      const initialized = await get().initializeActiveThread(thread.sessionId);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!initialized) throw new Error(get().error || '会话连接失败');
       if (projectChanged) await get().refreshProjectViews();
       else await Promise.allSettled([get().refreshStats(), get().refreshTasks(), get().refreshSessions()]);
+      return true;
+    } catch (error) {
+      if (isProjectNavigationCurrent(navigation)) {
+        const message = error?.message || '切换工作区失败';
+        set({ error: message });
+        finishProjectNavigation(set, navigation, message);
+      }
+      return false;
+    } finally {
+      finishProjectNavigation(set, navigation, get().projectNavigationError);
     }
-    return initialized;
   },
 
   async activateProject(projectId) {
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
-    if (!await requestDirtyFileConfirmation(set, get, '切换项目')) return false;
-    await get().persistActiveProjectTerminalState();
-    let threadId = get().threadOrderByProject[projectId]?.[0] || null;
-    let thread = threadId ? get().threadsById[threadId] : null;
-    if (!thread) {
-      thread = createThreadRecord(projectId);
-      threadId = thread.id;
-      set((state) => ({
-        threadsById: { ...state.threadsById, [thread.id]: thread },
-        threadOrderByProject: {
-          ...state.threadOrderByProject,
-          [projectId]: [thread.id],
-        },
-      }));
-    }
-    set({
-      activeProjectId: projectId,
-      activeThreadId: threadId,
-      workspacePath: project.workspacePath,
-      ...resetProjectRuntimeViews(),
-      ...resetFileWorkspace(project.workspacePath),
-    });
-    get().loadProjectTerminalState(projectId);
-    await get().persistProductState();
-    const runtime = await get().ensureProjectRuntime(projectId);
-    if (!runtime) return false;
-    await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
-    const initialized = await get().initializeActiveThread(thread.sessionId);
-    if (initialized) {
+    const navigation = beginProjectNavigation(set, `project:${projectId}`);
+    try {
+      const confirmed = await requestDirtyFileConfirmation(set, get, '切换项目');
+      if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
+      await get().persistActiveProjectTerminalState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      let threadId = get().threadOrderByProject[projectId]?.[0] || null;
+      let thread = threadId ? get().threadsById[threadId] : null;
+      if (!thread) {
+        thread = createThreadRecord(projectId);
+        threadId = thread.id;
+        set((state) => ({
+          threadsById: { ...state.threadsById, [thread.id]: thread },
+          threadOrderByProject: { ...state.threadOrderByProject, [projectId]: [thread.id] },
+        }));
+      }
+      set({
+        activeProjectId: projectId,
+        activeThreadId: threadId,
+        workspacePath: project.workspacePath,
+        ...resetProjectRuntimeViews(),
+        ...resetFileWorkspace(project.workspacePath),
+      });
+      get().loadProjectTerminalState(projectId);
+      const persisted = await get().persistProductState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!persisted) throw new Error(get().error || '保存项目状态失败');
+      const runtime = await get().ensureProjectRuntime(projectId);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!runtime) throw new Error(get().error || '项目运行时启动失败');
+      const opened = await get().openDirectory(project.workspacePath, { skipDirtyCheck: true });
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!opened) throw new Error(get().error || '打开项目目录失败');
+      const initialized = await get().initializeActiveThread(thread.sessionId);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!initialized) throw new Error(get().error || '会话连接失败');
       await get().refreshProjectViews();
+      return true;
+    } catch (error) {
+      if (isProjectNavigationCurrent(navigation)) {
+        const message = error?.message || '切换项目失败';
+        set({ error: message });
+        finishProjectNavigation(set, navigation, message);
+      }
+      return false;
+    } finally {
+      finishProjectNavigation(set, navigation, get().projectNavigationError);
     }
-    return initialized;
   },
 
   async renameProject(projectId, name) {
