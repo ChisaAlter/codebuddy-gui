@@ -28,6 +28,7 @@ let conversationEventsBound = false;
 let runtimeListenerBound = false;
 let authFailureListenerBound = false;
 const threadTimelinePersistTimers = new Map();
+const threadDraftPersistTimers = new Map();
 const terminalStatePersistTimers = new Map();
 const workspaceStatePersistTimers = new Map();
 let fileDirectoryRequestId = 0;
@@ -634,6 +635,11 @@ export const useStore = create((set, get) => ({
 
   async updateThreadRecord(threadId, patch) {
     if (!threadId || !get().threadsById[threadId]) return;
+    const pendingDraftTimer = threadDraftPersistTimers.get(threadId);
+    if (pendingDraftTimer) {
+      clearTimeout(pendingDraftTimer);
+      threadDraftPersistTimers.delete(threadId);
+    }
     set((state) => ({
       threadsById: {
         ...state.threadsById,
@@ -684,6 +690,18 @@ export const useStore = create((set, get) => ({
     threadTimelinePersistTimers.set(threadId, timer);
   },
 
+  scheduleThreadDraftPersist(threadId) {
+    if (!threadId) return;
+    const existing = threadDraftPersistTimers.get(threadId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(async () => {
+      threadDraftPersistTimers.delete(threadId);
+      if (!get().threadsById[threadId]) return;
+      await get().persistProductState();
+    }, 350);
+    threadDraftPersistTimers.set(threadId, timer);
+  },
+
   async persistProductState() {
     const saveProductState = window.electronAPI?.saveProductState;
     if (!saveProductState) return false;
@@ -707,6 +725,9 @@ export const useStore = create((set, get) => ({
     const pendingThreadIds = Array.from(threadTimelinePersistTimers.keys());
     for (const timer of threadTimelinePersistTimers.values()) clearTimeout(timer);
     threadTimelinePersistTimers.clear();
+
+    for (const timer of threadDraftPersistTimers.values()) clearTimeout(timer);
+    threadDraftPersistTimers.clear();
 
     const pendingTerminalStates = Array.from(terminalStatePersistTimers.entries());
     for (const [, pending] of pendingTerminalStates) clearTimeout(pending?.timer || pending);
@@ -880,7 +901,7 @@ export const useStore = create((set, get) => ({
         },
       },
     }));
-    get().persistProductState();
+    get().scheduleThreadDraftPersist(threadId);
   },
 
   clearPromptSuggestion(threadId = get().activeThreadId) {
