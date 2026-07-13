@@ -767,6 +767,101 @@ async function runExclusiveCliMaintenanceOperation(operation) {
   }
 }
 
+const PLUGIN_MAINTENANCE_SCOPES = new Set(['user', 'project', 'local']);
+
+function validatePluginMaintenanceScope(value) {
+  const scope = String(value || 'user').trim();
+  if (!PLUGIN_MAINTENANCE_SCOPES.has(scope)) throw new Error('插件维护作用域无效');
+  return scope;
+}
+
+function validatePluginMaintenanceId(value) {
+  const plugin = String(value || '').trim();
+  if (!plugin || plugin.length > 256 || !/^[A-Za-z0-9][A-Za-z0-9._/@-]*$/.test(plugin)) {
+    throw new Error('插件 ID 格式无效');
+  }
+  return plugin;
+}
+
+function validatePluginMaintenanceCwd(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return os.homedir();
+  if (!path.isAbsolute(raw)) throw new Error('插件维护需要有效的项目绝对路径');
+  const cwd = path.resolve(raw);
+  try {
+    if (!fs.statSync(cwd).isDirectory()) throw new Error('not a directory');
+  } catch (_) {
+    throw new Error(`项目目录不存在或不可访问: ${cwd}`);
+  }
+  return cwd;
+}
+
+function parseTrailingJsonArray(value) {
+  const output = String(value || '').trim();
+  const start = output.lastIndexOf('[');
+  if (start < 0) return [];
+  try {
+    const parsed = JSON.parse(output.slice(start));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function updateInstalledPlugin(payload = {}) {
+  const plugin = validatePluginMaintenanceId(payload.plugin);
+  const scope = validatePluginMaintenanceScope(payload.scope);
+  const cwd = validatePluginMaintenanceCwd(payload.cwd);
+  const result = await runCodeBuddyCli(['plugin', 'update', plugin, '--scope', scope], {
+    cwd,
+    timeoutMs: 2 * 60 * 1000,
+    maxOutputBytes: 512 * 1024,
+    timeoutMessage: '插件更新超过 2 分钟，已停止命令。请检查当前插件安装状态。',
+  });
+  return {
+    plugin,
+    scope,
+    output: stripTerminalFormatting(result.output).trim() || '插件更新命令已完成，CodeBuddy CLI 未返回文本输出。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
+async function previewPluginDependencyPrune(payload = {}) {
+  const scope = validatePluginMaintenanceScope(payload.scope);
+  const cwd = validatePluginMaintenanceCwd(payload.cwd);
+  const result = await runCodeBuddyCli(['plugin', 'prune', '--scope', scope, '--dry-run'], {
+    cwd,
+    timeoutMs: 60000,
+    maxOutputBytes: 512 * 1024,
+    timeoutMessage: '插件依赖检查超过 60 秒，已停止命令。',
+  });
+  const output = stripTerminalFormatting(result.output).trim() || '未发现可清理的插件依赖。';
+  const items = parseTrailingJsonArray(output);
+  return {
+    scope,
+    items,
+    hasChanges: items.length > 0,
+    output,
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
+async function prunePluginDependencies(payload = {}) {
+  const scope = validatePluginMaintenanceScope(payload.scope);
+  const cwd = validatePluginMaintenanceCwd(payload.cwd);
+  const result = await runCodeBuddyCli(['plugin', 'prune', '--scope', scope, '--yes'], {
+    cwd,
+    timeoutMs: 2 * 60 * 1000,
+    maxOutputBytes: 512 * 1024,
+    timeoutMessage: '插件依赖清理超过 2 分钟，已停止命令。请检查当前插件安装状态。',
+  });
+  return {
+    scope,
+    output: stripTerminalFormatting(result.output).trim() || '插件依赖清理命令已完成，CodeBuddy CLI 未返回文本输出。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -907,6 +1002,9 @@ ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperati
 ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
 ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor()));
 ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
+ipcMain.handle('pluginMaintenance:update', (_event, payload) => runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)));
+ipcMain.handle('pluginMaintenance:previewPrune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload)));
+ipcMain.handle('pluginMaintenance:prune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload)));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

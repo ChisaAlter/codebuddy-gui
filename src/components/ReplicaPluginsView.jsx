@@ -1,9 +1,26 @@
 import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { previewPluginDependencyPrune, prunePluginDependencies, updateInstalledPlugin } from '../lib/plugin-maintenance';
+
+const PLUGIN_SCOPE_LABELS = {
+  user: '用户全局',
+  project: '项目共享',
+  local: '项目本机',
+};
+
+function normalizedPluginScope(value) {
+  return Object.hasOwn(PLUGIN_SCOPE_LABELS, value) ? value : 'user';
+}
+
+function validMaintenancePluginId(value) {
+  const plugin = String(value || '').trim();
+  return plugin.length > 0 && plugin.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._/@-]*$/.test(plugin);
+}
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces } = useStore(useShallow((state) => ({
+  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces, restartProjectRuntime } = useStore(useShallow((state) => ({
     plugins: state.plugins,
     refreshPlugins: state.refreshPlugins,
     marketplaces: state.marketplaces,
@@ -16,8 +33,10 @@ export default function ReplicaPluginsView() {
     addMarketplaceById: state.addMarketplaceById,
     removeMarketplaceById: state.removeMarketplaceById,
     refreshMarketplaces: state.refreshMarketplaces,
+    restartProjectRuntime: state.restartProjectRuntime,
   })));
   const activeProjectId = useStore((state) => state.activeProjectId);
+  const activeWorkspacePath = useStore((state) => state.projectsById[state.activeProjectId]?.workspacePath || '');
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -30,6 +49,11 @@ export default function ReplicaPluginsView() {
   const [actionError, setActionError] = React.useState(null);
   const [actionDialog, setActionDialog] = React.useState(null);
   const [actionDialogError, setActionDialogError] = React.useState('');
+  const [maintenanceScope, setMaintenanceScope] = React.useState('user');
+  const [maintenanceBusy, setMaintenanceBusy] = React.useState('');
+  const [maintenanceNotice, setMaintenanceNotice] = React.useState(null);
+  const [maintenanceOutput, setMaintenanceOutput] = React.useState(null);
+  const [restartNeeded, setRestartNeeded] = React.useState(false);
   // 市场增删表单态
   const [newMktId, setNewMktId] = React.useState('');
   const [newMktUrl, setNewMktUrl] = React.useState('');
@@ -87,6 +111,11 @@ export default function ReplicaPluginsView() {
     setActionError(null);
     setActionDialog(null);
     setActionDialogError('');
+    setMaintenanceScope('user');
+    setMaintenanceBusy('');
+    setMaintenanceNotice(null);
+    setMaintenanceOutput(null);
+    setRestartNeeded(false);
     setNewMktId('');
     setNewMktUrl('');
     setMktBusy(false);
@@ -119,7 +148,7 @@ export default function ReplicaPluginsView() {
 
   const isEnabled = (p) => p.status === 'enabled' || p.enabled;
 
-  const pluginOperationActive = Boolean(pluginBusy);
+  const pluginOperationActive = Boolean(pluginBusy || maintenanceBusy);
 
   const beginPluginAction = () => {
     if (pluginActionInFlightRef.current || marketplaceActionInFlightRef.current || useStore.getState().pluginBusy) return null;
@@ -166,9 +195,30 @@ export default function ReplicaPluginsView() {
     setActionError(null);
     setMktMsg(null);
     try {
-      const ok = action.type === 'uninstall'
-        ? await uninstallPluginByName(action.id)
-        : await removeMarketplaceById(action.id);
+      let ok = true;
+      if (action.type === 'uninstall') {
+        ok = await uninstallPluginByName(action.id);
+      } else if (action.type === 'remove-marketplace') {
+        ok = await removeMarketplaceById(action.id);
+      } else if (action.type === 'update') {
+        setMaintenanceBusy(`update:${action.id}`);
+        const result = await updateInstalledPlugin({
+          plugin: action.id,
+          scope: action.scope,
+          cwd: activeWorkspacePath,
+        });
+        if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+        setMaintenanceOutput({ title: `更新输出 · ${action.label}`, content: result.output, truncated: result.truncated });
+        setMaintenanceNotice({ type: 'success', message: `${action.label} 更新命令已完成。重启当前项目运行时后生效。` });
+        setRestartNeeded(true);
+      } else if (action.type === 'prune') {
+        setMaintenanceBusy('prune');
+        const result = await prunePluginDependencies({ scope: action.scope, cwd: activeWorkspacePath });
+        if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+        setMaintenanceOutput({ title: `依赖清理输出 · ${PLUGIN_SCOPE_LABELS[action.scope]}`, content: result.output, truncated: result.truncated });
+        setMaintenanceNotice({ type: 'success', message: `${PLUGIN_SCOPE_LABELS[action.scope]}的失效插件依赖已清理。重启当前项目运行时后完全生效。` });
+        setRestartNeeded(true);
+      }
       if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
       if (!ok) {
         const current = useStore.getState();
@@ -178,10 +228,101 @@ export default function ReplicaPluginsView() {
         return;
       }
       setActionDialog(null);
+    } catch (error) {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+        setActionDialogError(error?.message || '插件维护操作失败');
+      }
     } finally {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMaintenanceBusy('');
       finishPluginAction(operation);
     }
   };
+
+  const previewDependencyPrune = async () => {
+    const operation = beginPluginAction();
+    if (!operation) return;
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
+    setMaintenanceBusy('preview-prune');
+    setMaintenanceNotice({ type: 'busy', message: `正在检查${PLUGIN_SCOPE_LABELS[maintenanceScope]}的失效插件依赖...` });
+    setMaintenanceOutput(null);
+    setActionError(null);
+    try {
+      const result = await previewPluginDependencyPrune({ scope: maintenanceScope, cwd: activeWorkspacePath });
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+      setMaintenanceOutput({ title: `依赖检查输出 · ${PLUGIN_SCOPE_LABELS[maintenanceScope]}`, content: result.output, truncated: result.truncated });
+      if (!result.hasChanges) {
+        setMaintenanceNotice({ type: 'success', message: `${PLUGIN_SCOPE_LABELS[maintenanceScope]}没有可清理的失效插件依赖。` });
+        return;
+      }
+      setMaintenanceNotice({ type: 'busy', message: `发现 ${result.items.length} 个可清理项，请确认后继续。` });
+      setActionDialog({
+        type: 'prune',
+        id: maintenanceScope,
+        scope: maintenanceScope,
+        label: `${PLUGIN_SCOPE_LABELS[maintenanceScope]} · ${result.items.length} 个依赖`,
+        detail: result.items.map((item) => typeof item === 'string' ? item : (item.id || item.name || JSON.stringify(item))).join('、'),
+      });
+    } catch (error) {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+        setMaintenanceNotice({ type: 'error', message: error?.message || '检查插件依赖失败' });
+      }
+    } finally {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMaintenanceBusy('');
+      finishPluginAction(operation);
+    }
+  };
+
+  const restartRuntimeForPluginChanges = async () => {
+    const operation = beginPluginAction();
+    if (!operation) return;
+    const projectId = activeProjectId;
+    const generation = projectGenerationRef.current;
+    setMaintenanceBusy('restart');
+    setMaintenanceNotice({ type: 'busy', message: '正在重启当前项目运行时...' });
+    try {
+      const restarted = await restartProjectRuntime(projectId);
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+      if (!restarted) throw new Error(useStore.getState().error || '当前项目运行时重启失败');
+      await Promise.allSettled([refreshPlugins(), refreshMarketplaces?.()]);
+      if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+      setRestartNeeded(false);
+      setMaintenanceNotice({ type: 'success', message: '当前项目运行时已重启，插件状态已重新加载。' });
+    } catch (error) {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) {
+        setMaintenanceNotice({ type: 'error', message: error?.message || '当前项目运行时重启失败' });
+      }
+    } finally {
+      if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setMaintenanceBusy('');
+      finishPluginAction(operation);
+    }
+  };
+
+  const copyMaintenanceOutput = async () => {
+    if (!maintenanceOutput?.content) return;
+    try {
+      await copyTextToClipboard(maintenanceOutput.content);
+      setMaintenanceNotice({ type: 'success', message: '插件维护输出已复制。' });
+    } catch (error) {
+      setMaintenanceNotice({ type: 'error', message: error?.message || '复制插件维护输出失败' });
+    }
+  };
+
+  const actionDialogDestructive = actionDialog?.type === 'uninstall' || actionDialog?.type === 'remove-marketplace';
+  const actionDialogTitle = actionDialog?.type === 'uninstall'
+    ? '卸载插件？'
+    : actionDialog?.type === 'remove-marketplace'
+      ? '删除插件市场？'
+      : actionDialog?.type === 'update'
+        ? '更新插件？'
+        : '清理失效插件依赖？';
+  const actionDialogConfirmLabel = actionDialog?.type === 'uninstall'
+    ? '卸载插件'
+    : actionDialog?.type === 'remove-marketplace'
+      ? '删除市场'
+      : actionDialog?.type === 'update'
+        ? '更新插件'
+        : '执行清理';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
@@ -190,6 +331,22 @@ export default function ReplicaPluginsView() {
         <div className="mb-6 flex items-center justify-between">
           <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">插件</h1>
           <div className="flex items-center gap-2">
+            <select
+              className="h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 text-xs text-[var(--color-text-secondary)] outline-none"
+              value={maintenanceScope}
+              disabled={pluginOperationActive || mktBusy}
+              aria-label="插件维护作用域"
+              onChange={(event) => setMaintenanceScope(event.target.value)}
+            >
+              {Object.entries(PLUGIN_SCOPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <button
+              className="btn-ghost text-xs"
+              disabled={pluginOperationActive || mktBusy || !activeWorkspacePath}
+              onClick={previewDependencyPrune}
+            >
+              {maintenanceBusy === 'preview-prune' ? '检查中...' : maintenanceBusy === 'prune' ? '清理中...' : '清理依赖'}
+            </button>
             <button
               className="btn-primary text-xs"
               disabled={pluginOperationActive || mktBusy}
@@ -222,6 +379,31 @@ export default function ReplicaPluginsView() {
             <button className="ml-3 underline text-xs" onClick={() => { setActionError(null); handleRefresh(); }}>重试</button>
           </div>
         )}
+
+        {maintenanceNotice ? (
+          <div className={`mb-4 flex flex-wrap items-center gap-2 rounded-md border px-4 py-3 text-xs ${maintenanceNotice.type === 'error' ? 'border-[rgba(248,113,113,0.25)] bg-[rgba(248,113,113,0.08)] text-[var(--color-accent-red)]' : maintenanceNotice.type === 'success' ? 'border-[rgba(74,222,128,0.25)] bg-[rgba(74,222,128,0.08)] text-[var(--color-accent-green)]' : 'border-[rgba(250,204,21,0.25)] bg-[rgba(250,204,21,0.08)] text-[var(--color-accent-yellow)]'}`}>
+            <span className="min-w-0 flex-1">{maintenanceNotice.message}</span>
+            {restartNeeded ? (
+              <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" disabled={pluginOperationActive} onClick={restartRuntimeForPluginChanges}>
+                {maintenanceBusy === 'restart' ? '重启中...' : '重启当前运行时'}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {maintenanceOutput ? (
+          <div className="mb-4 overflow-hidden rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-code)]">
+            <div className="flex items-center justify-between border-b border-[var(--color-border-default)] px-3 py-2">
+              <span className="text-xs font-medium text-[var(--color-text-primary)]">{maintenanceOutput.title}</span>
+              <div className="flex items-center gap-1">
+                <button className="btn-ghost px-2 py-1 text-[11px]" onClick={copyMaintenanceOutput}>复制</button>
+                <button className="btn-icon" title="关闭输出" aria-label="关闭插件维护输出" onClick={() => setMaintenanceOutput(null)}>×</button>
+              </div>
+            </div>
+            {maintenanceOutput.truncated ? <div className="border-b border-[var(--color-border-default)] px-3 py-2 text-[11px] text-[var(--color-accent-yellow)]">输出过长，仅保留最新内容。</div> : null}
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words px-3 py-3 font-mono text-[11px] leading-5 text-[var(--color-text-secondary)]">{maintenanceOutput.content}</pre>
+          </div>
+        ) : null}
 
         {/* Toolbar: search + filter tabs */}
         <div className="mb-4 flex items-center gap-3 flex-wrap">
@@ -300,6 +482,9 @@ export default function ReplicaPluginsView() {
             {filtered.map((p, idx) => {
               const enabled = isEnabled(p);
               const scope = p.installScope || p.scope;
+              const pluginId = p.id || p.name;
+              const pluginScope = normalizedPluginScope(scope);
+              const updateAvailable = validMaintenancePluginId(pluginId);
               const author = typeof p.author === 'string' ? p.author : p.author?.name;
               const skillCount = Array.isArray(p.skills) ? p.skills.length : 0;
               return (
@@ -364,8 +549,22 @@ export default function ReplicaPluginsView() {
                   {author ? <div className="mb-1 truncate text-[10px] text-[var(--color-text-muted)]" title={author}>作者：{author}</div> : null}
                   {p.installedPath ? <div className="mb-3 truncate text-[10px] text-[var(--color-text-muted)]" title={p.installedPath}>安装位置：{p.installedPath}</div> : null}
 
-                  {/* Uninstall */}
-                  <div className="mt-auto pt-2 border-t border-[var(--color-border-muted)]">
+                  {/* Maintenance actions */}
+                  <div className="mt-auto flex items-center justify-between gap-2 border-t border-[var(--color-border-muted)] pt-2">
+                    <button
+                      className={`text-xs text-[var(--color-accent-blue)] hover:underline ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
+                      disabled={pluginOperationActive || !updateAvailable || !activeWorkspacePath}
+                      title={updateAvailable ? '更新到最新版本' : '当前插件未提供可用于 CLI 更新的 ID'}
+                      onClick={() => openActionDialog({
+                        type: 'update',
+                        id: pluginId,
+                        scope: pluginScope,
+                        label: p.name || pluginId,
+                        detail: `${PLUGIN_SCOPE_LABELS[pluginScope]}${p.version ? ` · 当前 v${p.version}` : ''}`,
+                      })}
+                    >
+                      {maintenanceBusy === `update:${pluginId}` ? '更新中...' : '更新'}
+                    </button>
                     <button
                       className={`text-xs text-[var(--color-error)] hover:underline ${pluginOperationActive ? 'opacity-50 pointer-events-none' : ''}`}
                       disabled={pluginOperationActive}
@@ -471,14 +670,14 @@ export default function ReplicaPluginsView() {
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4"
             role="dialog"
             aria-modal="true"
-            aria-label={actionDialog.type === 'uninstall' ? '卸载插件确认' : '删除插件市场确认'}
+            aria-label={actionDialogTitle}
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) closeActionDialog();
             }}
           >
             <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
               <div className="text-sm font-semibold text-[var(--color-text-primary)]">
-                {actionDialog.type === 'uninstall' ? '卸载插件？' : '删除插件市场？'}
+                {actionDialogTitle}
               </div>
               <div className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
                 <div className="font-medium text-[var(--color-text-primary)]">{actionDialog.label}</div>
@@ -486,19 +685,23 @@ export default function ReplicaPluginsView() {
                 <p className="mt-2">
                   {actionDialog.type === 'uninstall'
                     ? '插件及其提供的技能将从本机移除，需要时可以重新安装。'
-                    : '该市场来源将从配置中删除，已安装插件不会在此操作中卸载。'}
+                    : actionDialog.type === 'remove-marketplace'
+                      ? '该市场来源将从配置中删除，已安装插件不会在此操作中卸载。'
+                      : actionDialog.type === 'update'
+                        ? '将调用 CodeBuddy CLI 更新到该来源的最新版本。更新完成后需要重启项目运行时才能应用。'
+                        : '将删除 dry-run 已确认的失效自动依赖。主动安装的插件不会被此操作移除。'}
                 </p>
               </div>
               {actionDialogError ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{actionDialogError}</div> : null}
               <div className="mt-5 flex justify-end gap-2">
                 <button className="btn-ghost px-3 py-1.5 text-xs" disabled={pluginOperationActive} onClick={closeActionDialog}>取消</button>
                 <button
-                  className="rounded-md px-3 py-1.5 text-xs font-medium text-white"
-                  style={{ background: 'var(--color-accent-red)' }}
+                  className={actionDialogDestructive ? 'rounded-md px-3 py-1.5 text-xs font-medium text-white' : 'btn-primary px-3 py-1.5 text-xs'}
+                  style={actionDialogDestructive ? { background: 'var(--color-accent-red)' } : undefined}
                   disabled={pluginOperationActive}
                   onClick={confirmActionDialog}
                 >
-                  {pluginOperationActive ? '处理中...' : actionDialog.type === 'uninstall' ? '卸载插件' : '删除市场'}
+                  {pluginOperationActive ? '处理中...' : actionDialogConfirmLabel}
                 </button>
               </div>
             </div>

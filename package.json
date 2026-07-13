@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-gui",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Multi-project desktop client for CodeBuddy CLI",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
@@ -16,8 +16,8 @@
     "dev": "vite --port 5173",
     "dev:vite": "vite --port 5173",
     "dev:electron": "electron .",
-    "build": "vite build && electron-builder --publish never",
-    "build:dir": "vite build && electron-builder --dir --publish never",
+    "build": "vite build && node scripts/build-electron.cjs",
+    "build:dir": "vite build && node scripts/build-electron.cjs --dir",
     "release:prepare": "node scripts/run-release.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
