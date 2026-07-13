@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useStore } from '../store';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 function highlightText(text, term) {
   if (!term || typeof text !== 'string') return text;
@@ -29,11 +30,13 @@ export default function ReplicaLogsView() {
   const [loading, setLoading] = useState(false);
   const [initialWorkersLoad, setInitialWorkersLoad] = useState(true);
   const [logError, setLogError] = useState(null);
+  const [copyStatus, setCopyStatus] = useState('idle');
   const containerRef = useRef(null);
   const logRequestIdRef = useRef(0);
   const logLoadInFlightRef = useRef(null);
   const preferredWorkerPidRef = useRef('');
   const preferredWorkerProjectRef = useRef(null);
+  const copyResetTimerRef = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -149,6 +152,14 @@ export default function ReplicaLogsView() {
     return () => clearTimeout(timer);
   }, [logError]);
 
+  useEffect(() => () => {
+    if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    setCopyStatus('idle');
+  }, [logs]);
+
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -156,16 +167,17 @@ export default function ReplicaLogsView() {
   }, [logs]);
 
   const handleCopy = async () => {
+    if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
     try {
-      await navigator.clipboard.writeText(logs);
+      await copyTextToClipboard(logs);
+      setCopyStatus('success');
     } catch (_) {
-      const ta = document.createElement('textarea');
-      ta.value = logs;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+      setCopyStatus('error');
     }
+    copyResetTimerRef.current = setTimeout(() => {
+      copyResetTimerRef.current = null;
+      setCopyStatus('idle');
+    }, 1800);
   };
 
   const lines = logs ? logs.split('\n') : [];
@@ -272,15 +284,21 @@ export default function ReplicaLogsView() {
       <div className="flex-1 overflow-hidden relative">
         {logs && (
           <button
-            className="absolute top-2 right-4 z-10 btn-ghost text-xs"
+            className={`absolute right-4 top-2 z-10 min-w-[76px] btn-ghost text-xs ${copyStatus === 'success' ? 'text-[var(--color-accent-green)]' : copyStatus === 'error' ? 'text-[var(--color-accent-red)]' : ''}`}
             onClick={handleCopy}
-            title="复制全部日志"
+            title={copyStatus === 'success' ? '日志已复制' : copyStatus === 'error' ? '日志复制失败' : '复制全部日志'}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="5" y="5" width="9" height="9" rx="1.5" />
-              <path d="M11 5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h2" />
-            </svg>
-            复制
+            {copyStatus === 'success' ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 8l3 3 7-7" /></svg>
+            ) : copyStatus === 'error' ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="5" y="5" width="9" height="9" rx="1.5" />
+                <path d="M11 5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v8a1 1 0 001 1h2" />
+              </svg>
+            )}
+            {copyStatus === 'success' ? '已复制' : copyStatus === 'error' ? '失败' : '复制'}
           </button>
         )}
 

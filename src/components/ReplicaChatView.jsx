@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useStore } from '../store';
+import { copyTextToClipboard } from '../lib/clipboard';
 
 function formatTime(ts) {
   if (!ts) return '';
@@ -42,22 +43,40 @@ function getPromptSuggestionText(value) {
 }
 
 function CopyButton({ text }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+  const [copyStatus, setCopyStatus] = useState('idle');
+  const resetTimerRef = useRef(null);
+
+  useEffect(() => () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+  }, []);
+
+  const handleCopy = useCallback(async () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    try {
+      await copyTextToClipboard(text);
+      setCopyStatus('success');
+    } catch (_) {
+      setCopyStatus('error');
+    }
+    resetTimerRef.current = setTimeout(() => {
+      resetTimerRef.current = null;
+      setCopyStatus('idle');
+    }, 1800);
   }, [text]);
+
+  const title = copyStatus === 'success' ? '已复制' : copyStatus === 'error' ? '复制失败' : '复制到剪贴板';
 
   return (
     <button
-      className="ml-2 flex-shrink-0 rounded p-1 opacity-0 hover:opacity-100 group-hover:opacity-100 transition-opacity text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+      className="ml-2 flex-shrink-0 rounded p-1 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
       onClick={handleCopy}
-      title="复制到剪贴板"
+      title={title}
+      aria-label={title}
     >
-      {copied ? (
+      {copyStatus === 'success' ? (
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--color-accent-green)" strokeWidth="1.5"><path d="M3 8l3 3 7-7" /></svg>
+      ) : copyStatus === 'error' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--color-accent-red)" strokeWidth="1.5"><path d="M4 4l8 8M12 4l-8 8" /></svg>
       ) : (
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="5" y="5" width="10" height="10" rx="1.5" /><path d="M11 5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v7a1 1 0 001 1h2" /></svg>
       )}
