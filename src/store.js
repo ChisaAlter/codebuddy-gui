@@ -200,6 +200,16 @@ function serializePromptQueue(queue) {
     }));
 }
 
+function mergeTeamState(current, update) {
+  if (!update || typeof update !== 'object') return current || null;
+  if (update.type === 'team_deleted') return null;
+  return {
+    ...(current || {}),
+    ...update,
+    members: Array.isArray(update.members) ? update.members : (current?.members || []),
+  };
+}
+
 function emptyThreadRuntime() {
   return {
     connectionState: 'disconnected',
@@ -987,6 +997,15 @@ export const useStore = create((set, get) => ({
     const su = update.sessionUpdate || update.session_update || update.type;
     if (!su) return;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const metadata = update._meta && typeof update._meta === 'object' ? update._meta : {};
+    if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/promptSuggestion')) {
+      get().patchThreadRuntime(threadId, { promptSuggestion: metadata['codebuddy.ai/promptSuggestion'] || null });
+    }
+    if (metadata['codebuddy.ai/teamUpdate']) {
+      get().patchThreadRuntime(threadId, {
+        teamState: mergeTeamState(runtime.teamState, metadata['codebuddy.ai/teamUpdate']),
+      });
+    }
 
     if (su === 'config_option_update') {
       const patch = get().applySessionConfigUpdate(update.configOptions || []);
@@ -1093,8 +1112,8 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (type === 'teamUpdate') {
-      get().patchThreadRuntime(threadId, { teamState: detail });
-      get().appendThreadTimelineEvent(threadId, type, detail);
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      get().patchThreadRuntime(threadId, { teamState: mergeTeamState(runtime.teamState, detail) });
       return;
     }
     get().appendThreadTimelineEvent(threadId, type === '_codebuddy.ai/artifact' ? 'artifact' : type, detail);

@@ -160,6 +160,160 @@ function ToolCallBlock({ item }) {
   );
 }
 
+function EventDetails({ value }) {
+  const [expanded, setExpanded] = useState(false);
+  const details = useMemo(() => {
+    if (!value || typeof value !== 'object') return '';
+    try {
+      const text = JSON.stringify(value, null, 2);
+      return text.length > 20000 ? text.slice(0, 20000) + '\n...详情已截断' : text;
+    } catch (_) {
+      return '';
+    }
+  }, [value]);
+  if (!details) return null;
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? '收起详情' : '查看详情'}
+      </button>
+      {expanded ? (
+        <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-[10px] leading-4 text-[var(--color-text-secondary)]">{details}</pre>
+      ) : null}
+    </div>
+  );
+}
+
+function ErrorTimelineCard({ item }) {
+  const payload = item.meta || item.raw || {};
+  const message = item.content || payload.message || payload.error?.message || 'CodeBuddy 执行失败';
+  return (
+    <div className="my-3 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <svg className="mt-0.5 shrink-0 text-[var(--color-accent-red)]" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5" /><path d="M8 4.5v4M8 11.5v.1" /></svg>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-[var(--color-accent-red)]">执行失败</div>
+          <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">{message}</div>
+          <EventDetails value={payload} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ArtifactTimelineCard({ item }) {
+  const payload = item.meta || item.raw || {};
+  const artifact = payload.artifact && typeof payload.artifact === 'object' ? payload.artifact : payload;
+  const tasks = Array.isArray(artifact.tasks) ? artifact.tasks : [];
+  const title = artifact.title || artifact.name || artifact.type || 'CodeBuddy 产物';
+  const eventLabels = { created: '已创建', updated: '已更新', deleted: '已删除' };
+  const eventLabel = eventLabels[payload.event] || '产物';
+  const summary = getPromptSuggestionText(artifact.description || artifact.content || artifact.text);
+  const statusLabels = { completed: '已完成', in_progress: '进行中', pending: '待处理', failed: '失败' };
+  return (
+    <div className="my-3 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2.5">
+      <div className="flex items-start gap-2">
+        <svg className="mt-0.5 shrink-0 text-[var(--color-accent-blue)]" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M3 2.5h6l4 4V14H3V2.5z" /><path d="M9 2.5V7h4" /></svg>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-xs font-medium text-[var(--color-text-primary)]">{title}</span>
+            <span className="text-[10px] text-[var(--color-text-muted)]">{eventLabel}</span>
+            {artifact.mimeType ? <span className="text-[10px] text-[var(--color-text-muted)]">{artifact.mimeType}</span> : null}
+          </div>
+          {summary ? <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">{summary}</div> : null}
+          {tasks.length ? (
+            <div className="mt-2 space-y-1">
+              {tasks.map((task, index) => (
+                <div key={task.id || index} className="flex items-start gap-2 text-xs">
+                  <span className={task.status === 'completed' ? 'text-[var(--color-accent-green)]' : task.status === 'failed' ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-muted)]'}>{task.status === 'completed' ? '✓' : task.status === 'failed' ? '×' : '•'}</span>
+                  <span className="min-w-0 flex-1 break-words text-[var(--color-text-secondary)]">{task.content || task.subject || task.title || task.id || '未命名任务'}</span>
+                  <span className="shrink-0 text-[10px] text-[var(--color-text-muted)]">{statusLabels[task.status] || task.status || ''}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {artifact.uri ? <div className="mt-2 truncate font-mono text-[10px] text-[var(--color-text-muted)]" title={artifact.uri}>{artifact.uri}</div> : null}
+          <EventDetails value={payload} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityTimelineCard({ item }) {
+  const payload = item.meta || item.raw || {};
+  const source = payload.checkpoint && typeof payload.checkpoint === 'object'
+    ? payload.checkpoint
+    : payload.task && typeof payload.task === 'object'
+      ? payload.task
+      : payload;
+  const labels = {
+    checkpoint: '检查点',
+    taskCreated: '任务已创建',
+    taskStatus: '任务状态更新',
+    'goal-progress': '目标进度',
+    'goal-status': '目标状态更新',
+    question_answered: '问题已回答',
+  };
+  const eventLabels = { created: '已创建', updated: '已更新', reverted: '已回退' };
+  const title = item.type === 'checkpoint'
+    ? '检查点' + (eventLabels[payload.event] ? ' · ' + eventLabels[payload.event] : '')
+    : (labels[item.type] || 'CodeBuddy 动态');
+  const summary = item.content
+    || source.title
+    || source.name
+    || source.subject
+    || source.condition
+    || source.reason
+    || source.message
+    || source.status
+    || source.id
+    || '';
+  return (
+    <div className="my-2 border-l-2 border-[var(--color-border-default)] py-1 pl-3">
+      <div className="text-[10px] font-medium text-[var(--color-text-muted)]">{title}</div>
+      {summary ? <div className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">{String(summary)}</div> : null}
+      <EventDetails value={payload} />
+    </div>
+  );
+}
+
+function TeamStatusPanel({ teamState }) {
+  if (!teamState) return null;
+  const members = Array.isArray(teamState.members) ? teamState.members : [];
+  const teamName = teamState.teamName || teamState.name || 'CodeBuddy 团队';
+  const statusLabels = { working: '工作中', running: '工作中', in_progress: '工作中', idle: '空闲', completed: '已完成', failed: '失败', waiting: '等待中' };
+  return (
+    <div className="mb-3 border-b border-[var(--color-border-muted)] pb-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium text-[var(--color-text-primary)]">{teamName}</span>
+        {teamState.isAutoTeam ? <span className="text-[10px] text-[var(--color-text-muted)]">自动团队</span> : null}
+        <span className="text-[10px] text-[var(--color-text-muted)]">{members.length} 位成员</span>
+      </div>
+      {members.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {members.map((member, index) => {
+            const name = member.name || member.agentName || member.role || '成员 ' + (index + 1);
+            const status = member.status || member.state || 'idle';
+            const active = ['working', 'running', 'in_progress'].includes(status);
+            return (
+              <div key={member.id || member.name || index} className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-2 py-1 text-[10px]">
+                <span className={'h-1.5 w-1.5 shrink-0 rounded-full ' + (status === 'failed' ? 'bg-[var(--color-accent-red)]' : active ? 'bg-[var(--color-accent-blue)]' : status === 'completed' ? 'bg-[var(--color-accent-green)]' : 'bg-[var(--color-text-muted)]')} />
+                <span className="truncate text-[var(--color-text-secondary)]" title={name}>{name}</span>
+                <span className="shrink-0 text-[var(--color-text-muted)]">{statusLabels[status] || status}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function InterruptionCard({ item }) {
   const respondToInterruption = useStore((s) => s.respondToInterruption);
   const interruptionId = item.meta?.interruptionId || item.meta?.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
@@ -299,6 +453,18 @@ function DateSeparator({ label }) {
 }
 
 function TimelineItem({ item }) {
+  if (item.type === 'error') {
+    return <ErrorTimelineCard item={item} />;
+  }
+
+  if (item.type === 'artifact') {
+    return <ArtifactTimelineCard item={item} />;
+  }
+
+  if (['checkpoint', 'taskCreated', 'taskStatus', 'goal-progress', 'goal-status', 'question_answered'].includes(item.type)) {
+    return <ActivityTimelineCard item={item} />;
+  }
+
   if (item.type === 'thinking') {
     return <ThinkingCard item={item} />;
   }
@@ -376,6 +542,7 @@ export default function ReplicaChatView() {
   const promptSuggestionEnabled = useStore((s) => Boolean(s.settings?.promptSuggestionEnabled));
   const promptSuggestion = useStore((s) => s.promptSuggestion);
   const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
+  const teamState = useStore((s) => s.teamState);
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -765,6 +932,7 @@ export default function ReplicaChatView() {
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
         <div className="mx-auto max-w-3xl px-6 py-4">
+          <TeamStatusPanel teamState={teamState} />
           {timeline.length === 0 ? (
             connectionState === 'connecting' || runtimeStatus === 'starting' ? (
               <div className="flex items-center justify-center h-64">
