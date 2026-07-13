@@ -699,13 +699,23 @@ export const useStore = create((set, get) => ({
   },
 
   async chooseAttachments() {
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    if (!threadId || !state.threadsById[threadId]) {
+      set({ error: '请先创建或选择一个会话' });
+      return [];
+    }
     if (!window.electronAPI?.chooseAttachments) {
       set({ error: '附件选择不可用' });
       return [];
     }
+    set({ error: null });
     try {
       const selected = await window.electronAPI.chooseAttachments();
-      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId) return [];
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const imageSupported = Boolean(
         runtime.capabilities?.promptCapabilities?.image
         || runtime.capabilities?.prompt_capabilities?.image,
@@ -717,13 +727,25 @@ export const useStore = create((set, get) => ({
         else if (attachment.kind === 'image' && !imageSupported) rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
         else accepted.push(attachment);
       }
-      get().patchThreadRuntime(get().activeThreadId, {
-        pendingAttachments: [...runtime.pendingAttachments, ...accepted],
-      });
-      if (rejected.length) set({ error: rejected.join('\n') });
-      return accepted;
+      const pendingAttachments = [...runtime.pendingAttachments];
+      const added = [];
+      for (const attachment of accepted) {
+        const duplicate = pendingAttachments.some((item) => (
+          item.path === attachment.path && item.kind === attachment.kind
+        ));
+        if (duplicate) continue;
+        pendingAttachments.push(attachment);
+        added.push(attachment);
+      }
+      get().patchThreadRuntime(threadId, { pendingAttachments });
+      if (rejected.length && get().activeProjectId === projectId && get().activeThreadId === threadId) {
+        set({ error: rejected.join('\n') });
+      }
+      return added;
     } catch (error) {
-      set({ error: error.message || '选择附件失败' });
+      if (get().activeProjectId === projectId && get().activeThreadId === threadId) {
+        set({ error: error.message || '选择附件失败' });
+      }
       return [];
     }
   },

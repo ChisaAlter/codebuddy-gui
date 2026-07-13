@@ -619,24 +619,49 @@ ipcMain.handle('attachment:choose', async () => {
   const textExtensions = new Set([
     '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
     '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
-    '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env',
+    '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env', '.lock', '.vue',
+    '.svelte', '.rb', '.php', '.kt', '.kts', '.swift', '.lua', '.r', '.graphql', '.gql',
+    '.proto', '.dart', '.scala', '.cs', '.fs', '.fsx', '.vb', '.gradle', '.properties',
+    '.conf', '.cfg', '.bat', '.cmd',
+  ]);
+  const textFileNames = new Set([
+    'dockerfile', 'makefile', 'license', 'notice', 'readme', '.gitignore', '.gitattributes',
+    '.gitmodules', '.npmrc', '.editorconfig', '.prettierrc', '.eslintrc',
   ]);
   const attachments = [];
   for (const filePath of result.filePaths) {
-    const stat = fs.statSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const base = { name: path.basename(filePath), path: filePath, size: stat.size };
-    if (imageTypes[ext]) {
-      if (stat.size > 20 * 1024 * 1024) throw new Error(`${base.name} 超过 20MB 图片限制`);
-      attachments.push({ ...base, kind: 'image', mimeType: imageTypes[ext], data: fs.readFileSync(filePath).toString('base64') });
-      continue;
+    const name = path.basename(filePath);
+    try {
+      const stat = await fs.promises.stat(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const base = { name, path: filePath, size: stat.size };
+      if (!stat.isFile()) {
+        attachments.push({ ...base, kind: 'unsupported', error: '所选路径不是文件' });
+        continue;
+      }
+      if (imageTypes[ext]) {
+        if (stat.size > 20 * 1024 * 1024) {
+          attachments.push({ ...base, kind: 'unsupported', error: '超过 20MB 图片限制' });
+          continue;
+        }
+        const data = await fs.promises.readFile(filePath);
+        attachments.push({ ...base, kind: 'image', mimeType: imageTypes[ext], data: data.toString('base64') });
+        continue;
+      }
+      const extensionlessText = !ext && textFileNames.has(name.toLowerCase());
+      if (!textExtensions.has(ext) && !extensionlessText) {
+        attachments.push({ ...base, kind: 'unsupported', error: '该文件类型无法作为文本发送' });
+        continue;
+      }
+      if (stat.size > 5 * 1024 * 1024) {
+        attachments.push({ ...base, kind: 'unsupported', error: '超过 5MB 文本文件限制' });
+        continue;
+      }
+      const content = await fs.promises.readFile(filePath, 'utf8');
+      attachments.push({ ...base, kind: 'text', mimeType: 'text/plain', text: content });
+    } catch (error) {
+      attachments.push({ name, path: filePath, size: 0, kind: 'unsupported', error: error.message || '读取文件失败' });
     }
-    if (!textExtensions.has(ext) && stat.size > 2 * 1024 * 1024) {
-      attachments.push({ ...base, kind: 'unsupported', error: '该二进制文件无法作为文本发送' });
-      continue;
-    }
-    if (stat.size > 5 * 1024 * 1024) throw new Error(`${base.name} 超过 5MB 文本文件限制`);
-    attachments.push({ ...base, kind: 'text', mimeType: 'text/plain', text: fs.readFileSync(filePath, 'utf8') });
   }
   return attachments;
 });
