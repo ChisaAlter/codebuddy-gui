@@ -7,6 +7,23 @@ import {
   saveKeybindings,
   validateKeybindings,
 } from '../lib/ops';
+import {
+  GUI_KEYBINDING_ACTIONS,
+  guiShortcutValidationError,
+  loadGuiKeybindings,
+  normalizeShortcut as normalizeGuiShortcut,
+  resetGuiKeybindings,
+  saveGuiKeybindings,
+  shortcutFromKeyboardEvent,
+} from '../lib/gui-keybindings';
+
+function normalizeCliShortcut(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\+\s*/g, '+')
+    .replace(/\s+/g, ' ');
+}
 
 function normalizeConfig(value) {
   const config = value && typeof value === 'object' ? value : {};
@@ -19,14 +36,6 @@ function normalizeConfig(value) {
     reserved: Array.isArray(config.reserved) ? config.reserved : [],
     filePath: config.filePath || '',
   };
-}
-
-function normalizeShortcut(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s*\+\s*/g, '+')
-    .replace(/\s+/g, ' ');
 }
 
 function cloneBindings(groups) {
@@ -111,6 +120,10 @@ export default function ReplicaKeybindingsView() {
   const [search, setSearch] = useState('');
   const [contextFilter, setContextFilter] = useState('all');
   const [editor, setEditor] = useState(null);
+  const [guiBindings, setGuiBindings] = useState(() => loadGuiKeybindings());
+  const [guiEditor, setGuiEditor] = useState(null);
+  const [guiError, setGuiError] = useState('');
+  const [guiNotice, setGuiNotice] = useState('');
 
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetError, setResetError] = useState('');
@@ -143,6 +156,10 @@ export default function ReplicaKeybindingsView() {
     setError('');
     setEditor(null);
     setNotice('');
+    setGuiBindings(loadGuiKeybindings());
+    setGuiEditor(null);
+    setGuiError('');
+    setGuiNotice('');
     setResetDialogOpen(false);
     setResetError('');
     load();
@@ -242,7 +259,7 @@ export default function ReplicaKeybindingsView() {
   const submitEditor = async () => {
     if (!editor) return;
     const context = editor.context.trim();
-    const shortcut = normalizeShortcut(editor.shortcut);
+    const shortcut = normalizeCliShortcut(editor.shortcut);
     const action = editor.action.trim();
     if (!context || !shortcut || !action) {
       setError('上下文、快捷键和动作均不能为空');
@@ -287,6 +304,61 @@ export default function ReplicaKeybindingsView() {
     }
   };
 
+  const openGuiEditor = (action) => {
+    setGuiEditor({ actionId: action.id, shortcut: guiBindings[action.id] || action.defaultShortcut });
+    setGuiError('');
+    setGuiNotice('');
+  };
+
+  const captureGuiShortcut = (event) => {
+    if (event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape' && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+      setGuiEditor(null);
+      setGuiError('');
+      return;
+    }
+    if ((event.key === 'Backspace' || event.key === 'Delete') && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+      setGuiEditor((current) => current ? { ...current, shortcut: '' } : current);
+      return;
+    }
+    const shortcut = shortcutFromKeyboardEvent(event);
+    if (shortcut) setGuiEditor((current) => current ? { ...current, shortcut } : current);
+  };
+
+  const saveGuiEditor = () => {
+    if (!guiEditor) return;
+    const shortcut = normalizeGuiShortcut(guiEditor.shortcut);
+    const validationError = guiShortcutValidationError(shortcut);
+    if (validationError) { setGuiError(validationError); return; }
+    const duplicate = GUI_KEYBINDING_ACTIONS.find((action) => (
+      action.id !== guiEditor.actionId && guiBindings[action.id] === shortcut
+    ));
+    if (duplicate) { setGuiError(`已被“${duplicate.label}”使用`); return; }
+    try {
+      const next = saveGuiKeybindings({ ...guiBindings, [guiEditor.actionId]: shortcut });
+      setGuiBindings(next);
+      setGuiEditor(null);
+      setGuiError('');
+      setGuiNotice('GUI 快捷键已生效');
+    } catch (caughtError) {
+      setGuiError(caughtError?.message || '保存 GUI 快捷键失败');
+    }
+  };
+
+  const restoreGuiDefaults = () => {
+    try {
+      const next = resetGuiKeybindings();
+      setGuiBindings(next);
+      setGuiEditor(null);
+      setGuiError('');
+      setGuiNotice('已恢复 GUI 默认快捷键');
+    } catch (caughtError) {
+      setGuiError(caughtError?.message || '恢复 GUI 默认快捷键失败');
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--color-border-default)] px-6">
@@ -296,13 +368,61 @@ export default function ReplicaKeybindingsView() {
             {loading ? '刷新中...' : '刷新'}
           </button>
           <button className="btn-ghost text-xs text-[var(--color-error)]" disabled={loading || saving || customCount === 0} onClick={() => { if (writeInFlightRef.current) return; setResetDialogOpen(true); setResetError(''); }}>
-            恢复默认
+            恢复 CLI 默认
           </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-6xl">
+          <section className="mb-8">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">CodeBuddy GUI</h3>
+              <button className="btn-ghost text-xs" onClick={restoreGuiDefaults}>恢复 GUI 默认</button>
+            </div>
+            {guiError ? (
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-[rgba(248,113,113,0.25)] bg-[var(--color-error-bg)] px-3 py-2 text-xs text-[var(--color-error)]">
+                <span>{guiError}</span>
+                <button className="btn-ghost text-xs" onClick={() => setGuiError('')}>关闭</button>
+              </div>
+            ) : null}
+            {guiNotice ? (
+              <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-[rgba(34,197,94,0.25)] bg-[rgba(34,197,94,0.08)] px-3 py-2 text-xs text-[var(--color-success)]">
+                <span>{guiNotice}</span>
+                <button className="btn-ghost text-xs" onClick={() => setGuiNotice('')}>关闭</button>
+              </div>
+            ) : null}
+            <div className="overflow-hidden rounded-md border border-[var(--color-border-default)]">
+              {GUI_KEYBINDING_ACTIONS.map((action) => (
+                <div key={action.id} className="flex items-center gap-4 border-b border-[var(--color-border-muted)] px-4 py-3 text-xs last:border-0">
+                  <span className="min-w-0 flex-1 text-[var(--color-text-primary)]">{action.label}</span>
+                  <kbd className="rounded border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-2 py-1 font-mono text-[var(--color-text-primary)]">{guiBindings[action.id]}</kbd>
+                  <button className="btn-ghost text-xs" onClick={() => openGuiEditor(action)}>修改</button>
+                </div>
+              ))}
+            </div>
+            {guiEditor ? (
+              <div className="mt-3 flex flex-wrap items-end gap-3 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-4">
+                <label className="min-w-[240px] flex-1 text-xs text-[var(--color-text-secondary)]">
+                  <span className="mb-1 block">按下新的快捷键</span>
+                  <input
+                    autoFocus
+                    readOnly
+                    className="input-field w-full font-mono"
+                    value={guiEditor.shortcut}
+                    placeholder="按下组合键"
+                    onKeyDown={captureGuiShortcut}
+                  />
+                </label>
+                <button className="btn-primary text-xs" disabled={!guiEditor.shortcut} onClick={saveGuiEditor}>保存</button>
+                <button className="btn-ghost text-xs" onClick={() => { setGuiEditor(null); setGuiError(''); }}>取消</button>
+              </div>
+            ) : null}
+          </section>
+
+          <div className="mb-3 border-t border-[var(--color-border-default)] pt-6">
+            <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">CodeBuddy CLI</h3>
+          </div>
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-[var(--color-text-muted)]">
               有效绑定 {rows.length} · 用户覆盖 {customCount} · 上下文 {contextNames.length}

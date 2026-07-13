@@ -4,6 +4,7 @@ import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon.svg';
+import { guiActionForShortcut, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
@@ -377,6 +378,10 @@ function DirtyFileConfirmDialog() {
   );
 }
 
+function isShortcutInputTarget(target) {
+  return Boolean(target?.closest?.('input, textarea, select, [contenteditable="true"], .monaco-editor, .xterm'));
+}
+
 function readCachedTheme() {
   try {
     const cached = JSON.parse(localStorage.getItem('codebuddy-gui-settings') || '{}');
@@ -432,14 +437,36 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      const isMeta = event.metaKey || event.ctrlKey;
-      if (isMeta && event.key.toLowerCase() === 'b') {
-        event.preventDefault();
-        useStore.getState().setSidebarCollapsed(!useStore.getState().sidebarCollapsed);
+      if (event.repeat || event.defaultPrevented || isShortcutInputTarget(event.target)) return;
+      const action = guiActionForShortcut(shortcutFromKeyboardEvent(event));
+      if (!action) return;
+      const state = useStore.getState();
+      if (state.authViewState !== 'authenticated') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (action === 'toggle-sidebar') {
+        state.setSidebarCollapsed(!state.sidebarCollapsed);
+        return;
       }
+      if (action === 'new-conversation') {
+        if (state.newSessionBusy || state.projectNavigationBusy) return;
+        state.setRoute('chat');
+        state.newSession().catch((error) => useStore.setState({ error: error?.message || '创建新对话失败' }));
+        return;
+      }
+      const routeByAction = {
+        'open-chat': 'chat',
+        'open-terminal': 'terminal',
+        'open-editor': 'editor',
+        'open-changes': 'changes',
+        'open-settings': 'settings',
+      };
+      const route = routeByAction[action];
+      if (route) state.setRoute(route);
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, []);
 
   return (
