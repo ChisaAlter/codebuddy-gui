@@ -4,6 +4,7 @@
 
 import js from '@eslint/js';
 import globals from 'globals';
+import react from 'eslint-plugin-react';
 
 export default [
   js.configs.recommended,
@@ -23,8 +24,8 @@ export default [
     files: ['electron/**/*.{js,cjs}', 'src/**/*.{js,jsx}', 'tests/**/*.{js,jsx}'],
     rules: {
       // 只抓明显 bug 与未使用导入，不强风格
-      'no-unused-vars': 'warn',
-      'no-empty': 'warn',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'all', caughtErrorsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
+      'no-empty': ['warn', { allowEmptyCatch: true }],
       'no-dupe-keys': 'error',
       'no-dupe-args': 'error',
       'no-redeclare': 'error',
@@ -36,8 +37,13 @@ export default [
   },
   {
     files: ['src/**/*.jsx', 'tests/**/*.jsx'],
+    plugins: { react },
     languageOptions: {
       parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      'react/jsx-uses-vars': 'warn',
+      'react/jsx-uses-react': 'warn',
     },
   },
   {

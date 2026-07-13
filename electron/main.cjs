@@ -17,7 +17,6 @@ let staticServer = null; // express 静态服务器引用：before-quit 时显�
 
 let mainWindow = null;
 let tray = null;
-let pendingWindowShow = false;
 let windowCreationPromise = null;
 let closeToTrayHintShown = false;
 const activeTaskNotifications = new Set();
@@ -1382,11 +1381,7 @@ async function createWindow() {
 }
 
 function showOrCreateMainWindow() {
-  if (!app.isReady() || (!isDev && !prodServerPort)) {
-    pendingWindowShow = true;
-    return null;
-  }
-  pendingWindowShow = false;
+  if (!app.isReady() || (!isDev && !prodServerPort)) return null;
   if (!mainWindow || mainWindow.isDestroyed()) {
     if (!windowCreationPromise) {
       windowCreationPromise = createWindow()

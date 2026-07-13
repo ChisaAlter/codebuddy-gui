@@ -3,12 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-function formatTime(ts) {
-  if (!ts) return '';
-  const d = new Date(typeof ts === 'number' ? ts : Date.now());
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
 function getDayLabel(ts) {
   const d = new Date(typeof ts === 'number' ? ts : Date.now());
   const now = new Date();
@@ -123,7 +117,6 @@ function ThinkingCard({ item }) {
 
 function ToolCallBlock({ item }) {
   const [expanded, setExpanded] = useState(false);
-  const isRunning = item.status === 'running' || item.status === 'created' || item.streaming;
   const isCompleted = item.status === 'completed' || item.status === 'done';
   const isFailed = item.status === 'failed' || item.status === 'error';
 
@@ -647,7 +640,6 @@ export default function ReplicaChatView() {
   const initializeActiveThread = useStore((s) => s.initializeActiveThread);
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
-  const sessionTitle = useStore((s) => s.sessionTitle);
   const usage = useStore((s) => s.usage);
   const showTokensCounter = useStore((s) => Boolean(s.guiSettings?.showTokensCounter));
   const pasteImageEnabled = useStore((s) => Boolean(s.guiSettings?.enablePasteImageFromClipboard));

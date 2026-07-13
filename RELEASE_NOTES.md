@@ -1,8 +1,18 @@
-# CodeBuddy GUI 0.9.0
+# CodeBuddy GUI 1.0.0
 
-0.9.0 功能版本，补齐 CodeBuddy CLI 指定版本安装与回滚。
+1.0.0 首个稳定版本，完成编辑器资源精简、静态质量收口和 Windows 本地发布链路整理。
 
 ## 本版本重点
+
+- Monaco 改为核心编辑器、单一 editor worker 和实际使用语言的按需高亮，不再打包 TypeScript、CSS、HTML 和 JSON 语言服务 worker。
+- 前端 assets 从约 14.85 MB 降至约 5.18 MB，文件数量从 113 个降至 32 个；工作区仍支持 JavaScript、TypeScript、JSON、Markdown、Python、CSS、HTML、YAML、Shell 和纯文本。
+- JSON 使用轻量 tokenizer 保留注释、括号、引号自动闭合和语法着色，不引入完整 JSON language service。
+- ESLint 正确识别 JSX 变量和项目既有 `_` 占位参数，清理真实死代码与异常空白，完整 lint 达到 0 error / 0 warning。
+- GitHub Actions 继续保持关闭，Windows 安装包和更新清单由本地发布命令生成，不依赖 CI。
+
+## 0.9.0
+
+0.9.0 补齐 CodeBuddy CLI 指定版本安装与回滚。
 
 - 设置页 CLI 维护区新增“安装版本”，支持 `latest`、完整版本号和带 `v` 前缀的版本输入；填写旧版本号即可执行回滚。
 - 安装前使用独立应用内对话框确认目标，渲染层与主进程分别校验版本格式，不允许把任意文本拼入 CLI 命令。

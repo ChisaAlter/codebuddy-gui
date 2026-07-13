@@ -472,9 +472,9 @@ export default function ReplicaWorkersView() {
                     <div className="space-y-1 text-xs text-[var(--color-text-secondary)]">
                       <div className="truncate">Session: {w.sessionId || '-'}</div>
                       <div className="truncate">CWD: {w.cwd || '-'}</div>
-                      <div>Version: {w.version || '-'}　OS: {w.os || '-'}</div>
+                      <div>Version: {w.version || '-'} / OS: {w.os || '-'}</div>
                       <div className="truncate" title={w.endpoint || w.url || ''}>Endpoint: {w.endpoint || w.url || '-'}</div>
-                      <div>Mode: {w.mode || '-'}　Host: {w.hostname || w.host || '-'}</div>
+                      <div>Mode: {w.mode || '-'} / Host: {w.hostname || w.host || '-'}</div>
                       <div>Heartbeat: {formatRelativeTime(w.lastHeartbeat || w.updatedAt)}</div>
                     </div>
 

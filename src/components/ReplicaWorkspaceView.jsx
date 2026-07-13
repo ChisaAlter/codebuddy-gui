@@ -1,9 +1,50 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
+import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import { createTokenizationSupport } from 'monaco-editor/esm/vs/language/json/tokenization.js';
+import 'monaco-editor/esm/vs/basic-languages/css/css.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/html/html.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/python/python.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js';
 import { useStore } from '../store';
 import { joinPath, normalizePathParts } from '../lib/fs';
 import ActionConfirmDialog from './ActionConfirmDialog';
+
+globalThis.MonacoEnvironment = {
+  ...(globalThis.MonacoEnvironment || {}),
+  getWorker() {
+    return new EditorWorker();
+  },
+};
+
+if (!monaco.languages.getLanguages().some((language) => language.id === 'json')) {
+  monaco.languages.register({
+    id: 'json',
+    extensions: ['.json', '.bowerrc', '.jshintrc', '.jscsrc', '.eslintrc', '.babelrc'],
+    aliases: ['JSON', 'json'],
+    mimetypes: ['application/json'],
+  });
+  monaco.languages.setTokensProvider('json', createTokenizationSupport(true));
+  monaco.languages.setLanguageConfiguration('json', {
+    comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+    brackets: [['{', '}'], ['[', ']']],
+    autoClosingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '"', close: '"' },
+    ],
+    surroundingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '"', close: '"' },
+    ],
+  });
+}
 
 loader.config({ monaco });
 
@@ -158,7 +199,6 @@ function FileTree({ onContextMenu }) {
   const fileCwd = useStore((s) => s.fileCwd);
   const openFile = useStore((s) => s.openFile);
   const selectedFile = useStore((s) => s.selectedFile);
-  const setSelectedFile = useStore((s) => s.setSelectedFile);
 
   if (fileLoading) {
     return <div className="p-4 text-sm text-[var(--color-text-muted)]">加载文件中...</div>;

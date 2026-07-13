@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, getAcpSessionToken, getAuthToken, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
-import { commit, getLog, getLogDetailed, stash, stashPop, stashList, getUnstagedDiff, getStagedDiff, getRemoteUrl, fetch as gitFetch } from './lib/git';
 import { fetchSessionStats, fetchStats as fetchStatsApi, fetchScheduledTasks, createScheduledTask, deleteScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSettingByKey as updateSettingByKeyApi, deleteSession as apiDeleteSession, renameSession as apiRenameSession, fetchTaskTemplates as apiFetchTaskTemplates, refreshTaskTemplates as apiRefreshTaskTemplates, uninstallPlugin as apiUninstallPlugin, enablePlugin as apiEnablePlugin, disablePlugin as apiDisablePlugin, installPlugin as apiInstallPlugin, addMarketplace as apiAddMarketplace, removeMarketplace as apiRemoveMarketplace, fetchMarketplaces as apiFetchMarketplaces } from './lib/ops';
 import {
   closeAssistantStream,
@@ -145,16 +144,6 @@ function queuePromptQueueOperation(threadId, operation) {
   });
   promptQueueOperationChains.set(threadId, tracked);
   return tracked;
-}
-
-function sessionActionItemId(item) {
-  return item?.interruptionId
-    || item?.toolCallId
-    || item?.meta?.interruptionId
-    || item?.meta?.toolCallId
-    || item?.raw?.interruptionId
-    || item?.raw?.toolCallId
-    || null;
 }
 
 function sessionActionItemMatches(item, id) {
