@@ -2764,45 +2764,53 @@ export const useStore = create((set, get) => ({
   },
 
   async fsMkdir(path) {
+    const projectId = get().activeProjectId;
+    const cwd = get().fileCwd;
     try {
       await fsMkdir(path);
-      await get().refreshFileEntries();
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) await get().refreshFileEntries();
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) set({ error: error.message });
       return false;
     }
   },
 
   async fsMove(source, destination) {
+    const projectId = get().activeProjectId;
+    const cwd = get().fileCwd;
     try {
       await fsMove(source, destination);
-      await get().refreshFileEntries();
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) await get().refreshFileEntries();
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) set({ error: error.message });
       return false;
     }
   },
 
   async fsRemove(path) {
+    const projectId = get().activeProjectId;
+    const cwd = get().fileCwd;
     try {
       await fsRemove(path);
-      await get().refreshFileEntries();
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) await get().refreshFileEntries();
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) set({ error: error.message });
       return false;
     }
   },
 
   async fsWrite(path, content) {
+    const projectId = get().activeProjectId;
+    const cwd = get().fileCwd;
     try {
       await fsWrite(path, content);
-      await get().refreshFileEntries();
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) await get().refreshFileEntries();
       return true;
     } catch (error) {
-      set({ error: error.message });
+      if (projectId === get().activeProjectId && cwd === get().fileCwd) set({ error: error.message });
       return false;
     }
   },
