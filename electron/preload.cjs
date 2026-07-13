@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   openReleasePage: (releaseUrl) => ipcRenderer.invoke('app:openReleasePage', releaseUrl),
+  exportDiagnostics: () => ipcRenderer.invoke('app:exportDiagnostics'),
   showTaskNotification: (payload) => ipcRenderer.invoke('notification:showTaskResult', payload),
   consumeTaskNotificationTarget: () => ipcRenderer.invoke('notification:consumeOpenThread'),
   openUserData: () => ipcRenderer.invoke('app:openUserData'),

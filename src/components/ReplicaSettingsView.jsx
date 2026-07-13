@@ -309,6 +309,7 @@ export default function ReplicaSettingsView() {
   const [appInfoError, setAppInfoError] = useState('');
   const [systemAction, setSystemAction] = useState(null);
   const [openingUserData, setOpeningUserData] = useState(false);
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
   const [updateStatus, setUpdateStatus] = useState(null);
   const [saveError, setSaveError] = useState('');
@@ -446,6 +447,22 @@ export default function ReplicaSettingsView() {
       if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || '打开用户数据目录失败' });
     } finally {
       if (mountedRef.current) setOpeningUserData(false);
+    }
+  };
+
+  const exportDiagnostics = async () => {
+    if (exportingDiagnostics) return;
+    setExportingDiagnostics(true);
+    setSystemAction(null);
+    try {
+      if (!window.electronAPI?.exportDiagnostics) throw new Error('诊断报告导出接口不可用');
+      const result = await window.electronAPI.exportDiagnostics();
+      if (!mountedRef.current || result?.canceled) return;
+      setSystemAction({ type: 'success', message: `诊断报告已保存：${result.path}` });
+    } catch (error) {
+      if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || '导出诊断报告失败' });
+    } finally {
+      if (mountedRef.current) setExportingDiagnostics(false);
     }
   };
 
@@ -754,6 +771,11 @@ export default function ReplicaSettingsView() {
                 </button>
                 <button className={`${updateStatus?.type === 'update' ? 'btn-primary' : 'btn-ghost'} shrink-0 px-2 py-1 text-[11px]`} onClick={openGuiReleasePage}>{updateStatus?.type === 'update' ? '下载新版本' : '发布页'}</button>
               </div>
+            } />
+            <SettingRow label="诊断报告" desc="导出已脱敏的应用、运行时与日志信息；不包含对话或项目文件" control={
+              <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={exportingDiagnostics} onClick={exportDiagnostics}>
+                {exportingDiagnostics ? '导出中...' : '导出'}
+              </button>
             } />
             <SettingRow label="用户数据目录" desc="项目、对话、界面状态和诊断日志的本地保存位置" control={
               <div className="flex min-w-0 items-center gap-1">

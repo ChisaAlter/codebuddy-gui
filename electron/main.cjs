@@ -67,7 +67,44 @@ function redactSecrets(text) {
     // JSON 形态："password":"xxx" / 'password':'xxx'（保留值的引号对）
     .replace(/(["']password["']\s*:\s*)(["'])[^"']+\2/g, '$1$2[redacted]$2')
     // URL query 形态：?password=xxx / &password=xxx
-    .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]');
+    .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]')
+    .replace(/(Authorization\s*:\s*Bearer\s+)[^\s,}]+/gi, '$1[redacted]')
+    .replace(/(["'](?:token|api[_-]?key|secret|auth)["']\s*:\s*)(["'])[^"']+\2/gi, '$1$2[redacted]$2')
+    .replace(/([?&](?:token|api[_-]?key|secret|auth)=)[^\s&]+/gi, '$1[redacted]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9_]{20,})\b/g, '[redacted-token]');
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function redactDiagnosticText(value) {
+  let text = redactSecrets(value);
+  try {
+    const home = app.getPath('home');
+    for (const candidate of [home, home.replace(/\\/g, '/')]) {
+      if (candidate) text = text.replace(new RegExp(escapeRegExp(candidate), 'gi'), '%USERPROFILE%');
+    }
+  } catch (_) {}
+  return text;
+}
+
+function redactProjectPath(value, projectPath) {
+  let text = redactDiagnosticText(value);
+  for (const candidate of [projectPath, String(projectPath || '').replace(/\\/g, '/')]) {
+    if (candidate) text = text.replace(new RegExp(escapeRegExp(candidate), 'gi'), '%PROJECT_ROOT%');
+  }
+  return text;
+}
+
+function readDiagnosticLog(filePath, maxBytes = 200 * 1024) {
+  try {
+    const content = fs.readFileSync(filePath);
+    return redactDiagnosticText(content.slice(-maxBytes).toString('utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    return `Unable to read diagnostic log: ${error?.message || error}`;
+  }
 }
 
 function logStartup(message) {
@@ -217,6 +254,69 @@ ipcMain.handle('app:getInfo', () => ({
   packaged: app.isPackaged,
   userDataPath: app.getPath('userData'),
 }));
+ipcMain.handle('app:exportDiagnostics', async () => {
+  const timestamp = new Date().toISOString();
+  const fileTimestamp = timestamp.replace(/[:.]/g, '-');
+  const saveOptions = {
+    title: '导出 CodeBuddy GUI 诊断报告',
+    defaultPath: `CodeBuddy-GUI-diagnostics-${fileTimestamp}.json`,
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showSaveDialog(mainWindow, saveOptions)
+    : await dialog.showSaveDialog(saveOptions);
+  if (result.canceled || !result.filePath) return { canceled: true };
+
+  const runtimes = runtimeManager.list().map((runtime) => ({
+    projectId: runtime.projectId,
+    cwd: runtime.cwd ? '[redacted-project-path]' : null,
+    cwdAccessible: runtime.cwd ? fs.existsSync(runtime.cwd) : false,
+    status: runtime.status,
+    port: runtime.port,
+    pid: runtime.pid,
+    error: runtime.error ? redactProjectPath(runtime.error, runtime.cwd) : null,
+    startedAt: runtime.startedAt,
+  }));
+  const windowState = mainWindow && !mainWindow.isDestroyed() ? {
+    visible: mainWindow.isVisible(),
+    focused: mainWindow.isFocused(),
+    minimized: mainWindow.isMinimized(),
+    maximized: mainWindow.isMaximized(),
+    bounds: mainWindow.getBounds(),
+  } : null;
+  const report = {
+    schemaVersion: 1,
+    generatedAt: timestamp,
+    app: {
+      name: app.getName(),
+      version: app.getVersion(),
+      packaged: app.isPackaged,
+      userDataPath: redactDiagnosticText(app.getPath('userData')),
+    },
+    system: {
+      platform: process.platform,
+      arch: process.arch,
+      release: require('os').release(),
+      locale: app.getLocale(),
+      versions: {
+        electron: process.versions.electron,
+        chrome: process.versions.chrome,
+        node: process.versions.node,
+        v8: process.versions.v8,
+      },
+    },
+    window: windowState,
+    runtimes,
+    logs: {
+      startup: readDiagnosticLog(startupLog),
+      crash: readDiagnosticLog(path.join(app.getPath('userData'), 'crash.log')),
+    },
+    exclusions: ['project files', 'project paths', 'conversation content', 'drafts', 'product-state.json', 'runtime passwords'],
+  };
+  await fs.promises.writeFile(result.filePath, JSON.stringify(report, null, 2), 'utf8');
+  return { canceled: false, path: result.filePath };
+});
+
 ipcMain.handle('app:openUserData', async () => {
   const userDataPath = app.getPath('userData');
   await fs.promises.mkdir(userDataPath, { recursive: true });
