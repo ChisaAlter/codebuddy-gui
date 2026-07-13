@@ -312,6 +312,7 @@ export default function ReplicaSettingsView() {
   const [openingUserData, setOpeningUserData] = useState(false);
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [openingUpdateDownload, setOpeningUpdateDownload] = useState(false);
   const [updateStatus, setUpdateStatus] = useState(null);
   const [saveError, setSaveError] = useState('');
   const [selectionStatus, setSelectionStatus] = useState(null);
@@ -479,8 +480,12 @@ export default function ReplicaSettingsView() {
       if (result?.updateAvailable) {
         setUpdateStatus({
           type: 'update',
-          message: `发现新版本 v${result.latestVersion}，当前为 v${result.currentVersion}。`,
+          message: result.downloadUrl
+            ? `发现新版本 v${result.latestVersion}，当前为 v${result.currentVersion}。`
+            : `发现新版本 v${result.latestVersion}，但未找到对应的 Windows 安装包，请打开发布页。`,
+          latestVersion: result.latestVersion,
           releaseUrl: result.releaseUrl,
+          downloadUrl: result.downloadUrl,
         });
       } else if (result?.latestVersion) {
         setUpdateStatus({
@@ -507,7 +512,32 @@ export default function ReplicaSettingsView() {
       if (!window.electronAPI?.openReleasePage) throw new Error('发布页打开接口不可用');
       await window.electronAPI.openReleasePage(updateStatus?.releaseUrl);
     } catch (error) {
-      if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: 'error', message: error?.message || '打开发布页失败' }));
+      if (mountedRef.current) setUpdateStatus((current) => ({ ...(current || {}), type: current?.type || 'error', message: error?.message || '打开发布页失败' }));
+    }
+  };
+
+  const openGuiUpdateDownload = async () => {
+    if (openingUpdateDownload) return;
+    setOpeningUpdateDownload(true);
+    try {
+      if (!updateStatus?.downloadUrl) throw new Error('当前发布未提供 Windows 安装包');
+      if (!window.electronAPI?.openUpdateDownload) throw new Error('安装包下载接口不可用');
+      await window.electronAPI.openUpdateDownload(updateStatus.downloadUrl);
+      if (mountedRef.current) {
+        setUpdateStatus((current) => ({
+          ...(current || {}),
+          message: `已在默认浏览器中开始下载 v${current?.latestVersion || ''} 安装包。`,
+        }));
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setUpdateStatus((current) => ({
+          ...(current || {}),
+          message: error?.message || '下载安装包失败，请打开发布页重试',
+        }));
+      }
+    } finally {
+      if (mountedRef.current) setOpeningUpdateDownload(false);
     }
   };
 
@@ -765,12 +795,17 @@ export default function ReplicaSettingsView() {
           <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
             <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfoError ? '信息不可用' : appInfo?.version ? `v${appInfo.version}` : '加载中...'}</span>} />
             <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo ? (appInfo.packaged ? '安装版' : '开发版') : '-'}</span>} />
-            <SettingRow label="GUI 更新" desc={updateStatus?.message || '手动检查 GitHub Releases；不会后台下载或自动安装'} control={
+            <SettingRow label="GUI 更新" desc={updateStatus?.message || '检查 GitHub Releases，可直接下载 Windows 安装包；安装仍由用户确认'} control={
               <div className="flex items-center gap-1">
-                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={checkingForUpdates} onClick={checkForGuiUpdates}>
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={checkingForUpdates || openingUpdateDownload} onClick={checkForGuiUpdates}>
                   {checkingForUpdates ? '检查中...' : updateStatus ? '重新检查' : '检查更新'}
                 </button>
-                <button className={`${updateStatus?.type === 'update' ? 'btn-primary' : 'btn-ghost'} shrink-0 px-2 py-1 text-[11px]`} onClick={openGuiReleasePage}>{updateStatus?.type === 'update' ? '下载新版本' : '发布页'}</button>
+                {updateStatus?.type === 'update' && updateStatus?.downloadUrl ? (
+                  <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={openGuiUpdateDownload}>
+                    {openingUpdateDownload ? '启动下载...' : '下载安装包'}
+                  </button>
+                ) : null}
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUpdateDownload} onClick={openGuiReleasePage}>发布页</button>
               </div>
             } />
             <SettingRow label="诊断报告" desc="导出已脱敏的应用、运行时与日志信息；不包含对话或项目文件" control={

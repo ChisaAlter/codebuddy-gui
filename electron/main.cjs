@@ -144,6 +144,17 @@ function trustedGuiReleaseUrl(value) {
   return GUI_RELEASES_URL;
 }
 
+function trustedGuiDownloadUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    const match = decodeURIComponent(parsed.pathname).match(/^\/ChisaAlter\/codebuddy-gui\/releases\/download\/v(\d+(?:\.\d+){1,3})\/CodeBuddy-GUI-Setup-(\d+(?:\.\d+){1,3})\.exe$/i);
+    if (parsed.origin === 'https://github.com' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && match?.[1] === match?.[2]) {
+      return parsed.toString();
+    }
+  } catch (_) {}
+  return null;
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -225,12 +236,19 @@ ipcMain.handle('app:checkForUpdates', async () => {
     if (!latestVersion || !/^\d+(?:\.\d+){0,3}(?:[-+].*)?$/.test(latestVersion)) {
       throw new Error('最新发布版本号格式无效');
     }
+    const installerName = `CodeBuddy-GUI-Setup-${latestVersion}.exe`;
+    const installerAsset = Array.isArray(release?.assets)
+      ? release.assets.find((asset) => asset?.name === installerName)
+      : null;
+    const downloadUrl = trustedGuiDownloadUrl(installerAsset?.browser_download_url);
     return {
       status: 'ok',
       currentVersion,
       latestVersion,
       updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
       releaseUrl: trustedGuiReleaseUrl(release?.html_url),
+      downloadUrl,
+      downloadAvailable: Boolean(downloadUrl),
       publishedAt: release?.published_at || null,
     };
   } catch (error) {
@@ -244,6 +262,13 @@ ipcMain.handle('app:checkForUpdates', async () => {
 
 ipcMain.handle('app:openReleasePage', async (_event, releaseUrl) => {
   const target = trustedGuiReleaseUrl(releaseUrl);
+  await shell.openExternal(target);
+  return { url: target };
+});
+
+ipcMain.handle('app:openUpdateDownload', async (_event, downloadUrl) => {
+  const target = trustedGuiDownloadUrl(downloadUrl);
+  if (!target) throw new Error('Windows 安装包下载地址无效，请改用发布页下载');
   await shell.openExternal(target);
   return { url: target };
 });
