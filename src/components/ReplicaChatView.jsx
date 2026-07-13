@@ -140,7 +140,25 @@ function ToolCallBlock({ item }) {
 
 function InterruptionCard({ item }) {
   const respondToInterruption = useStore((s) => s.respondToInterruption);
-  const interruptionId = item.meta?.interruptionId || item.raw?.interruptionId;
+  const interruptionId = item.meta?.interruptionId || item.meta?.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
+  const resolved = item.status === 'resolved';
+  const resolution = item.meta?.resolution;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const resolve = async (decision) => {
+    if (!interruptionId || busy || resolved) return;
+    setBusy(true);
+    setError('');
+    try {
+      const ok = await respondToInterruption(interruptionId, decision);
+      if (!ok) setError(useStore.getState().error || '权限响应失败，请重试');
+    } catch (responseError) {
+      setError(responseError?.message || '权限响应失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="my-2 rounded-xl px-4 py-3" style={{ border: '1px solid var(--color-accent-yellow, rgba(245,158,11,0.35))', background: 'var(--color-warning-bg, rgba(245,158,11,0.08))' }}>
@@ -148,24 +166,47 @@ function InterruptionCard({ item }) {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-yellow)"><path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" /></svg>
         <div className="text-sm font-medium text-[var(--color-text-primary)]">权限请求</div>
       </div>
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--color-text-secondary)] mb-3 max-h-24">
+      <pre className="mb-3 max-h-24 overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--color-text-secondary)]">
         {JSON.stringify(item.meta || item.raw, null, 2)}
       </pre>
-      {interruptionId ? (
+      {resolved ? (
+        <div className="text-xs font-medium text-[var(--color-accent-green)]">{resolution === 'deny' ? '已拒绝' : '已允许'}</div>
+      ) : interruptionId ? (
         <div className="flex gap-2">
-          <button className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" style={{ background: 'var(--color-accent-blue)' }} onClick={() => respondToInterruption(interruptionId, 'allow')}>允许</button>
-          <button className="rounded-md bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]" onClick={() => respondToInterruption(interruptionId, 'deny')}>拒绝</button>
+          <button disabled={busy} className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={() => resolve('allow')}>{busy ? '处理中...' : '允许'}</button>
+          <button disabled={busy} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50" onClick={() => resolve('deny')}>拒绝</button>
         </div>
-      ) : null}
+      ) : (
+        <div className="text-xs text-[var(--color-accent-red)]">权限请求缺少标识，无法响应</div>
+      )}
+      {error ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{error}</div> : null}
     </div>
   );
 }
 
 function QuestionCard({ item }) {
   const submitQuestionAnswers = useStore((s) => s.submitQuestionAnswers);
-  const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId;
-  const questions = item.meta?.questions || [];
-  const [answers, setAnswers] = useState({});
+  const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId;
+  const questions = item.meta?.questions || item.raw?.questions || [];
+  const answered = item.status === 'answered';
+  const [answers, setAnswers] = useState(item.meta?.submittedAnswers || {});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const allAnswered = questions.length > 0 && questions.every((question, index) => String(answers[question.id || index] || '').trim());
+
+  const submit = async () => {
+    if (!toolCallId || busy || answered || !allAnswered) return;
+    setBusy(true);
+    setError('');
+    try {
+      const ok = await submitQuestionAnswers(toolCallId, answers);
+      if (!ok) setError(useStore.getState().error || '答案提交失败，请重试');
+    } catch (submitError) {
+      setError(submitError?.message || '答案提交失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="my-2 rounded-xl px-4 py-3" style={{ border: '1px solid var(--color-accent-blue, rgba(0,120,212,0.35))', background: 'var(--color-info-bg, rgba(0,120,212,0.08))' }}>
@@ -173,24 +214,54 @@ function QuestionCard({ item }) {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-blue)"><path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 2.5c.7 0 1.3.6 1.3 1.3s-.6 1.3-1.3 1.3-1.3-.6-1.3-1.3.6-1.3 1.3-1.3zm1.5 9H6.5v-1h1V8H6.5V7h2.5v4.5H9.5V12z" /></svg>
         <span className="text-sm font-medium text-[var(--color-text-primary)]">问题</span>
       </div>
-      <div className="space-y-3">
-        {questions.map((q, index) => (
-          <div key={q.id || index}>
-            <div className="mb-1 text-xs text-[var(--color-text-primary)]">{q.question || `问题 ${index + 1}`}</div>
-            <input
-              className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
-              value={answers[q.id || index] || ''}
-              onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id || index]: e.target.value }))}
-              placeholder="输入你的答案..."
-            />
+      {answered ? (
+        <div className="text-xs font-medium text-[var(--color-accent-green)]">答案已提交</div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            {questions.map((question, index) => {
+              const key = question.id || index;
+              const options = Array.isArray(question.options) ? question.options : Array.isArray(question.choices) ? question.choices : [];
+              return (
+                <div key={key}>
+                  <div className="mb-1 text-xs text-[var(--color-text-primary)]">{question.question || question.prompt || `问题 ${index + 1}`}</div>
+                  {options.length > 0 ? (
+                    <select
+                      className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
+                      value={answers[key] || ''}
+                      disabled={busy}
+                      onChange={(event) => setAnswers((previous) => ({ ...previous, [key]: event.target.value }))}
+                    >
+                      <option value="">请选择</option>
+                      {options.map((option, optionIndex) => {
+                        const value = typeof option === 'string' ? option : option.value || option.id || option.label;
+                        const label = typeof option === 'string' ? option : option.label || option.name || value;
+                        return value ? <option key={value || optionIndex} value={value}>{label}</option> : null;
+                      })}
+                    </select>
+                  ) : (
+                    <input
+                      className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
+                      value={answers[key] || ''}
+                      disabled={busy}
+                      onChange={(event) => setAnswers((previous) => ({ ...previous, [key]: event.target.value }))}
+                      placeholder="输入你的答案..."
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
-      {toolCallId ? (
-        <button className="mt-3 rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110" style={{ background: 'var(--color-accent-blue)' }} onClick={() => submitQuestionAnswers(toolCallId, answers)}>
-          提交
-        </button>
-      ) : null}
+          {toolCallId ? (
+            <button disabled={busy || !allAnswered} className="mt-3 rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={submit}>
+              {busy ? '正在提交...' : '提交'}
+            </button>
+          ) : (
+            <div className="mt-3 text-xs text-[var(--color-accent-red)]">问题请求缺少标识，无法提交</div>
+          )}
+        </>
+      )}
+      {error ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{error}</div> : null}
     </div>
   );
 }
@@ -302,6 +373,8 @@ export default function ReplicaChatView() {
   const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
   const sessionSelectionRequestRef = useRef(0);
   const sessionSelectionBusy = sessionSelectionStatus?.type === 'busy';
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const cancelRequestRef = useRef(0);
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
@@ -310,7 +383,9 @@ export default function ReplicaChatView() {
   }, [chatError]);
   useEffect(() => {
     sessionSelectionRequestRef.current += 1;
+    cancelRequestRef.current += 1;
     setSessionSelectionStatus(null);
+    setCancelBusy(false);
     setShowModelPicker(false);
     setShowModePicker(false);
   }, [activeProjectId, activeThreadId]);
@@ -374,6 +449,28 @@ export default function ReplicaChatView() {
       }
     } catch (error) {
       if (isCurrent()) setSessionSelectionStatus({ type: 'error', message: error?.message || `${label}切换失败` });
+    }
+  };
+
+  const cancelActiveSession = async () => {
+    if (cancelBusy || !activeThreadId) return;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const requestId = ++cancelRequestRef.current;
+    const isCurrent = () => (
+      requestId === cancelRequestRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setCancelBusy(true);
+    setChatError(null);
+    try {
+      const cancelled = await cancelSession();
+      if (isCurrent() && !cancelled) setChatError(useStore.getState().error || '停止生成失败，请重试。');
+    } catch (cancelError) {
+      if (isCurrent()) setChatError(cancelError?.message || '停止生成失败，请重试。');
+    } finally {
+      if (isCurrent()) setCancelBusy(false);
     }
   };
 
@@ -685,13 +782,18 @@ export default function ReplicaChatView() {
                 </div>
                 {isStreaming ? (
                   <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all" style={{ background: 'var(--color-accent-red)' }}
-                    onClick={() => cancelSession()}
-                    title="停止生成"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-60" style={{ background: 'var(--color-accent-red)' }}
+                    disabled={cancelBusy}
+                    onClick={cancelActiveSession}
+                    title={cancelBusy ? '正在停止生成' : '停止生成'}
                   >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <rect x="3" y="3" width="10" height="10" rx="1" />
-                    </svg>
+                    {cancelBusy ? (
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                        <rect x="3" y="3" width="10" height="10" rx="1" />
+                      </svg>
+                    )}
                   </button>
                 ) : null}
                 <button

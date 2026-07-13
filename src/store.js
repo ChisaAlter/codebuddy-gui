@@ -40,6 +40,7 @@ const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
 const runtimeOperationChains = new Map();
 const sessionSettingChains = new Map();
+const sessionActionOperations = new Map();
 let dirtyFileConfirmationResolve = null;
 
 function beginScopedRequest(key, state, scope = 'project') {
@@ -84,6 +85,25 @@ function queueSessionSettingOperation(key, operation) {
   });
   sessionSettingChains.set(key, tracked);
   return tracked;
+}
+function runUniqueSessionAction(key, operation) {
+  const existing = sessionActionOperations.get(key);
+  if (existing) return existing;
+  const tracked = Promise.resolve().then(operation).finally(() => {
+    if (sessionActionOperations.get(key) === tracked) sessionActionOperations.delete(key);
+  });
+  sessionActionOperations.set(key, tracked);
+  return tracked;
+}
+
+function sessionActionItemId(item) {
+  return item?.interruptionId
+    || item?.toolCallId
+    || item?.meta?.interruptionId
+    || item?.meta?.toolCallId
+    || item?.raw?.interruptionId
+    || item?.raw?.toolCallId
+    || null;
 }
 
 async function connectActiveProjectRuntime(set, get, projectId, runtime) {
@@ -1919,41 +1939,115 @@ export const useStore = create((set, get) => ({
   },
 
   async respondToInterruption(interruptionId, decision = 'allow') {
-    try {
-      const client = get().getThreadClient();
-      if (!client) throw new Error('当前会话未连接');
-      await client.request('_codebuddy.ai/resolveInterruption', {
-        sessionId: get().sessionId,
-        toolCallId: interruptionId,
-        decision,
-      });
-      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
-      get().patchThreadRuntime(get().activeThreadId, {
-        permissionRequests: runtime.permissionRequests.filter((x) => x.interruptionId !== interruptionId),
-      });
-    } catch (error) {
-      set({ error: error.message });
-    }
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!projectId || !threadId || !sessionId || !interruptionId) return false;
+    set({ error: null });
+    return runUniqueSessionAction(`${threadId}:interruption:${interruptionId}`, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('_codebuddy.ai/resolveInterruption', {
+          sessionId,
+          toolCallId: interruptionId,
+          decision,
+        });
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== sessionId) return true;
+        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const timeline = runtime.timeline.map((item) => (
+          item.type === 'interruption' && sessionActionItemId(item) === interruptionId
+            ? {
+                ...item,
+                status: 'resolved',
+                meta: { ...(item.meta || {}), resolution: decision, resolvedAt: Date.now() },
+              }
+            : item
+        ));
+        get().patchThreadRuntime(threadId, {
+          permissionRequests: runtime.permissionRequests.filter((item) => sessionActionItemId(item) !== interruptionId),
+          timeline,
+        });
+        set((state) => {
+          const record = state.threadsById[threadId];
+          if (!record || record.sessionId !== sessionId) return {};
+          return {
+            threadsById: {
+              ...state.threadsById,
+              [threadId]: {
+                ...record,
+                timeline: timeline.slice(-300),
+                status: record.status === 'waiting' ? 'running' : record.status,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+          };
+        });
+        await get().persistProductState();
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
   },
 
   async submitQuestionAnswers(toolCallId, answers) {
-    try {
-      const client = get().getThreadClient();
-      if (!client) throw new Error('当前会话未连接');
-      await client.request('_codebuddy.ai/answerQuestion', {
-        sessionId: get().sessionId,
-        toolCallId,
-        answers,
-      });
-      const runtime = get().threadRuntimeById[get().activeThreadId] || emptyThreadRuntime();
-      get().patchThreadRuntime(get().activeThreadId, {
-        questions: runtime.questions.filter((x) => x.toolCallId !== toolCallId),
-      });
-      get().appendTimelineEvent('question_answered', { toolCallId, answers });
-    } catch (error) {
-      set({ error: error.message });
-      get().appendTimelineEvent('error', { message: error.message, type: 'error', source: '_codebuddy.ai/answerQuestion' });
-    }
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!projectId || !threadId || !sessionId || !toolCallId) return false;
+    set({ error: null });
+    return runUniqueSessionAction(`${threadId}:question:${toolCallId}`, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('_codebuddy.ai/answerQuestion', { sessionId, toolCallId, answers });
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== sessionId) return true;
+        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const timeline = runtime.timeline.map((item) => (
+          item.type === 'question' && sessionActionItemId(item) === toolCallId
+            ? {
+                ...item,
+                status: 'answered',
+                meta: { ...(item.meta || {}), submittedAnswers: answers, answeredAt: Date.now() },
+              }
+            : item
+        ));
+        get().patchThreadRuntime(threadId, {
+          questions: runtime.questions.filter((item) => sessionActionItemId(item) !== toolCallId),
+          timeline,
+        });
+        set((state) => {
+          const record = state.threadsById[threadId];
+          if (!record || record.sessionId !== sessionId) return {};
+          return {
+            threadsById: {
+              ...state.threadsById,
+              [threadId]: {
+                ...record,
+                timeline: timeline.slice(-300),
+                status: record.status === 'waiting' ? 'running' : record.status,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+          };
+        });
+        await get().persistProductState();
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
   },
 
   async bootstrap() {
@@ -2693,22 +2787,31 @@ export const useStore = create((set, get) => ({
   },
 
   async cancelSession() {
-    try {
-      const threadId = get().activeThreadId;
-      const client = get().getThreadClient(threadId);
-      if (!client) throw new Error('当前会话未连接');
-      await client.request('session/cancel', {
-        sessionId: get().sessionId,
-      });
-      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      get().patchThreadRuntime(threadId, {
-        isAwaitingResponse: false,
-        timeline: reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', { status: 'cancelled', role: 'system' }),
-      });
-      await get().updateThreadRecord(threadId, { status: 'cancelled' });
-    } catch (error) {
-      set({ error: error.message });
-    }
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!projectId || !threadId || !sessionId) return false;
+    set({ error: null });
+    return runUniqueSessionAction(`${threadId}:cancel:${sessionId}`, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('session/cancel', { sessionId });
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== sessionId) return true;
+        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const timeline = reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', { status: 'cancelled', role: 'system' });
+        get().patchThreadRuntime(threadId, { isAwaitingResponse: false, timeline });
+        await get().updateThreadRecord(threadId, { status: 'cancelled', timeline: timeline.slice(-300) });
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
   },
 
   async sendPrompt(text) {
