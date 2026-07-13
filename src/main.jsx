@@ -3,6 +3,55 @@ import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
 
+const recentRendererReports = new Map()
+
+function readableError(value) {
+    if (value instanceof Error) return value.message || String(value)
+    if (typeof value === 'string') return value
+    try {
+        return JSON.stringify(value)
+    } catch (_) {
+        return String(value)
+    }
+}
+
+function reportRendererFailure(kind, value, componentStack = '') {
+    const error = value instanceof Error ? value : new Error(readableError(value) || 'Unknown renderer error')
+    const message = error.message || String(error)
+    const stack = error.stack || ''
+    const fingerprint = kind + '|' + message + '|' + stack.slice(0, 1000)
+    const now = Date.now()
+    const previous = recentRendererReports.get(fingerprint) || 0
+    if (now - previous < 2000) return
+    recentRendererReports.set(fingerprint, now)
+    for (const [key, timestamp] of recentRendererReports) {
+        if (now - timestamp > 10000) recentRendererReports.delete(key)
+    }
+    const reportRequest = window.electronAPI?.reportRendererError?.({
+        kind,
+        message,
+        stack,
+        componentStack,
+        route: window.location.hash || '',
+    })
+    reportRequest?.catch((reportError) => console.error('Unable to persist renderer error', reportError))
+}
+
+if (!window.__codebuddyRendererErrorListenersBound) {
+    window.__codebuddyRendererErrorListenersBound = true
+    window.addEventListener('error', (event) => {
+        if (!event.error && event.target && event.target !== window) {
+            const resource = event.target.src || event.target.href || event.target.tagName || 'unknown resource'
+            reportRendererFailure('resourceError', new Error('Resource load failed: ' + resource))
+            return
+        }
+        reportRendererFailure('windowError', event.error || new Error(event.message || 'Renderer window error'))
+    }, true)
+    window.addEventListener('unhandledrejection', (event) => {
+        reportRendererFailure('unhandledRejection', event.reason || new Error('Unhandled renderer promise rejection'))
+    })
+}
+
 class AppErrorBoundary extends React.Component {
     constructor(props) {
         super(props)
@@ -15,13 +64,7 @@ class AppErrorBoundary extends React.Component {
 
     componentDidCatch(error, info) {
         console.error('CodeBuddy GUI render failed', error, info)
-        const reportRequest = window.electronAPI?.reportRendererError?.({
-            message: error?.message || String(error),
-            stack: error?.stack || '',
-            componentStack: info?.componentStack || '',
-            route: window.location.hash || '',
-        })
-        reportRequest?.catch((reportError) => console.error('Unable to persist renderer error', reportError))
+        reportRendererFailure('reactErrorBoundary', error, info?.componentStack || '')
     }
 
     openDiagnostics = async () => {

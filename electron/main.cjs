@@ -256,11 +256,12 @@ ipcMain.handle('app:getInfo', () => ({
 }));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
+  const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';
   const message = String(payload.message || 'Renderer error').slice(0, 4000);
   const stack = String(payload.stack || '').slice(0, 40000);
   const componentStack = String(payload.componentStack || '').slice(0, 20000);
   const route = String(payload.route || '').slice(0, 500);
-  writeCrashLog('rendererErrorBoundary', {
+  writeCrashLog('renderer:' + kind, {
     stack: [message, stack, componentStack && ('Component stack:' + componentStack), route && ('Route: ' + route)]
       .filter(Boolean)
       .join('\n'),

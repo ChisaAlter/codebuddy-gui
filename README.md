@@ -71,7 +71,7 @@ npm run release:prepare -- -AllowUnsigned
 - 渲染进程通过受限 preload API 与 Electron 主进程通信；CodeBuddy REST/SSE 请求由主进程代理。
 - Electron 内的终端输出使用 SSE，输入和尺寸调整使用 HTTP；非 Electron 环境保留 WebSocket 回退。
 - 启动日志和崩溃日志分别写入 `electron-startup.log` 与 `crash.log`。应用保留最近一次有效的 `product-state.json.bak`；主状态文件损坏时会隔离为带时间戳的 `product-state.invalid-*.json` 并自动恢复备份，主文件和备份都不可用时才以空状态启动。
-- 设置页可导出已脱敏的 JSON 诊断报告；主进程异常、渲染错误边界和渲染进程异常退出都会进入轮转后的 `crash.log`，报告不包含对话、草稿、项目文件或完整项目路径。
+- 设置页可导出已脱敏的 JSON 诊断报告；主进程异常、React 错误、全局脚本错误、资源加载失败、未处理 Promise 拒绝和渲染进程异常退出都会进入轮转后的 `crash.log`，报告不包含对话、草稿、项目文件或完整项目路径。
 
 开发架构和维护说明见 [`CODEBUDDY.md`](./CODEBUDDY.md)。
 
