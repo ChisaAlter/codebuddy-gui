@@ -349,7 +349,13 @@ function validateSandboxId(value) {
   return sandboxId;
 }
 
-function runCapturedProcess(command, args, { cwd = os.homedir(), env = process.env, timeoutMs = 120000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
+function runCapturedProcess(command, args, {
+  cwd = os.homedir(),
+  env = process.env,
+  timeoutMs = 120000,
+  maxOutputBytes = 2 * 1024 * 1024,
+  timeoutMessage = 'CodeBuddy 命令执行超时',
+} = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
       cwd,
@@ -368,11 +374,29 @@ function runCapturedProcess(command, args, { cwd = os.homedir(), env = process.e
       if (combined.length <= maxOutputBytes) return { value: combined, truncated: markTruncated };
       return { value: combined.slice(-maxOutputBytes), truncated: true };
     };
+    const terminateProcess = () => {
+      if (!proc.pid || proc.killed) return;
+      if (process.platform === 'win32') {
+        try {
+          const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true,
+          });
+          killer.once('error', () => {
+            try { proc.kill('SIGKILL'); } catch (_) {}
+          });
+          killer.unref();
+          return;
+        } catch (_) {}
+      }
+      try { proc.kill('SIGKILL'); } catch (_) {}
+    };
     const timeoutId = setTimeout(() => {
       if (settled) return;
-      settled = true;
-      try { proc.kill(); } catch (_) {}
-      reject(new Error('CodeBuddy 命令执行超时'));
+      terminateProcess();
+      const error = new Error(timeoutMessage);
+      error.code = 'ETIMEDOUT';
+      finish(error);
     }, timeoutMs);
     const finish = (error, value) => {
       if (settled) return;
@@ -680,6 +704,69 @@ async function runExclusiveDaemonServiceOperation(operation) {
   }
 }
 
+function parseCodeBuddyCliVersion(value) {
+  const output = stripTerminalFormatting(value).trim();
+  const match = output.match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/);
+  if (!match) throw new Error(`无法识别 CodeBuddy CLI 版本: ${output || '命令未返回版本号'}`);
+  return match[1];
+}
+
+async function getCodeBuddyCliInfo() {
+  const result = await runCodeBuddyCli(['--version'], {
+    timeoutMs: 10000,
+    maxOutputBytes: 64 * 1024,
+    timeoutMessage: '读取 CodeBuddy CLI 版本超过 10 秒，已停止命令',
+  });
+  const output = stripTerminalFormatting(result.output).trim();
+  return {
+    version: parseCodeBuddyCliVersion(output),
+    output,
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
+async function runCodeBuddyCliDoctor() {
+  const result = await runCodeBuddyCli(['doctor'], {
+    timeoutMs: 45000,
+    maxOutputBytes: 512 * 1024,
+    timeoutMessage: 'CodeBuddy CLI 诊断超过 45 秒，已停止命令。请检查 CLI 配置或网络后重试。',
+  });
+  return {
+    output: stripTerminalFormatting(result.output).trim() || '诊断完成，CodeBuddy CLI 未返回文本输出。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
+async function updateCodeBuddyCli() {
+  const before = await getCodeBuddyCliInfo();
+  const result = await runCodeBuddyCli(['update'], {
+    timeoutMs: 5 * 60 * 1000,
+    maxOutputBytes: 1024 * 1024,
+    timeoutMessage: 'CodeBuddy CLI 更新超过 5 分钟，已停止命令。请在终端中检查当前安装状态。',
+  });
+  const after = await getCodeBuddyCliInfo();
+  return {
+    beforeVersion: before.version,
+    afterVersion: after.version,
+    changed: before.version !== after.version,
+    output: stripTerminalFormatting(result.output).trim() || '更新命令已完成，CodeBuddy CLI 未返回文本输出。',
+    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+  };
+}
+
+let cliMaintenanceOperation = null;
+
+async function runExclusiveCliMaintenanceOperation(operation) {
+  if (cliMaintenanceOperation) throw new Error('另一个 CodeBuddy CLI 维护操作正在进行，请稍候');
+  const promise = Promise.resolve().then(operation);
+  cliMaintenanceOperation = promise;
+  try {
+    return await promise;
+  } finally {
+    if (cliMaintenanceOperation === promise) cliMaintenanceOperation = null;
+  }
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -817,6 +904,9 @@ ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackg
 ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
 ipcMain.handle('daemonService:install', (_event, payload) => runExclusiveDaemonServiceOperation(() => installDaemonService(payload)));
 ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperation(() => uninstallDaemonService()));
+ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
+ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor()));
+ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

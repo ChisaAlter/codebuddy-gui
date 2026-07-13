@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { getCliMaintenanceInfo, runCliDoctor, updateCodeBuddyCli } from '../lib/cli-maintenance';
+import ActionConfirmDialog from './ActionConfirmDialog';
 
 function Toggle({ value, onChange }) {
   return (
@@ -284,7 +286,7 @@ function JsonArrayEditor({ value, onSave, ariaLabel, scopeKey }) {
 export default function ReplicaSettingsView() {
   const {
     info, connectionState, currentModel, models, modes, currentMode,
-    settings, guiSettings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, updateGuiSetting: persistGuiSetting, refreshInfo, refreshSettings,
+    settings, guiSettings, infoLoaded, settingsLoaded, sessionId, setModel, setMode, updateSetting: persistSetting, updateGuiSetting: persistGuiSetting, refreshInfo, refreshSettings, restartProjectRuntime,
   } = useStore(useShallow((state) => ({
     info: state.info,
     connectionState: state.connectionState,
@@ -303,6 +305,7 @@ export default function ReplicaSettingsView() {
     updateGuiSetting: state.updateGuiSetting,
     refreshInfo: state.refreshInfo,
     refreshSettings: state.refreshSettings,
+    restartProjectRuntime: state.restartProjectRuntime,
   })));
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -314,6 +317,15 @@ export default function ReplicaSettingsView() {
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
   const [openingUpdateDownload, setOpeningUpdateDownload] = useState(false);
   const [updateStatus, setUpdateStatus] = useState(null);
+  const [cliInfo, setCliInfo] = useState(null);
+  const [cliInfoLoading, setCliInfoLoading] = useState(true);
+  const [cliInfoError, setCliInfoError] = useState('');
+  const [cliOperation, setCliOperation] = useState('');
+  const [cliNotice, setCliNotice] = useState(null);
+  const [cliOutput, setCliOutput] = useState(null);
+  const [cliUpdateOpen, setCliUpdateOpen] = useState(false);
+  const [cliUpdateError, setCliUpdateError] = useState('');
+  const [cliRestartNeeded, setCliRestartNeeded] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [selectionStatus, setSelectionStatus] = useState(null);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -321,6 +333,23 @@ export default function ReplicaSettingsView() {
   const reloadRequestIdRef = useRef(0);
   const saveFeedbackVersionRef = useRef(0);
   const mountedRef = useRef(true);
+  const cliOperationRef = useRef('');
+
+  const loadCliInfo = useCallback(async ({ showLoading = true } = {}) => {
+    if (showLoading) setCliInfoLoading(true);
+    setCliInfoError('');
+    try {
+      const value = await getCliMaintenanceInfo();
+      if (!mountedRef.current) return null;
+      setCliInfo(value);
+      return value;
+    } catch (error) {
+      if (mountedRef.current) setCliInfoError(error?.message || '读取 CodeBuddy CLI 版本失败');
+      return null;
+    } finally {
+      if (mountedRef.current && showLoading) setCliInfoLoading(false);
+    }
+  }, []);
 
   const updateSetting = useCallback(async (key, value) => {
     const projectId = activeProjectId;
@@ -380,6 +409,10 @@ export default function ReplicaSettingsView() {
       saveFeedbackVersionRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    loadCliInfo();
+  }, [loadCliInfo]);
 
   useEffect(() => {
     reloadRequestIdRef.current += 1;
@@ -538,6 +571,95 @@ export default function ReplicaSettingsView() {
       }
     } finally {
       if (mountedRef.current) setOpeningUpdateDownload(false);
+    }
+  };
+
+  const runCliDiagnostics = async () => {
+    if (cliOperationRef.current) return;
+    cliOperationRef.current = 'doctor';
+    setCliOperation('doctor');
+    setCliNotice({ type: 'busy', message: '正在运行 CodeBuddy CLI 诊断，最长等待 45 秒...' });
+    setCliOutput(null);
+    try {
+      const result = await runCliDoctor();
+      if (!mountedRef.current) return;
+      setCliOutput({ title: '诊断输出', content: result.output, truncated: result.truncated });
+      setCliNotice({ type: 'success', message: 'CodeBuddy CLI 诊断已完成。' });
+    } catch (error) {
+      if (mountedRef.current) setCliNotice({ type: 'error', message: error?.message || 'CodeBuddy CLI 诊断失败' });
+    } finally {
+      if (cliOperationRef.current === 'doctor') cliOperationRef.current = '';
+      if (mountedRef.current) setCliOperation('');
+    }
+  };
+
+  const confirmCliUpdate = async () => {
+    if (cliOperationRef.current) return;
+    cliOperationRef.current = 'update';
+    setCliOperation('update');
+    setCliUpdateError('');
+    setCliNotice({ type: 'busy', message: '正在检查并更新 CodeBuddy CLI，请勿关闭应用...' });
+    setCliOutput(null);
+    try {
+      const result = await updateCodeBuddyCli();
+      if (!mountedRef.current) return;
+      setCliInfo((current) => ({ ...(current || {}), version: result.afterVersion, output: result.afterVersion }));
+      setCliOutput({ title: '更新输出', content: result.output, truncated: result.truncated });
+      setCliUpdateOpen(false);
+      if (result.changed) {
+        setCliRestartNeeded(true);
+        setCliNotice({
+          type: 'success',
+          message: `CodeBuddy CLI 已从 ${result.beforeVersion} 更新到 ${result.afterVersion}。现有项目运行时仍在使用更新前的进程。`,
+        });
+      } else {
+        setCliNotice({ type: 'success', message: `CodeBuddy CLI 已是当前版本 ${result.afterVersion}。` });
+      }
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const message = error?.message || 'CodeBuddy CLI 更新失败';
+      setCliUpdateError(message);
+      setCliNotice({ type: 'error', message });
+      await loadCliInfo({ showLoading: false });
+    } finally {
+      if (cliOperationRef.current === 'update') cliOperationRef.current = '';
+      if (mountedRef.current) setCliOperation('');
+    }
+  };
+
+  const restartCurrentRuntimeAfterCliUpdate = async () => {
+    if (cliOperationRef.current) return;
+    const projectId = activeProjectId;
+    if (!projectId) {
+      setCliNotice({ type: 'error', message: '当前没有可重启的项目运行时。' });
+      return;
+    }
+    cliOperationRef.current = 'restart';
+    setCliOperation('restart');
+    setCliNotice({ type: 'busy', message: '正在重启当前项目运行时...' });
+    try {
+      const restarted = await restartProjectRuntime(projectId);
+      if (!mountedRef.current || projectId !== useStore.getState().activeProjectId) return;
+      if (!restarted) throw new Error(useStore.getState().error || '当前项目运行时重启失败');
+      setCliRestartNeeded(false);
+      setCliNotice({ type: 'success', message: '当前项目运行时已使用新版 CodeBuddy CLI 重新启动。' });
+    } catch (error) {
+      if (mountedRef.current && projectId === useStore.getState().activeProjectId) {
+        setCliNotice({ type: 'error', message: error?.message || '当前项目运行时重启失败' });
+      }
+    } finally {
+      if (cliOperationRef.current === 'restart') cliOperationRef.current = '';
+      if (mountedRef.current) setCliOperation('');
+    }
+  };
+
+  const copyCliOutput = async () => {
+    if (!cliOutput?.content) return;
+    try {
+      await copyTextToClipboard(cliOutput.content);
+      if (mountedRef.current) setCliNotice({ type: 'success', message: 'CLI 输出已复制。' });
+    } catch (error) {
+      if (mountedRef.current) setCliNotice({ type: 'error', message: error?.message || '复制 CLI 输出失败' });
     }
   };
 
@@ -789,6 +911,56 @@ export default function ReplicaSettingsView() {
           </div>
         </div>
 
+        {/* CodeBuddy CLI 维护 */}
+        <div className="settings-group">
+          <h2 className="settings-heading">CodeBuddy CLI 维护</h2>
+          <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
+            <SettingRow label="已安装版本" desc={cliInfoError || '读取当前由 CodeBuddy GUI 调用的本机 CLI 版本'} control={
+              <div className="flex items-center gap-2">
+                <span className={`text-xs ${cliInfoError ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-secondary)]'}`}>
+                  {cliInfoLoading ? '读取中...' : cliInfo?.version ? `v${cliInfo.version}` : '不可用'}
+                </span>
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={cliInfoLoading || Boolean(cliOperation)} onClick={() => loadCliInfo()}>
+                  刷新
+                </button>
+              </div>
+            } />
+            <SettingRow label="诊断与更新" desc="诊断最多运行 45 秒；检查更新会在有新版本时直接安装" control={
+              <div className="flex items-center gap-1">
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={runCliDiagnostics}>
+                  {cliOperation === 'doctor' ? '诊断中...' : '运行诊断'}
+                </button>
+                <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={() => { setCliUpdateError(''); setCliUpdateOpen(true); }}>
+                  {cliOperation === 'update' ? '更新中...' : '检查并更新'}
+                </button>
+              </div>
+            } />
+            {cliRestartNeeded ? <SettingRow label="运行时需要重启" desc="已运行的项目进程不会自动切换到刚安装的 CLI 版本" control={
+              <button className="btn-primary shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={restartCurrentRuntimeAfterCliUpdate}>
+                {cliOperation === 'restart' ? '重启中...' : '重启当前运行时'}
+              </button>
+            } /> : null}
+          </div>
+          {cliNotice ? (
+            <div className={`mt-2 text-xs ${cliNotice.type === 'success' ? 'text-[var(--color-accent-green)]' : cliNotice.type === 'error' ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-accent-yellow)]'}`}>
+              {cliNotice.message}
+            </div>
+          ) : null}
+          {cliOutput ? (
+            <div className="mt-3 overflow-hidden rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-code)]">
+              <div className="flex items-center justify-between border-b border-[var(--color-border-default)] px-3 py-2">
+                <span className="text-xs font-medium text-[var(--color-text-primary)]">{cliOutput.title}</span>
+                <div className="flex items-center gap-1">
+                  <button className="btn-ghost px-2 py-1 text-[11px]" onClick={copyCliOutput}>复制</button>
+                  <button className="btn-icon" title="关闭输出" aria-label="关闭 CLI 输出" onClick={() => setCliOutput(null)}>×</button>
+                </div>
+              </div>
+              {cliOutput.truncated ? <div className="border-b border-[var(--color-border-default)] px-3 py-2 text-[11px] text-[var(--color-accent-yellow)]">输出过长，仅保留最新内容。</div> : null}
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-3 py-3 font-mono text-[11px] leading-5 text-[var(--color-text-secondary)]">{cliOutput.content}</pre>
+            </div>
+          ) : null}
+        </div>
+
         {/* 系统信息 */}
         <div className="settings-group">
           <h2 className="settings-heading">系统信息</h2>
@@ -853,6 +1025,17 @@ export default function ReplicaSettingsView() {
 
         </>)}
       </div>
+      <ActionConfirmDialog
+        open={cliUpdateOpen}
+        title="检查并更新 CodeBuddy CLI？"
+        description={<><div>将运行真实的 <span className="font-mono text-[var(--color-text-primary)]">codebuddy update</span>。该命令会检查新版本，并在可用时直接修改本机 CLI 安装。</div><div className="mt-2">更新不会自动重启已经运行的项目进程。版本变化后，设置页会提供当前项目运行时重启入口。</div></>}
+        confirmLabel="检查并更新"
+        busy={cliOperation === 'update'}
+        error={cliUpdateError}
+        danger={false}
+        onCancel={() => { if (cliOperation !== 'update') { setCliUpdateOpen(false); setCliUpdateError(''); } }}
+        onConfirm={confirmCliUpdate}
+      />
     </div>
   );
 }

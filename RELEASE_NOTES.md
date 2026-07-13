@@ -1,8 +1,16 @@
-# CodeBuddy GUI 0.5.0
+# CodeBuddy GUI 0.6.0
 
-0.5.0 功能版本，补齐 CodeBuddy Daemon 的系统自启动管理。
+0.6.0 功能版本，补齐 CodeBuddy CLI 的本机维护入口。
 
 ## 本版本重点
+
+- 设置页新增 CodeBuddy CLI 维护区，直接显示当前 GUI 实际调用的已安装 CLI 版本。
+- 可运行真实 `codebuddy doctor` 并查看、复制诊断输出；45 秒未完成会终止整个命令进程树并明确反馈超时。
+- “检查并更新”在应用内确认后运行真实 `codebuddy update`，同一时间只允许一个诊断或更新操作，避免重复修改本机安装。
+- 更新完成后重新读取版本；版本变化时明确说明现有项目进程仍使用旧 CLI，并提供当前项目运行时的一键重启入口。
+- 诊断和更新输出均限制内存占用，过长时保留最新内容并在界面标记截断；更新最长运行 5 分钟。
+
+## 0.5.0
 
 - Workers 页新增 Daemon 登录自启动状态，直接读取 `codebuddy daemon status` 的系统服务信息。
 - 支持配置可选端口和权限模式，并通过真实 `codebuddy daemon install` 注册用户级 Windows 任务计划。
