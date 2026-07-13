@@ -163,6 +163,9 @@ export class AcpClient {
     this.connected = false;
     this.initialized = false;
     this.requestCounter = 0;
+    this.permissionRequestIds = new Map();
+    this.permissionRequestToolCallIds = new Map();
+    this.questionRequestIds = new Map();
 
     // 重连相关
     this.reconnectAttempts = 0;
@@ -227,14 +230,41 @@ export class AcpClient {
   handleIncomingRpc(message) {
     if (!message || typeof message !== 'object') return;
 
+    if (message.method && message.id !== undefined && message.id !== null) {
+      if (message.method === 'session/request_permission') {
+        this.handlePermissionRequest(message.id, message.params || {});
+        return;
+      }
+      if (message.method === '_codebuddy.ai/question') {
+        this.handleQuestionRequest(message.id, message.params || {});
+        return;
+      }
+      return;
+    }
+
     if (message.method === 'session/update') {
       const params = message.params || {};
       const update = params.update || {};
       const sessionUpdate = update.sessionUpdate;
       this.emit('session/update', params);
-      if (sessionUpdate) {
-        this.emit(sessionUpdate, update);
+      const interruption = update._meta?.['codebuddy.ai/interruptionRequest'];
+      if (interruption) {
+        this.emit('interruption_request', {
+          sessionUpdate: 'interruption_request',
+          sessionId: params.sessionId,
+          interruptionId: interruption.interruptionId || ('ir-' + interruption.toolCallId),
+          reason: 'Tool requires approval',
+          options: interruption.options || [],
+          toolName: interruption.toolName,
+          toolTitle: interruption.toolTitle,
+          toolInput: interruption.toolInput,
+          toolCallId: interruption.toolCallId,
+          workflowSourceText: interruption.workflowSourceText,
+          mcpUiIntercept: interruption.mcpUiIntercept === true,
+          responseMode: 'extension',
+        });
       }
+      if (sessionUpdate) this.emit(sessionUpdate, update);
       return;
     }
 
@@ -243,9 +273,115 @@ export class AcpClient {
       return;
     }
 
-    if (message.method) {
-      this.emit(message.method, message.params || message);
+    if (message.method) this.emit(message.method, message.params || message);
+  }
+
+  handlePermissionRequest(requestId, params) {
+    const toolCall = params?.toolCall || {};
+    const interruptionId = 'perm-' + String(requestId);
+    const toolCallId = toolCall.toolCallId || null;
+    const toolName = toolCall._meta?.['codebuddy.ai/toolName'] || toolCall.toolName || 'tool';
+    this.permissionRequestIds.set(interruptionId, requestId);
+    if (toolCallId) this.permissionRequestToolCallIds.set(toolCallId, interruptionId);
+    this.emit('interruption_request', {
+      sessionUpdate: 'interruption_request',
+      sessionId: params?.sessionId || null,
+      interruptionId,
+      reason: 'Tool requires approval',
+      options: (params?.options || []).map((option) => option?.optionId || option?.name || option).filter(Boolean),
+      toolName,
+      toolTitle: toolCall.title || toolName,
+      toolInput: toolCall.rawInput,
+      toolCallId,
+      responseMode: 'json-rpc',
+    });
+  }
+
+  handleQuestionRequest(requestId, params) {
+    const toolCallId = params?.toolCallId || ('question-' + String(requestId));
+    const questions = (params?.schema?.questions || []).map((question, index) => ({
+      id: question.id || ('q_' + index),
+      question: question.question || '',
+      header: question.header || '',
+      options: (question.options || []).map((option) => (
+        typeof option === 'string'
+          ? { label: option, value: option, description: '' }
+          : {
+              label: option.label || option.value || option.id || '',
+              value: option.value || option.id || option.label || '',
+              description: option.description || '',
+            }
+      )).filter((option) => option.value),
+      multiSelect: Boolean(question.multiSelect),
+    }));
+    this.questionRequestIds.set(toolCallId, requestId);
+    this.emit('question_request', {
+      toolCallId,
+      sessionId: params?.sessionId || null,
+      questions,
+      responseMode: 'json-rpc',
+    });
+  }
+
+  async sendJsonRpcResult(requestId, result) {
+    const response = await this.requestHttp('/api/v1/acp', {
+      method: 'POST',
+      headers: makeHeaders({
+        Accept: 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+        'acp-connection-id': this.connectionId,
+      }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: requestId, result }),
+      timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    });
+    if (!response.ok) {
+      let message = '';
+      try {
+        const payload = await response.json();
+        message = payload?.error?.message || '';
+      } catch (_) {}
+      throw new Error(message || ('ACP response failed: ' + response.status + ' ' + response.statusText));
     }
+  }
+
+  mapPermissionDecisionToOptionId(decision) {
+    if (decision === 'allowAll') return 'allow_always';
+    if (decision === 'allow') return 'allow';
+    if (decision === 'rejectAndExitPlan') return 'reject_and_exit_plan';
+    return 'reject';
+  }
+
+  async respondToPermissionRequest(interruptionId, toolCallId, decision) {
+    const mappedInterruptionId = this.permissionRequestIds.has(interruptionId)
+      ? interruptionId
+      : this.permissionRequestToolCallIds.get(toolCallId);
+    if (!mappedInterruptionId) return false;
+    const requestId = this.permissionRequestIds.get(mappedInterruptionId);
+    if (requestId === undefined) return false;
+    this.permissionRequestIds.delete(mappedInterruptionId);
+    for (const [id, value] of this.permissionRequestToolCallIds.entries()) {
+      if (value === mappedInterruptionId) this.permissionRequestToolCallIds.delete(id);
+    }
+    await this.sendJsonRpcResult(requestId, {
+      outcome: { outcome: 'selected', optionId: this.mapPermissionDecisionToOptionId(decision) },
+    });
+    return true;
+  }
+
+  async submitQuestionAnswers(toolCallId, answers) {
+    const requestId = this.questionRequestIds.get(toolCallId);
+    if (requestId === undefined) return false;
+    await this.sendJsonRpcResult(requestId, { outcome: 'submitted', answers });
+    this.questionRequestIds.delete(toolCallId);
+    return true;
+  }
+
+  async cancelQuestionAnswers(toolCallId) {
+    const requestId = this.questionRequestIds.get(toolCallId);
+    if (requestId === undefined) return false;
+    await this.sendJsonRpcResult(requestId, { outcome: 'cancelled' });
+    this.questionRequestIds.delete(toolCallId);
+    return true;
   }
 
   async connect() {
@@ -539,6 +675,9 @@ export class AcpClient {
     this.connectionId = null;
     this.sessionToken = null;
     this.reconnectAttempts = 0;
+    this.permissionRequestIds.clear();
+    this.permissionRequestToolCallIds.clear();
+    this.questionRequestIds.clear();
 
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
@@ -612,8 +751,10 @@ export class AcpClient {
       const messages = parseEventStreamMessages(text);
 
       let matchedResult = null;
+      let matchedResponse = false;
       for (const message of messages) {
-        if (message.id && String(message.id) === id) {
+        if (!message.method && message.id !== undefined && message.id !== null && String(message.id) === id) {
+          matchedResponse = true;
           if (message.error) {
             throw new Error(message.error.message || `ACP rpc error: ${method}`);
           }
@@ -623,9 +764,7 @@ export class AcpClient {
         }
       }
 
-      if (matchedResult !== null) {
-        return matchedResult;
-      }
+      if (matchedResponse) return matchedResult;
 
       const trimmed = text.trim();
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {

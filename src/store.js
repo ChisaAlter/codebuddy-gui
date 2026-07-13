@@ -153,6 +153,18 @@ function sessionActionItemId(item) {
     || null;
 }
 
+function sessionActionItemMatches(item, id) {
+  if (!id) return false;
+  return [
+    item?.interruptionId,
+    item?.toolCallId,
+    item?.meta?.interruptionId,
+    item?.meta?.toolCallId,
+    item?.raw?.interruptionId,
+    item?.raw?.toolCallId,
+  ].includes(id);
+}
+
 async function connectActiveProjectRuntime(set, get, projectId, runtime) {
   if (projectId !== get().activeProjectId) return false;
   const nextBase = `http://127.0.0.1:${runtime.port}`;
@@ -1075,12 +1087,16 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (su === 'interruption_request') {
+      const requestId = update.interruptionId || update.toolCallId;
+      if (requestId && runtime.permissionRequests.some((item) => sessionActionItemMatches(item, requestId))) return;
       get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
       get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
       return;
     }
     if (su === 'question_request') {
+      const requestId = update.toolCallId;
+      if (requestId && runtime.questions.some((item) => sessionActionItemMatches(item, requestId))) return;
       get().patchThreadRuntime(threadId, { questions: [...runtime.questions, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
       get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
@@ -1145,6 +1161,10 @@ export const useStore = create((set, get) => ({
     }
     if (type === 'initialized') {
       get().patchThreadRuntime(threadId, { capabilities: detail?.agentCapabilities || detail || {} });
+      return;
+    }
+    if (type === 'interruption_request' || type === 'question_request') {
+      get().handleThreadSessionUpdate(threadId, { ...(detail || {}), sessionUpdate: type });
       return;
     }
     if (type === 'model_update') {
@@ -2456,7 +2476,7 @@ export const useStore = create((set, get) => ({
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     let timelineChanged = false;
     const timeline = runtime.timeline.map((item) => {
-      if (item.type !== 'interruption' || sessionActionItemId(item) !== interruptionId) return item;
+      if (item.type !== 'interruption' || !sessionActionItemMatches(item, interruptionId)) return item;
       if (item.status === 'resolved' && item.meta?.resolution === decision) return item;
       timelineChanged = true;
       return {
@@ -2465,7 +2485,7 @@ export const useStore = create((set, get) => ({
         meta: { ...(item.meta || {}), resolution: decision, resolvedAt },
       };
     });
-    const permissionRequests = runtime.permissionRequests.filter((item) => sessionActionItemId(item) !== interruptionId);
+    const permissionRequests = runtime.permissionRequests.filter((item) => !sessionActionItemMatches(item, interruptionId));
     if (!timelineChanged && permissionRequests.length === runtime.permissionRequests.length) return false;
     get().patchThreadRuntime(threadId, { permissionRequests, timeline });
     set((state) => {
@@ -2487,34 +2507,93 @@ export const useStore = create((set, get) => ({
     return true;
   },
 
-  async respondToInterruption(interruptionId, decision = 'allow') {
+  async respondToInterruption(interruptionId, decision = 'allow', toolCallId = null) {
     const state = get();
     const projectId = state.activeProjectId;
     const threadId = state.activeThreadId;
     const sessionId = state.sessionId;
     if (!projectId || !threadId || !sessionId || !interruptionId) return false;
     set({ error: null });
-    return runUniqueSessionAction(`${threadId}:interruption:${interruptionId}`, async () => {
+    return runUniqueSessionAction(threadId + ':interruption:' + interruptionId, async () => {
       const thread = get().threadsById[threadId];
       if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const target = runtime.timeline.find((item) => item.type === 'interruption' && sessionActionItemMatches(item, interruptionId));
+      const resolvedToolCallId = toolCallId || target?.toolCallId || target?.meta?.toolCallId || target?.raw?.toolCallId || null;
+      const client = get().getThreadClient(threadId);
+      if (!client) {
+        set({ error: '当前会话未连接' });
+        return false;
+      }
+      const errors = [];
+      let handled = false;
       try {
-        const client = get().getThreadClient(threadId);
-        if (!client) throw new Error('当前会话未连接');
-        await client.request('_codebuddy.ai/resolveInterruption', {
-          sessionId,
-          toolCallId: interruptionId,
-          decision,
-        });
-        const currentThread = get().threadsById[threadId];
-        if (!currentThread || currentThread.sessionId !== sessionId) return true;
-        get().applyInterruptionResolution(threadId, interruptionId, decision);
-        await get().persistProductState();
-        return true;
+        handled = await client.respondToPermissionRequest(interruptionId, resolvedToolCallId, decision);
       } catch (error) {
+        errors.push(error);
+      }
+      const extensionToolCallId = resolvedToolCallId || interruptionId;
+      if (extensionToolCallId) {
+        try {
+          await client.request('_codebuddy.ai/resolveInterruption', {
+            sessionId,
+            toolCallId: extensionToolCallId,
+            decision,
+          });
+          handled = true;
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (!handled) {
+        const error = errors[0] || new Error('权限请求已失效或无法响应');
         if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
         return false;
       }
+      const currentThread = get().threadsById[threadId];
+      if (!currentThread || currentThread.sessionId !== sessionId) return true;
+      get().applyInterruptionResolution(threadId, interruptionId, decision);
+      await get().persistProductState();
+      return true;
     });
+  },
+
+  applyQuestionResolution(threadId, toolCallId, status, answers = null) {
+    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    let timelineChanged = false;
+    const timeline = runtime.timeline.map((item) => {
+      if (item.type !== 'question' || !sessionActionItemMatches(item, toolCallId)) return item;
+      timelineChanged = true;
+      return {
+        ...item,
+        status,
+        meta: {
+          ...(item.meta || {}),
+          ...(answers ? { submittedAnswers: answers } : {}),
+          [status === 'answered' ? 'answeredAt' : 'cancelledAt']: Date.now(),
+        },
+      };
+    });
+    const questions = runtime.questions.filter((item) => !sessionActionItemMatches(item, toolCallId));
+    if (!timelineChanged && questions.length === runtime.questions.length) return false;
+    get().patchThreadRuntime(threadId, { questions, timeline });
+    set((state) => {
+      const record = state.threadsById[threadId];
+      if (!record) return {};
+      const stillWaiting = questions.length > 0 || runtime.permissionRequests.length > 0;
+      return {
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...record,
+            timeline: timeline.slice(-300),
+            status: record.status === 'waiting' && !stillWaiting ? 'running' : record.status,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      };
+    });
+    return true;
   },
 
   async submitQuestionAnswers(toolCallId, answers) {
@@ -2524,44 +2603,46 @@ export const useStore = create((set, get) => ({
     const sessionId = state.sessionId;
     if (!projectId || !threadId || !sessionId || !toolCallId) return false;
     set({ error: null });
-    return runUniqueSessionAction(`${threadId}:question:${toolCallId}`, async () => {
+    return runUniqueSessionAction(threadId + ':question:' + toolCallId, async () => {
       const thread = get().threadsById[threadId];
       if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
-        await client.request('_codebuddy.ai/answerQuestion', { sessionId, toolCallId, answers });
+        const responded = await client.submitQuestionAnswers(toolCallId, answers);
+        if (!responded) {
+          await client.request('_codebuddy.ai/answerQuestion', { sessionId, toolCallId, answers });
+        }
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== sessionId) return true;
-        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-        const timeline = runtime.timeline.map((item) => (
-          item.type === 'question' && sessionActionItemId(item) === toolCallId
-            ? {
-                ...item,
-                status: 'answered',
-                meta: { ...(item.meta || {}), submittedAnswers: answers, answeredAt: Date.now() },
-              }
-            : item
-        ));
-        get().patchThreadRuntime(threadId, {
-          questions: runtime.questions.filter((item) => sessionActionItemId(item) !== toolCallId),
-          timeline,
-        });
-        set((state) => {
-          const record = state.threadsById[threadId];
-          if (!record || record.sessionId !== sessionId) return {};
-          return {
-            threadsById: {
-              ...state.threadsById,
-              [threadId]: {
-                ...record,
-                timeline: timeline.slice(-300),
-                status: record.status === 'waiting' ? 'running' : record.status,
-                updatedAt: new Date().toISOString(),
-              },
-            },
-          };
-        });
+        get().applyQuestionResolution(threadId, toolCallId, 'answered', answers);
+        await get().persistProductState();
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
+  },
+
+  async cancelQuestionAnswers(toolCallId) {
+    const state = get();
+    const projectId = state.activeProjectId;
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!projectId || !threadId || !sessionId || !toolCallId) return false;
+    set({ error: null });
+    return runUniqueSessionAction(threadId + ':question:' + toolCallId, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        const cancelled = await client.cancelQuestionAnswers(toolCallId);
+        if (!cancelled) throw new Error('当前问题不支持取消，请提交答案');
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== sessionId) return true;
+        get().applyQuestionResolution(threadId, toolCallId, 'cancelled');
         await get().persistProductState();
         return true;
       } catch (error) {

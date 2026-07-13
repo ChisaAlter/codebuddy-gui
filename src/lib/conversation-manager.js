@@ -7,6 +7,8 @@ const FORWARDED_EVENTS = [
   'reconnect_failed',
   'initialized',
   'session/update',
+  'interruption_request',
+  'question_request',
   'message',
   'thinking',
   'model_update',

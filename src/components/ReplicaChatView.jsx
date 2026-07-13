@@ -340,6 +340,8 @@ function TeamStatusPanel({ teamState }) {
 function InterruptionCard({ item }) {
   const respondToInterruption = useStore((s) => s.respondToInterruption);
   const interruptionId = item.meta?.interruptionId || item.meta?.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
+  const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId || null;
+  const permissionOptions = item.meta?.options || item.raw?.options || [];
   const resolved = item.status === 'resolved';
   const resolution = item.meta?.resolution;
   const resolutionLabels = {
@@ -358,7 +360,7 @@ function InterruptionCard({ item }) {
     setBusy(true);
     setError('');
     try {
-      const ok = await respondToInterruption(interruptionId, decision);
+      const ok = await respondToInterruption(interruptionId, decision, toolCallId);
       if (!ok) setError(useStore.getState().error || '权限响应失败，请重试');
     } catch (responseError) {
       setError(responseError?.message || '权限响应失败，请重试');
@@ -379,9 +381,15 @@ function InterruptionCard({ item }) {
       {resolved ? (
         <div className={'text-xs font-medium ' + (resolutionDenied ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-accent-green)]')}>{resolutionLabels[resolution] || '已处理'}</div>
       ) : interruptionId ? (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button disabled={busy} className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={() => resolve('allow')}>{busy ? '处理中...' : '允许'}</button>
+          {permissionOptions.some((option) => ['allow_always', 'allowAll'].includes(typeof option === 'string' ? option : option.optionId || option.name)) ? (
+            <button disabled={busy} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50" onClick={() => resolve('allowAll')}>始终允许</button>
+          ) : null}
           <button disabled={busy} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50" onClick={() => resolve('deny')}>拒绝</button>
+          {permissionOptions.some((option) => ['reject_and_exit_plan', 'rejectAndExitPlan'].includes(typeof option === 'string' ? option : option.optionId || option.name)) ? (
+            <button disabled={busy} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50" onClick={() => resolve('rejectAndExitPlan')}>拒绝并退出计划</button>
+          ) : null}
         </div>
       ) : (
         <div className="text-xs text-[var(--color-accent-red)]">权限请求缺少标识，无法响应</div>
@@ -393,16 +401,21 @@ function InterruptionCard({ item }) {
 
 function QuestionCard({ item }) {
   const submitQuestionAnswers = useStore((s) => s.submitQuestionAnswers);
+  const cancelQuestionAnswers = useStore((s) => s.cancelQuestionAnswers);
   const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId;
   const questions = item.meta?.questions || item.raw?.questions || [];
-  const answered = item.status === 'answered';
+  const resolved = item.status === 'answered' || item.status === 'cancelled';
+  const cancellable = (item.meta?.responseMode || item.raw?.responseMode) === 'json-rpc';
   const [answers, setAnswers] = useState(item.meta?.submittedAnswers || {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const allAnswered = questions.length > 0 && questions.every((question, index) => String(answers[question.id || index] || '').trim());
+  const allAnswered = questions.length > 0 && questions.every((question, index) => {
+    const answer = answers[question.id || index];
+    return Array.isArray(answer) ? answer.length > 0 : String(answer || '').trim();
+  });
 
   const submit = async () => {
-    if (!toolCallId || busy || answered || !allAnswered) return;
+    if (!toolCallId || busy || resolved || !allAnswered) return;
     setBusy(true);
     setError('');
     try {
@@ -415,14 +428,38 @@ function QuestionCard({ item }) {
     }
   };
 
+  const cancel = async () => {
+    if (!toolCallId || busy || resolved || !cancellable) return;
+    setBusy(true);
+    setError('');
+    try {
+      const ok = await cancelQuestionAnswers(toolCallId);
+      if (!ok) setError(useStore.getState().error || '取消问题失败，请重试');
+    } catch (cancelError) {
+      setError(cancelError?.message || '取消问题失败，请重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleOption = (key, value) => {
+    setAnswers((previous) => {
+      const selected = Array.isArray(previous[key]) ? previous[key] : [];
+      return {
+        ...previous,
+        [key]: selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value],
+      };
+    });
+  };
+
   return (
     <div className="my-2 rounded-xl px-4 py-3" style={{ border: '1px solid var(--color-accent-blue, rgba(0,120,212,0.35))', background: 'var(--color-info-bg, rgba(0,120,212,0.08))' }}>
       <div className="mb-2 flex items-center gap-2">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-blue)"><path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 2.5c.7 0 1.3.6 1.3 1.3s-.6 1.3-1.3 1.3-1.3-.6-1.3-1.3.6-1.3 1.3-1.3zm1.5 9H6.5v-1h1V8H6.5V7h2.5v4.5H9.5V12z" /></svg>
         <span className="text-sm font-medium text-[var(--color-text-primary)]">问题</span>
       </div>
-      {answered ? (
-        <div className="text-xs font-medium text-[var(--color-accent-green)]">答案已提交</div>
+      {resolved ? (
+        <div className={'text-xs font-medium ' + (item.status === 'cancelled' ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-accent-green)]')}>{item.status === 'cancelled' ? '已取消' : '答案已提交'}</div>
       ) : (
         <>
           <div className="space-y-3">
@@ -431,8 +468,27 @@ function QuestionCard({ item }) {
               const options = Array.isArray(question.options) ? question.options : Array.isArray(question.choices) ? question.choices : [];
               return (
                 <div key={key}>
-                  <div className="mb-1 text-xs text-[var(--color-text-primary)]">{question.question || question.prompt || `问题 ${index + 1}`}</div>
-                  {options.length > 0 ? (
+                  {question.header ? <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)]">{question.header}</div> : null}
+                  <div className="mb-1 text-xs text-[var(--color-text-primary)]">{question.question || question.prompt || '问题 ' + (index + 1)}</div>
+                  {options.length > 0 && question.multiSelect ? (
+                    <div className="space-y-1">
+                      {options.map((option, optionIndex) => {
+                        const value = typeof option === 'string' ? option : option.value || option.id || option.label;
+                        const label = typeof option === 'string' ? option : option.label || option.name || value;
+                        const description = typeof option === 'string' ? '' : option.description || '';
+                        const checked = Array.isArray(answers[key]) && answers[key].includes(value);
+                        return value ? (
+                          <label key={value || optionIndex} className="flex cursor-pointer items-start gap-2 rounded-md border border-[var(--color-border-muted)] px-2.5 py-2 hover:bg-[var(--color-bg-hover)]">
+                            <input type="checkbox" className="mt-0.5" checked={checked} disabled={busy} onChange={() => toggleOption(key, value)} />
+                            <span className="min-w-0">
+                              <span className="block text-xs text-[var(--color-text-primary)]">{label}</span>
+                              {description ? <span className="mt-0.5 block text-[10px] leading-4 text-[var(--color-text-muted)]">{description}</span> : null}
+                            </span>
+                          </label>
+                        ) : null;
+                      })}
+                    </div>
+                  ) : options.length > 0 ? (
                     <select
                       className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
                       value={answers[key] || ''}
@@ -460,9 +516,12 @@ function QuestionCard({ item }) {
             })}
           </div>
           {toolCallId ? (
-            <button disabled={busy || !allAnswered} className="mt-3 rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={submit}>
-              {busy ? '正在提交...' : '提交'}
-            </button>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button disabled={busy || !allAnswered} className="rounded-md px-3 py-1.5 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50" style={{ background: 'var(--color-accent-blue)' }} onClick={submit}>
+                {busy ? '处理中...' : '提交答案'}
+              </button>
+              {cancellable ? <button disabled={busy} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50" onClick={cancel}>取消</button> : null}
+            </div>
           ) : (
             <div className="mt-3 text-xs text-[var(--color-accent-red)]">问题请求缺少标识，无法提交</div>
           )}
