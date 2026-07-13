@@ -28,6 +28,19 @@ function readClipboardImage(file) {
   });
 }
 
+function getPromptSuggestionText(value) {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value.map(getPromptSuggestionText).filter(Boolean).join('\n').trim();
+  }
+  if (!value || typeof value !== 'object') return '';
+  for (const key of ['suggestion', 'text', 'content']) {
+    const text = getPromptSuggestionText(value[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
@@ -344,6 +357,7 @@ function TimelineItem({ item }) {
 export default function ReplicaChatView() {
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  const textareaRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   const timeline = useStore((s) => s.timeline);
@@ -359,6 +373,9 @@ export default function ReplicaChatView() {
   const usage = useStore((s) => s.usage);
   const showTokensCounter = useStore((s) => Boolean(s.settings?.showTokensCounter));
   const pasteImageEnabled = useStore((s) => Boolean(s.settings?.enablePasteImageFromClipboard));
+  const promptSuggestionEnabled = useStore((s) => Boolean(s.settings?.promptSuggestionEnabled));
+  const promptSuggestion = useStore((s) => s.promptSuggestion);
+  const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -442,6 +459,19 @@ export default function ReplicaChatView() {
     return items;
   }, [currentMode, modes]);
   const currentModeName = modeOptions.find((m) => m.id === currentMode)?.name || currentMode || '始终询问';
+  const promptSuggestionText = useMemo(() => getPromptSuggestionText(promptSuggestion), [promptSuggestion]);
+
+  const applyPromptSuggestion = useCallback(() => {
+    if (!promptSuggestionText || !activeThreadId) return;
+    const currentDraft = String(input || '').trimEnd();
+    setInput(currentDraft ? `${currentDraft}\n\n${promptSuggestionText}` : promptSuggestionText);
+    clearPromptSuggestion(activeThreadId);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [activeThreadId, clearPromptSuggestion, input, promptSuggestionText, setInput]);
+
+  const dismissPromptSuggestion = useCallback(() => {
+    clearPromptSuggestion(activeThreadId);
+  }, [activeThreadId, clearPromptSuggestion]);
 
   const permissionLabel = (() => {
     if (!currentMode) return null;
@@ -799,6 +829,38 @@ export default function ReplicaChatView() {
       {/* Input area */}
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto max-w-3xl">
+          {promptSuggestionEnabled && promptSuggestionText ? (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-[rgba(59,130,246,0.3)] bg-[rgba(59,130,246,0.08)] px-3 py-2">
+              <svg className="mt-0.5 shrink-0 text-[var(--color-accent-blue)]" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M8 1.5l1.1 3.1L12 6l-2.9 1.4L8 10.5 6.9 7.4 4 6l2.9-1.4L8 1.5zM12.5 10l.6 1.6 1.4.7-1.4.7-.6 1.5-.6-1.5-1.4-.7 1.4-.7.6-1.6z" />
+              </svg>
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                onClick={applyPromptSuggestion}
+                title={promptSuggestionText}
+              >
+                <span className="block text-[10px] font-medium uppercase text-[var(--color-accent-blue)]">CodeBuddy 建议</span>
+                <span className="mt-0.5 line-clamp-3 block whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">{promptSuggestionText}</span>
+              </button>
+              <button
+                type="button"
+                className="shrink-0 rounded px-2 py-1 text-xs font-medium text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)]"
+                onClick={applyPromptSuggestion}
+              >
+                使用建议
+              </button>
+              <button
+                type="button"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                onClick={dismissPromptSuggestion}
+                title="关闭建议"
+                aria-label="关闭建议"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 3l10 10M13 3L3 13" /></svg>
+              </button>
+            </div>
+          ) : null}
           {pendingAttachments.length > 0 ? (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {pendingAttachments.map((attachment) => (
@@ -858,6 +920,7 @@ export default function ReplicaChatView() {
               </div>
             ) : null}
             <textarea
+              ref={textareaRef}
               rows={2}
               value={input}
               onChange={(e) => setInput(e.target.value)}

@@ -780,6 +780,12 @@ export const useStore = create((set, get) => ({
     get().persistProductState();
   },
 
+  clearPromptSuggestion(threadId = get().activeThreadId) {
+    if (!threadId || !get().threadsById[threadId]) return false;
+    get().patchThreadRuntime(threadId, { promptSuggestion: null });
+    return true;
+  },
+
   async chooseAttachments() {
     const state = get();
     const projectId = state.activeProjectId;
@@ -3159,10 +3165,14 @@ export const useStore = create((set, get) => ({
           createdAt: Date.now(),
         };
         const promptQueue = [...latestRuntime.promptQueue, queuedPrompt];
-        get().patchThreadRuntime(threadId, { promptQueue, pendingAttachments: [] });
+        get().patchThreadRuntime(threadId, { promptQueue, pendingAttachments: [], promptSuggestion: null });
         const persisted = await get().persistThreadPromptQueue(threadId, promptQueue, { draft: '' });
         if (!persisted) {
-          get().patchThreadRuntime(threadId, { promptQueue: latestRuntime.promptQueue, pendingAttachments: attachments });
+          get().patchThreadRuntime(threadId, {
+            promptQueue: latestRuntime.promptQueue,
+            pendingAttachments: attachments,
+            promptSuggestion: latestRuntime.promptSuggestion,
+          });
           get().setThreadPromptQueue(threadId, latestRuntime.promptQueue, { draft: draftText });
           return false;
         }
@@ -3172,7 +3182,7 @@ export const useStore = create((set, get) => ({
         return { queued: true, id: queuedPrompt.id };
       });
     }
-    get().patchThreadRuntime(threadId, { pendingAttachments: [] });
+    get().patchThreadRuntime(threadId, { pendingAttachments: [], promptSuggestion: null });
     return get().runThreadPrompt(threadId, content, attachments, draftText);
   },
 
