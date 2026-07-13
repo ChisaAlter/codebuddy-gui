@@ -348,6 +348,7 @@ export default function ReplicaChatView() {
   const currentMode = useStore((s) => s.currentMode);
   const sessionTitle = useStore((s) => s.sessionTitle);
   const usage = useStore((s) => s.usage);
+  const showTokensCounter = useStore((s) => Boolean(s.settings?.showTokensCounter));
   const availableCommands = useStore((s) => s.availableCommands);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
@@ -933,7 +934,7 @@ export default function ReplicaChatView() {
             ) : null}
           </div>
 
-          {usage && (
+          {showTokensCounter && usage && (
             <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
               用量: {usage.used ?? '-'} / {usage.size ?? '-'}
             </div>

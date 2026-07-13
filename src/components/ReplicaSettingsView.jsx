@@ -41,7 +41,7 @@ function SpinButton({ value, onChange, min = 1, max = 999 }) {
   );
 }
 
-function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56', scopeKey }) {
+function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56', scopeKey, inputType = 'text' }) {
   const normalized = String(value ?? '');
   const [draft, setDraft] = useState(normalized);
   const [saving, setSaving] = useState(false);
@@ -86,7 +86,9 @@ function TextInput({ value, onChange, placeholder = '未设置', width = 'w-56',
   };
   return (
     <input
-      type="text"
+      type={inputType}
+      autoComplete={inputType === 'password' ? 'off' : undefined}
+      spellCheck={inputType === 'password' ? false : undefined}
       className={`rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)] ${width}`}
       value={draft}
       placeholder={placeholder}
@@ -596,6 +598,9 @@ export default function ReplicaSettingsView() {
             <SettingRow label="信任全部目录" control={<Toggle value={!!settings?.trustAll} onChange={(value) => updateSetting('trustAll', value)} />} />
             <SettingRow label="状态栏命令" control={
               <TextInput scopeKey={activeProjectId} value={settings?.statusLine?.command || ''} width="w-72" onChange={(value) => updateSetting('statusLine.command', value)} />
+            } />
+            <SettingRow label="网关认证" desc="CodeBuddy 网关使用的认证值，仅保存到 CodeBuddy 配置" control={
+              <TextInput scopeKey={activeProjectId} inputType="password" value={settings?.gateway?.auth || settings?.['gateway.auth'] || ''} width="w-72" onChange={(value) => updateSetting('gateway.auth', value)} />
             } />
             <SettingRow label="环境变量" desc="应用于每个会话的环境变量 (JSON)" control={
               <JsonObjectEditor scopeKey={activeProjectId} value={settings?.env} onSave={(value) => updateSetting('env', value)} />

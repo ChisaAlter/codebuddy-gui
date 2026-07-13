@@ -280,6 +280,21 @@ function readSettingPath(settings, path) {
   return String(path || '').split('.').reduce((value, key) => value?.[key], settings);
 }
 
+function settingsCacheSnapshot(settings) {
+  const next = { ...(settings || {}) };
+  delete next['gateway.auth'];
+  if (next.gateway && typeof next.gateway === 'object' && !Array.isArray(next.gateway)) {
+    const gateway = { ...next.gateway };
+    delete gateway.auth;
+    next.gateway = gateway;
+  }
+  return next;
+}
+
+function persistSettingsCache(settings) {
+  try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(settingsCacheSnapshot(settings))); } catch (_) {}
+}
+
 function writeSettingPath(settings, path, value, remove = false) {
   const keys = String(path || '').split('.').filter(Boolean);
   const next = { ...(settings || {}) };
@@ -2367,7 +2382,7 @@ export const useStore = create((set, get) => ({
     for (const [key, value] of Object.entries(loaded || {})) {
       confirmedSettingValues.set(settingScopeKey(request.projectId, key), value);
     }
-    try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(loaded)); } catch (_) {}
+    persistSettingsCache(loaded);
     set({ settings: loaded, settingsLoaded: true });
     return true;
   },
@@ -2376,7 +2391,8 @@ export const useStore = create((set, get) => ({
     try {
       const raw = localStorage.getItem('codebuddy-gui-settings');
       if (raw) {
-        const parsed = JSON.parse(raw);
+        const parsed = settingsCacheSnapshot(JSON.parse(raw));
+        persistSettingsCache(parsed);
         set({ settings: parsed });
       }
     } catch (_) {}
@@ -2400,7 +2416,7 @@ export const useStore = create((set, get) => ({
 
     set((state) => {
       const next = writeSettingPath(state.settings, key, value);
-      try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
+      persistSettingsCache(next);
       return { settings: next, settingsLoaded: true };
     });
 
@@ -2412,7 +2428,7 @@ export const useStore = create((set, get) => ({
         if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
           set((current) => {
             const next = writeSettingPath(current.settings, key, value);
-            try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
+            persistSettingsCache(next);
             return { settings: next, settingsLoaded: true };
           });
         }
@@ -2422,7 +2438,7 @@ export const useStore = create((set, get) => ({
           const confirmedValue = confirmedSettingValues.get(writeKey);
           set((state) => {
             const next = writeSettingPath(state.settings, key, confirmedValue, confirmedValue === undefined);
-            try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(next)); } catch (_) {}
+            persistSettingsCache(next);
             return {
               settings: next,
               settingsLoaded: true,
