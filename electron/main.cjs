@@ -7,7 +7,7 @@ const { parse: parseJsonc } = require('jsonc-parser');
 const http = require('http');
 const express = require('express');
 const { createProductStateStore } = require('./product-state.cjs');
-const { createCodeBuddyRuntimeManager } = require('./codebuddy-runtime-manager.cjs');
+const { createCodeBuddyRuntimeManager, decodeProcessOutput } = require('./codebuddy-runtime-manager.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -273,6 +273,142 @@ function listConfiguredMcpServers(cwd) {
   return { cwd: locations.cwd, locations, servers, errors };
 }
 
+function sandboxStateFilePath() {
+  const configRoot = String(process.env.CODEBUDDY_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.codebuddy');
+  return path.join(configRoot, 'sandbox-state.json');
+}
+
+function readSandboxSnapshot() {
+  const statePath = sandboxStateFilePath();
+  if (!fs.existsSync(statePath)) {
+    return { statePath, stateExists: false, currentSandboxId: null, aliases: [], sandboxes: [] };
+  }
+
+  let state;
+  try {
+    state = JSON.parse(fs.readFileSync(statePath, 'utf8').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`Sandbox 状态文件无法读取: ${error?.message || error}`);
+  }
+
+  const e2b = state?.e2b && typeof state.e2b === 'object' ? state.e2b : {};
+  const sandboxValues = e2b.sandboxes && typeof e2b.sandboxes === 'object' && !Array.isArray(e2b.sandboxes)
+    ? e2b.sandboxes
+    : {};
+  const aliasValues = e2b.aliasMapping && typeof e2b.aliasMapping === 'object' && !Array.isArray(e2b.aliasMapping)
+    ? e2b.aliasMapping
+    : {};
+  const aliases = Object.entries(aliasValues)
+    .map(([alias, sandboxId]) => ({ alias: String(alias), sandboxId: String(sandboxId || '') }))
+    .filter((item) => item.alias && item.sandboxId)
+    .sort((left, right) => left.alias.localeCompare(right.alias));
+  const aliasesBySandbox = new Map();
+  for (const item of aliases) {
+    const values = aliasesBySandbox.get(item.sandboxId) || [];
+    values.push(item.alias);
+    aliasesBySandbox.set(item.sandboxId, values);
+  }
+  const currentSandboxId = typeof e2b.currentSandboxId === 'string' ? e2b.currentSandboxId : null;
+  const sandboxes = Object.entries(sandboxValues).map(([key, rawValue]) => {
+    const value = rawValue && typeof rawValue === 'object' ? rawValue : {};
+    const sandboxId = String(value.sandboxId || key);
+    const projectValues = value.projects && typeof value.projects === 'object' && !Array.isArray(value.projects)
+      ? value.projects
+      : {};
+    const projects = Object.entries(projectValues).map(([projectKey, rawProject]) => {
+      const project = rawProject && typeof rawProject === 'object' ? rawProject : {};
+      return {
+        key: String(projectKey),
+        localPath: typeof project.localPath === 'string' ? project.localPath : '',
+        remotePath: typeof project.remotePath === 'string' ? project.remotePath : '',
+        lastSyncedAt: typeof project.lastSyncedAt === 'string' ? project.lastSyncedAt : null,
+      };
+    });
+    return {
+      sandboxId,
+      current: sandboxId === currentSandboxId,
+      createdAt: typeof value.createdAt === 'string' ? value.createdAt : null,
+      lastUsedAt: typeof value.lastUsedAt === 'string' ? value.lastUsedAt : null,
+      templateName: typeof value.templateName === 'string' ? value.templateName : '',
+      aliases: aliasesBySandbox.get(sandboxId) || [],
+      projects,
+    };
+  }).sort((left, right) => {
+    if (left.current !== right.current) return left.current ? -1 : 1;
+    const leftTime = Date.parse(left.lastUsedAt || left.createdAt || '') || 0;
+    const rightTime = Date.parse(right.lastUsedAt || right.createdAt || '') || 0;
+    return rightTime - leftTime || left.sandboxId.localeCompare(right.sandboxId);
+  });
+
+  return { statePath, stateExists: true, currentSandboxId, aliases, sandboxes };
+}
+
+function validateSandboxId(value) {
+  const sandboxId = String(value || '').trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(sandboxId)) throw new Error('Sandbox ID 格式无效');
+  return sandboxId;
+}
+
+function runSandboxCli(args, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const isWindows = process.platform === 'win32';
+    const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
+    const commandArgs = isWindows
+      ? ['/d', '/s', '/c', `codebuddy sandbox ${args.join(' ')}`]
+      : ['sandbox', ...args];
+    const proc = spawn(command, commandArgs, {
+      cwd: os.homedir(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+    });
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { proc.kill(); } catch (_) {}
+      reject(new Error('CodeBuddy Sandbox 操作超时'));
+    }, timeoutMs);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    proc.stdout.on('data', (data) => stdout.push(Buffer.from(data)));
+    proc.stderr.on('data', (data) => stderr.push(Buffer.from(data)));
+    proc.on('error', (error) => {
+      const message = /(?:ENOENT|not recognized|not found|不是内部或外部命令|找不到)/i.test(String(error?.message || error))
+        ? '未找到 CodeBuddy CLI。请确认命令行中可以直接运行 codebuddy。'
+        : (error?.message || String(error));
+      finish(new Error(message));
+    });
+    proc.on('close', (code) => {
+      const output = decodeProcessOutput(Buffer.concat(stdout)).trim();
+      const errorOutput = decodeProcessOutput(Buffer.concat(stderr)).trim();
+      if (code === 0) finish(null, { output: output || errorOutput });
+      else finish(new Error(errorOutput || output || `CodeBuddy Sandbox 操作失败，退出码 ${code}`));
+    });
+  });
+}
+
+let sandboxOperation = null;
+
+async function runExclusiveSandboxOperation(args) {
+  if (sandboxOperation) throw new Error('另一个 Sandbox 操作正在进行，请稍候');
+  const operation = runSandboxCli(args);
+  sandboxOperation = operation;
+  try {
+    const result = await operation;
+    return { ...result, snapshot: readSandboxSnapshot() };
+  } finally {
+    if (sandboxOperation === operation) sandboxOperation = null;
+  }
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -399,6 +535,9 @@ ipcMain.handle('app:getInfo', () => ({
 }));
 
 ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
+ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
+ipcMain.handle('sandbox:kill', (_event, sandboxId) => runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]));
+ipcMain.handle('sandbox:clean', () => runExclusiveSandboxOperation(['clean']));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

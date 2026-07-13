@@ -252,4 +252,4 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
   return { ensure, list, restart, stop, stopAll };
 }
 
-module.exports = { createCodeBuddyRuntimeManager };
+module.exports = { createCodeBuddyRuntimeManager, decodeProcessOutput };

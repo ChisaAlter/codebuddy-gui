@@ -1,8 +1,14 @@
-# CodeBuddy GUI 0.2.0
+# CodeBuddy GUI 0.3.0
 
-0.2.0 功能版本，新增与 CodeBuddy CLI 实际配置和运行时连接的 MCP 管理页面。
+0.3.0 功能版本，新增与 CodeBuddy CLI 本地状态和 E2B 操作直接连接的 Sandbox 管理页面。
 
 ## 本版本重点
+
+- 工作区新增 Sandboxes 页面，读取 CodeBuddy 的真实 `sandbox-state.json`，展示当前 Sandbox、模板、别名、创建与最近使用时间。
+- 展示每个 Sandbox 的本地到远端项目映射和最近同步时间，支持按 ID、别名、模板及路径搜索。
+- 终止 Sandbox 和清理失效记录均调用真实 `codebuddy sandbox` 命令，操作后重新读取状态确认结果，并明确反馈缺少 `E2B_API_KEY` 等 CLI 错误。
+
+## 0.2.0
 
 - 工作区新增 MCP 页面，统一查看当前项目本机、项目共享和用户全局三种作用域的服务器配置与真实配置文件位置。
 - 支持添加 stdio、HTTP 和 SSE 服务器，删除前使用应用内确认，并在写入后重新读取配置确认真实结果。
