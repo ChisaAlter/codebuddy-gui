@@ -35,6 +35,7 @@ let fileSaveRequestId = 0;
 let fileDiskSyncRequestId = 0;
 let fileWatcherRequestId = 0;
 let projectNavigationVersion = 0;
+let authRequestVersion = 0;
 const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
@@ -1138,30 +1139,6 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async changeSession(sessionId) {
-    if (!sessionId || !get().activeProjectId) return false;
-    const projectId = get().activeProjectId;
-    let thread = Object.values(get().threadsById).find((item) => (
-      item.projectId === projectId && item.sessionId === sessionId
-    ));
-    if (!thread) thread = createThreadRecord(projectId, { sessionId, title: sessionId });
-
-    set((state) => ({
-      threadsById: { ...state.threadsById, [thread.id]: thread },
-      threadOrderByProject: {
-        ...state.threadOrderByProject,
-        [projectId]: state.threadOrderByProject[projectId]?.includes(thread.id)
-          ? state.threadOrderByProject[projectId]
-          : [...(state.threadOrderByProject[projectId] || []), thread.id],
-      },
-      activeThreadId: thread.id,
-    }));
-    await get().persistProductState();
-    const initialized = await get().initializeActiveThread(sessionId);
-    if (initialized) await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
-    return initialized;
-  },
-
   async activateThread(threadId) {
     if (isProjectMutationNavigation(get())) return false;
     const thread = get().threadsById[threadId];
@@ -2234,6 +2211,7 @@ export const useStore = create((set, get) => ({
   },
 
   async bootstrap() {
+    const authRequest = ++authRequestVersion;
     if (!routeListenerBound) {
       routeListenerBound = true;
       window.addEventListener('hashchange', () => {
@@ -2244,28 +2222,32 @@ export const useStore = create((set, get) => ({
     // 1. 先恢复本地产品状态，再按活动项目惰性启动对应运行时。
     get().loadSettingsFromStorage();
     if (!get().productStateLoaded) await get().hydrateProductState();
+    if (authRequest !== authRequestVersion) return false;
     if (!runtimeListenerBound && window.electronAPI?.onProjectRuntimeStatus) {
       runtimeListenerBound = true;
       window.electronAPI.onProjectRuntimeStatus((runtime) => get().applyProjectRuntimeStatus(runtime));
     }
-    if (get().activeProjectId) {
-      const runtime = await get().ensureProjectRuntime(get().activeProjectId);
+    const projectId = get().activeProjectId;
+    if (projectId) {
+      const runtime = await get().ensureProjectRuntime(projectId);
+      if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
       if (!runtime) {
         set({ authViewState: 'authenticated' });
-        return;
+        return false;
       }
     } else {
       set({ authViewState: 'authenticated', connectionState: 'disconnected' });
-      return;
+      return true;
     }
 
     // 2. 鉴权态：运行时就绪后再检查当前项目服务。
     //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
     const authState = await apiCheckAuth();
+    if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
     set({ authViewState: authState });
     if (authState === 'login') {
       // 等登录成功后再继续；App 登录页会调 store.login() 并重触发 bootstrap
-      return;
+      return false;
     }
 
     if (!conversationEventsBound) {
@@ -2274,6 +2256,7 @@ export const useStore = create((set, get) => ({
     }
 
     try {
+      const isCurrent = () => authRequest === authRequestVersion && get().activeProjectId === projectId;
       const querySessionId = new URLSearchParams(window.location.search).get('sessionId');
       if (!get().activeProjectId || !get().activeThreadId) {
         set({ connectionState: 'disconnected', sessionId: null });
@@ -2285,15 +2268,23 @@ export const useStore = create((set, get) => ({
           get().refreshStats(),
           get().refreshTraces(),
         ]);
-        return;
+        return isCurrent();
       }
-      if (querySessionId) await get().updateActiveThread({ sessionId: querySessionId });
+      if (querySessionId) {
+        await get().updateActiveThread({ sessionId: querySessionId });
+        if (!isCurrent()) return false;
+      }
       const initialized = await get().initializeActiveThread(querySessionId || undefined);
-      if (!initialized) return;
+      if (!isCurrent() || !initialized) return false;
       await get().initializeWorkspace();
+      if (!isCurrent()) return false;
       await get().refreshProjectViews();
+      return isCurrent();
     } catch (error) {
-      set({ error: error.message, connectionState: 'error' });
+      if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
+        set({ error: error.message, connectionState: 'error' });
+      }
+      return false;
     }
   },
 
@@ -3111,108 +3102,71 @@ export const useStore = create((set, get) => ({
     });
   },
 
-  // ===== 会话删除/重命名（对照源 DELETE /sessions/{id} + POST /sessions/{id}/rename）=====
-  async deleteSession(sessionId) {
-    if (!sessionId) return;
-    try {
-      await apiDeleteSession(sessionId);
-      // 本地即时剔除，避免等 refreshSessions 往返
-      set((state) => ({ sessions: state.sessions.filter((s) => (s.id || s.sessionId) !== sessionId) }));
-      const localThread = Object.values(get().threadsById).find((thread) => thread.sessionId === sessionId);
-      if (localThread) {
-        set((state) => {
-          const threadsById = { ...state.threadsById };
-          delete threadsById[localThread.id];
-          return {
-            threadsById,
-            threadOrderByProject: {
-              ...state.threadOrderByProject,
-              [localThread.projectId]: (state.threadOrderByProject[localThread.projectId] || [])
-                .filter((id) => id !== localThread.id),
-            },
-          };
-        });
-        await get().persistProductState();
-      }
-      // 若删的是当前会话，起新会话顶替
-      if (get().sessionId === sessionId) {
-        set({ sessionId: null, sessionTitle: null, timeline: [], permissionRequests: [], questions: [], usage: null });
-        get().newSession();
-      }
-      return true;
-    } catch (err) {
-      get().appendTimelineEvent('error', { message: err.message || '删除会话失败', type: 'error' });
-      return false;
-    }
-  },
-
-  async renameSession(sessionId, name) {
-    if (!sessionId) return false;
-    try {
-      await apiRenameSession(sessionId, name);
-      // 本地即时更新显示名
-      set((state) => ({
-        sessions: state.sessions.map((s) => {
-          if ((s.id || s.sessionId) === sessionId) return { ...s, name: String(name || '').trim() };
-          return s;
-        }),
-        sessionTitle: get().sessionId === sessionId ? String(name || '').trim() : state.sessionTitle,
-      }));
-      const localThread = Object.values(get().threadsById).find((thread) => thread.sessionId === sessionId);
-      if (localThread) {
-        set((state) => ({
-          threadsById: {
-            ...state.threadsById,
-            [localThread.id]: {
-              ...state.threadsById[localThread.id],
-              title: String(name || '').trim(),
-              updatedAt: new Date().toISOString(),
-            },
-          },
-        }));
-        await get().persistProductState();
-      }
-      return true;
-    } catch (err) {
-      get().appendTimelineEvent('error', { message: err.message || '重命名会话失败', type: 'error' });
-      return false;
-    }
-  },
-
   // ===== 鉴权 action（对照源 viewState/login/logout）=====
   async login(password) {
+    if (get().authSubmitting) return false;
+    const authRequest = ++authRequestVersion;
+    const projectId = get().activeProjectId;
+    const apiBase = getApiBase();
+    const isCurrent = () => (
+      authRequest === authRequestVersion
+      && get().activeProjectId === projectId
+      && getApiBase() === apiBase
+    );
     set({ authSubmitting: true, authError: null });
     try {
-      const result = await apiAuthLogin(String(password || ''));
+      const result = await apiAuthLogin(String(password || ''), { baseUrl: apiBase, persistToken: false });
+      if (!isCurrent()) {
+        if (authRequest === authRequestVersion) set({ authSubmitting: false });
+        return false;
+      }
       if (result?.success) {
+        setAuthToken(result.token || null);
         set({ authViewState: 'authenticated', authSubmitting: false, authError: null });
         // 重触发 bootstrap 继续 AcpClient 连接与非关键数据加载
-        get().bootstrap().catch((e) => console.error('bootstrap after login failed:', e));
+        get().bootstrap().catch((error) => console.error('bootstrap after login failed:', error));
         return true;
       }
       set({ authSubmitting: false, authError: result?.error || 'login.error.incorrect' });
       return false;
-    } catch (err) {
+    } catch (error) {
+      if (!isCurrent()) {
+        if (authRequest === authRequestVersion) set({ authSubmitting: false });
+        return false;
+      }
       set({ authSubmitting: false, authError: 'app.connectFailed' });
-      console.warn('[auth] Login request failed:', err);
+      console.warn('[auth] Login request failed:', error);
       return false;
     }
   },
 
   async logout() {
+    authRequestVersion += 1;
+    beginScopedRequest('initializeActiveThread', get(), 'threadId');
+    setAcpSessionToken(null);
     apiAuthLogout();
-    set({ authViewState: 'login', authError: null, sessionId: null, sessionToken: null, timeline: [] });
+    set({ authViewState: 'login', authSubmitting: false, authError: null, sessionId: null, sessionToken: null, timeline: [] });
     await conversations.disposeAll();
   },
 
   async refreshAuth() {
+    const authRequest = ++authRequestVersion;
+    const projectId = get().activeProjectId;
+    const apiBase = getApiBase();
     set({ authViewState: 'loading', authError: null });
     const authState = await apiCheckAuth();
+    if (
+      authRequest !== authRequestVersion
+      || get().activeProjectId !== projectId
+      || getApiBase() !== apiBase
+    ) return false;
     set({ authViewState: authState });
     if (authState === 'authenticated') {
-      get().bootstrap().catch((e) => console.error('bootstrap after refreshAuth failed:', e));
+      get().bootstrap().catch((error) => console.error('bootstrap after refreshAuth failed:', error));
     }
+    return true;
   },
+
 }));
 
 if (typeof window !== "undefined" && import.meta.env.DEV) {
