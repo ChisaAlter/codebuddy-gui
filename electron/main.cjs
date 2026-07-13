@@ -349,27 +349,30 @@ function validateSandboxId(value) {
   return sandboxId;
 }
 
-function runSandboxCli(args, timeoutMs = 120000) {
+function runCapturedProcess(command, args, { cwd = os.homedir(), env = process.env, timeoutMs = 120000, maxOutputBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
-    const commandArgs = isWindows
-      ? ['/d', '/s', '/c', `codebuddy sandbox ${args.join(' ')}`]
-      : ['sandbox', ...args];
-    const proc = spawn(command, commandArgs, {
-      cwd: os.homedir(),
+    const proc = spawn(command, args, {
+      cwd,
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true,
     });
-    const stdout = [];
-    const stderr = [];
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let settled = false;
+    const appendTail = (current, data, markTruncated) => {
+      const combined = Buffer.concat([current, Buffer.from(data)]);
+      if (combined.length <= maxOutputBytes) return { value: combined, truncated: markTruncated };
+      return { value: combined.slice(-maxOutputBytes), truncated: true };
+    };
     const timeoutId = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { proc.kill(); } catch (_) {}
-      reject(new Error('CodeBuddy Sandbox 操作超时'));
+      reject(new Error('CodeBuddy 命令执行超时'));
     }, timeoutMs);
     const finish = (error, value) => {
       if (settled) return;
@@ -378,8 +381,16 @@ function runSandboxCli(args, timeoutMs = 120000) {
       if (error) reject(error);
       else resolve(value);
     };
-    proc.stdout.on('data', (data) => stdout.push(Buffer.from(data)));
-    proc.stderr.on('data', (data) => stderr.push(Buffer.from(data)));
+    proc.stdout.on('data', (data) => {
+      const next = appendTail(stdout, data, stdoutTruncated);
+      stdout = next.value;
+      stdoutTruncated = next.truncated;
+    });
+    proc.stderr.on('data', (data) => {
+      const next = appendTail(stderr, data, stderrTruncated);
+      stderr = next.value;
+      stderrTruncated = next.truncated;
+    });
     proc.on('error', (error) => {
       const message = /(?:ENOENT|not recognized|not found|不是内部或外部命令|找不到)/i.test(String(error?.message || error))
         ? '未找到 CodeBuddy CLI。请确认命令行中可以直接运行 codebuddy。'
@@ -387,12 +398,25 @@ function runSandboxCli(args, timeoutMs = 120000) {
       finish(new Error(message));
     });
     proc.on('close', (code) => {
-      const output = decodeProcessOutput(Buffer.concat(stdout)).trim();
-      const errorOutput = decodeProcessOutput(Buffer.concat(stderr)).trim();
-      if (code === 0) finish(null, { output: output || errorOutput });
-      else finish(new Error(errorOutput || output || `CodeBuddy Sandbox 操作失败，退出码 ${code}`));
+      const output = decodeProcessOutput(stdout).trim();
+      const errorOutput = decodeProcessOutput(stderr).trim();
+      if (code === 0) finish(null, { output: output || errorOutput, stdout: output, stderr: errorOutput, stdoutTruncated, stderrTruncated });
+      else finish(new Error(errorOutput || output || `CodeBuddy 命令执行失败，退出码 ${code}`));
     });
   });
+}
+
+function runCodeBuddyCli(args, options = {}) {
+  const isWindows = process.platform === 'win32';
+  const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
+  const commandArgs = isWindows
+    ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`]
+    : args;
+  return runCapturedProcess(command, commandArgs, options);
+}
+
+function runSandboxCli(args, timeoutMs = 120000) {
+  return runCodeBuddyCli(['sandbox', ...args], { timeoutMs });
 }
 
 let sandboxOperation = null;
@@ -406,6 +430,177 @@ async function runExclusiveSandboxOperation(args) {
     return { ...result, snapshot: readSandboxSnapshot() };
   } finally {
     if (sandboxOperation === operation) sandboxOperation = null;
+  }
+}
+
+function publicBackgroundSession(value = {}) {
+  const numberValue = (item) => Number.isFinite(Number(item)) ? Number(item) : null;
+  const stringValue = (item) => typeof item === 'string' ? item : '';
+  return {
+    pid: numberValue(value.pid),
+    name: stringValue(value.name),
+    sessionId: stringValue(value.sessionId),
+    kind: stringValue(value.kind) || 'unknown',
+    status: stringValue(value.status),
+    cwd: stringValue(value.cwd),
+    startedAt: numberValue(value.startedAt),
+    lastHeartbeat: numberValue(value.lastHeartbeat),
+    updatedAt: numberValue(value.updatedAt),
+    endpoint: stringValue(value.endpoint || value.url),
+    mode: stringValue(value.mode),
+    version: stringValue(value.version),
+    os: stringValue(value.os),
+    arch: stringValue(value.arch),
+    hostname: stringValue(value.hostname),
+    logPath: stringValue(value.logPath),
+  };
+}
+
+async function listBackgroundSessions() {
+  const result = await runCodeBuddyCli(['ps', '--json'], { timeoutMs: 30000 });
+  const output = String(result.stdout || result.output || '').trim();
+  if (!output || /^No active sessions\.?$/i.test(output)) return { sessions: [], refreshedAt: new Date().toISOString() };
+  let parsed;
+  try {
+    const arrayStart = output.indexOf('[');
+    const arrayEnd = output.lastIndexOf(']');
+    parsed = JSON.parse(arrayStart >= 0 && arrayEnd > arrayStart ? output.slice(arrayStart, arrayEnd + 1) : output);
+  } catch (error) {
+    throw new Error(`CodeBuddy 后台会话列表格式无效: ${error?.message || error}`);
+  }
+  if (!Array.isArray(parsed)) throw new Error('CodeBuddy 后台会话列表不是数组');
+  const sessions = parsed
+    .map(publicBackgroundSession)
+    .filter((item) => Number.isInteger(item.pid) && item.pid > 0)
+    .sort((left, right) => (right.startedAt || 0) - (left.startedAt || 0));
+  return { sessions, refreshedAt: new Date().toISOString() };
+}
+
+function validateBackgroundPid(value) {
+  const pid = Number(value);
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 2147483647) throw new Error('后台会话 PID 无效');
+  return pid;
+}
+
+function validateBackgroundSessionName(value) {
+  const name = String(value || '').trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) throw new Error('后台会话名称只能包含字母、数字、点、连字符和下划线');
+  return name;
+}
+
+function validateBackgroundCwd(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !path.isAbsolute(raw)) throw new Error('后台会话需要有效的项目绝对路径');
+  const cwd = path.resolve(raw);
+  try {
+    if (!fs.statSync(cwd).isDirectory()) throw new Error('not a directory');
+  } catch (_) {
+    throw new Error(`项目目录不存在或不可访问: ${cwd}`);
+  }
+  return cwd;
+}
+
+function stripTerminalFormatting(value) {
+  const escapeSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
+  return String(value || '').replace(escapeSequence, '');
+}
+
+async function startBackgroundSession(payload = {}) {
+  const name = validateBackgroundSessionName(payload.name);
+  const cwd = validateBackgroundCwd(payload.cwd);
+  const prompt = String(payload.prompt || '').trim();
+  if (!prompt) throw new Error('请输入后台任务内容');
+  if (prompt.length > 20000) throw new Error('后台任务内容不能超过 20000 个字符');
+
+  let result;
+  if (process.platform === 'win32') {
+    const windowsPowerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const command = fs.existsSync(windowsPowerShell) ? windowsPowerShell : 'powershell.exe';
+    result = await runCapturedProcess(command, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      "$name=$env:CODEBUDDY_GUI_BG_NAME; $prompt=$env:CODEBUDDY_GUI_BG_PROMPT; Remove-Item Env:CODEBUDDY_GUI_BG_NAME -ErrorAction SilentlyContinue; Remove-Item Env:CODEBUDDY_GUI_BG_PROMPT -ErrorAction SilentlyContinue; & codebuddy --bg --name $name -- $prompt",
+    ], {
+      cwd,
+      env: { ...process.env, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
+      timeoutMs: 60000,
+    });
+  } else {
+    result = await runCapturedProcess('codebuddy', ['--bg', '--name', name, '--', prompt], { cwd, timeoutMs: 60000 });
+  }
+  let snapshot = await listBackgroundSessions();
+  for (let attempt = 0; attempt < 4 && !snapshot.sessions.some((item) => item.name === name); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    snapshot = await listBackgroundSessions();
+  }
+  return { output: stripTerminalFormatting(result.output), snapshot };
+}
+
+async function readBackgroundSessionLogs(pidValue) {
+  const pid = validateBackgroundPid(pidValue);
+  const snapshot = await listBackgroundSessions();
+  const target = snapshot.sessions.find((item) => item.pid === pid);
+  if (!target) throw new Error('后台会话已结束或不存在');
+  if (!target.logPath) throw new Error('该会话没有可读取的日志文件');
+  const maxBytes = 1024 * 1024;
+  let descriptor;
+  let content;
+  let truncated = false;
+  try {
+    const stats = fs.statSync(target.logPath);
+    if (!stats.isFile()) throw new Error('not a file');
+    const length = Math.min(stats.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    descriptor = fs.openSync(target.logPath, 'r');
+    const bytesRead = length ? fs.readSync(descriptor, buffer, 0, length, Math.max(0, stats.size - length)) : 0;
+    content = stripTerminalFormatting(decodeProcessOutput(buffer.subarray(0, bytesRead)));
+    truncated = stats.size > maxBytes;
+  } catch (error) {
+    throw new Error(`后台日志读取失败: ${error?.message || error}`);
+  } finally {
+    if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch (_) {}
+  }
+  return {
+    pid,
+    content,
+    truncated,
+  };
+}
+
+async function killBackgroundSession(pidValue) {
+  const pid = validateBackgroundPid(pidValue);
+  const snapshot = await listBackgroundSessions();
+  const target = snapshot.sessions.find((item) => item.pid === pid);
+  if (!target) throw new Error('后台会话已结束或不存在');
+  if (target.kind !== 'bg') throw new Error(`只能终止 CodeBuddy 后台任务，当前类型为 ${target.kind}`);
+  const result = await runCodeBuddyCli(['kill', String(pid)], { timeoutMs: 30000 });
+  return { output: stripTerminalFormatting(result.output), snapshot: await listBackgroundSessions() };
+}
+
+async function openBackgroundSessionEndpoint(value) {
+  let target;
+  try {
+    target = new URL(String(value || ''));
+  } catch (_) {
+    throw new Error('后台会话 Endpoint 无效');
+  }
+  const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
+  if (!['http:', 'https:'].includes(target.protocol) || !localHosts.has(target.hostname)) {
+    throw new Error('只允许打开本机 CodeBuddy Endpoint');
+  }
+  await shell.openExternal(target.toString());
+  return { url: target.toString() };
+}
+
+let backgroundSessionOperation = null;
+
+async function runExclusiveBackgroundSessionOperation(operation) {
+  if (backgroundSessionOperation) throw new Error('另一个后台会话操作正在进行，请稍候');
+  const promise = Promise.resolve().then(operation);
+  backgroundSessionOperation = promise;
+  try {
+    return await promise;
+  } finally {
+    if (backgroundSessionOperation === promise) backgroundSessionOperation = null;
   }
 }
 
@@ -538,6 +733,11 @@ ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd)
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
 ipcMain.handle('sandbox:kill', (_event, sandboxId) => runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]));
 ipcMain.handle('sandbox:clean', () => runExclusiveSandboxOperation(['clean']));
+ipcMain.handle('backgroundSession:list', () => listBackgroundSessions());
+ipcMain.handle('backgroundSession:start', (_event, payload) => runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload)));
+ipcMain.handle('backgroundSession:logs', (_event, pid) => readBackgroundSessionLogs(pid));
+ipcMain.handle('backgroundSession:kill', (_event, pid) => runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)));
+ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackgroundSessionEndpoint(endpoint));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

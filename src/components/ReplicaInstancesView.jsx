@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import ReplicaBackgroundSessionsView from './ReplicaBackgroundSessionsView';
 
 function formatSince(startedAt) {
   if (!startedAt) return '-';
@@ -21,6 +22,7 @@ function statusLabel(status) {
 }
 
 export default function ReplicaInstancesView() {
+  const [view, setView] = useState('projects');
   const projectsById = useStore((state) => state.projectsById);
   const projectOrder = useStore((state) => state.projectOrder);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -156,15 +158,21 @@ export default function ReplicaInstancesView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
-      <div className="flex h-12 items-center justify-between border-b border-[var(--color-border-default)] px-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">项目运行时</h2>
-        <div className="flex items-center gap-2">
+      <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-default)] px-6 py-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">实例</h2>
+          <div className="flex items-center rounded-md border border-[var(--color-border-default)] p-0.5" role="tablist" aria-label="实例视图">
+            <button type="button" role="tab" aria-selected={view === 'projects'} className={`rounded px-2.5 py-1 text-xs ${view === 'projects' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('projects')}>项目运行时</button>
+            <button type="button" role="tab" aria-selected={view === 'background'} className={`rounded px-2.5 py-1 text-xs ${view === 'background' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('background')}>后台会话</button>
+          </div>
+        </div>
+        {view === 'projects' ? <div className="flex items-center gap-2">
           <button className="btn-ghost px-3 py-1.5 text-xs" disabled={refreshing} onClick={() => refresh()}>{refreshing ? '刷新中...' : '刷新'}</button>
           <button className="btn-primary px-3 py-1.5 text-xs" onClick={() => chooseWorkspace()}>添加项目</button>
-        </div>
+        </div> : null}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      {view === 'background' ? <ReplicaBackgroundSessionsView /> : <div className="flex-1 overflow-y-auto p-6">
         {refreshError ? (
           <div className="mb-4 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]">
             <span>{refreshError}</span>
@@ -232,7 +240,7 @@ export default function ReplicaInstancesView() {
             })}
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

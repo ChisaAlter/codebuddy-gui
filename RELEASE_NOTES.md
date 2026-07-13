@@ -1,8 +1,15 @@
-# CodeBuddy GUI 0.3.0
+# CodeBuddy GUI 0.4.0
 
-0.3.0 功能版本，新增与 CodeBuddy CLI 本地状态和 E2B 操作直接连接的 Sandbox 管理页面。
+0.4.0 功能版本，补齐 CodeBuddy CLI 后台会话的桌面端生命周期管理。
 
 ## 本版本重点
+
+- 实例页新增“项目运行时 / 后台会话”双视图，后台会话列表直接读取 `codebuddy ps --json` 的结构化结果。
+- 可选择已添加项目并输入任务内容，通过真实 `codebuddy --bg` 启动独立后台任务；名称、工作目录和任务内容均在主进程重新校验。
+- 后台任务支持日志读取、5 秒自动刷新、复制、最新 1 MB 截断提示、本机 Endpoint 打开和终止确认。
+- 交互会话、Daemon 与预热进程可查看但不会显示终止入口，避免误杀 CodeBuddy GUI 自己维护的项目运行时。
+
+## 0.3.0
 
 - 工作区新增 Sandboxes 页面，读取 CodeBuddy 的真实 `sandbox-state.json`，展示当前 Sandbox、模板、别名、创建与最近使用时间。
 - 展示每个 Sandbox 的本地到远端项目映射和最近同步时间，支持按 ID、别名、模板及路径搜索。
