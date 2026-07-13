@@ -299,12 +299,21 @@ export default function ReplicaChatView() {
   const [recovering, setRecovering] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
+  const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
+  const sessionSelectionRequestRef = useRef(0);
+  const sessionSelectionBusy = sessionSelectionStatus?.type === 'busy';
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
     const timer = setTimeout(() => setChatError(null), 8000);
     return () => clearTimeout(timer);
   }, [chatError]);
+  useEffect(() => {
+    sessionSelectionRequestRef.current += 1;
+    setSessionSelectionStatus(null);
+    setShowModelPicker(false);
+    setShowModePicker(false);
+  }, [activeProjectId, activeThreadId]);
   const modeOptions = useMemo(() => {
     const labels = {
       default: '始终询问',
@@ -340,6 +349,33 @@ export default function ReplicaChatView() {
   const connectionNeedsRecovery = runtimeUnavailable || connectionState === 'error' || (connectionState === 'disconnected' && runtimeStatus === 'running');
   const canSend = connectionState === 'connected';
   const recoveryMessage = activeProject?.runtimeError || recoveryError || (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
+
+  const changeSessionSetting = async (kind, value) => {
+    if (sessionSelectionBusy || connectionState !== 'connected' || !activeThreadId || !value) return;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const requestId = ++sessionSelectionRequestRef.current;
+    const label = kind === 'model' ? '模型' : '模式';
+    const isCurrent = () => (
+      requestId === sessionSelectionRequestRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setSessionSelectionStatus({ type: 'busy', message: `正在切换${label}...` });
+    try {
+      const changed = kind === 'model' ? await setModel(value) : await setMode(value);
+      if (!isCurrent()) return;
+      if (changed) {
+        setSessionSelectionStatus({ type: 'success', message: `${label}已切换` });
+        if (kind === 'model') setShowModelPicker(false);
+        else setShowModePicker(false);
+      } else {
+        setSessionSelectionStatus({ type: 'error', message: useStore.getState().error || `${label}切换失败` });
+      }
+    } catch (error) {
+      if (isCurrent()) setSessionSelectionStatus({ type: 'error', message: error?.message || `${label}切换失败` });
+    }
+  };
 
   const recoverConnection = async () => {
     if (!activeProjectId || recovering) return;
@@ -574,7 +610,8 @@ export default function ReplicaChatView() {
                 </button>
                 <div className="relative">
                   <button
-                    className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                    className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+                    disabled={sessionSelectionBusy || connectionState !== 'connected'}
                     onClick={(e) => { e.stopPropagation(); setShowModePicker(!showModePicker); }}
                   >
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -590,12 +627,10 @@ export default function ReplicaChatView() {
                         {modeOptions.map((m) => (
                           <button
                             key={m.id}
-                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors"
+                            disabled={sessionSelectionBusy}
+                            className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
                             style={{ color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)' }}
-                            onClick={() => {
-                              setMode(m.id);
-                              setShowModePicker(false);
-                            }}
+                            onClick={() => changeSessionSetting('mode', m.id)}
                           >
                             {m.name}
                           </button>
@@ -618,7 +653,8 @@ export default function ReplicaChatView() {
               <div className="flex items-center gap-1.5">
                 <div className="relative">
                   <button
-                    className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors truncate max-w-[180px]"
+                    className="max-w-[180px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                    disabled={sessionSelectionBusy || connectionState !== 'connected'}
                     onClick={(e) => { e.stopPropagation(); setShowModelPicker(!showModelPicker); }}
                   >
                     {currentModelName || currentModel || '选择模型'}
@@ -627,19 +663,20 @@ export default function ReplicaChatView() {
                     <>
                       <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
                       <div className="absolute bottom-full left-0 mb-1 z-20 w-56 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto">
-                        {models.length > 0 ? models.map((m) => (
+                        {models.length > 0 ? models.map((m) => {
+                          const modelId = m.id || m.modelId || m.name;
+                          return (
                           <button
-                            key={m.id || m.name}
-                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--color-bg-hover)] transition-colors"
-                            style={{ color: (m.id || m.name) === currentModel ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)' }}
-                            onClick={() => {
-                              setModel(m.id || m.name);
-                              setShowModelPicker(false);
-                            }}
+                            key={modelId}
+                            disabled={sessionSelectionBusy}
+                            className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                            style={{ color: modelId === currentModel ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)' }}
+                            onClick={() => changeSessionSetting('model', modelId)}
                           >
-                            {m.name || m.id}
+                            {m.name || m.id || m.modelId}
                           </button>
-                        )) : (
+                          );
+                        }) : (
                           <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
                         )}
                       </div>
@@ -669,6 +706,11 @@ export default function ReplicaChatView() {
                 </button>
               </div>
             </div>
+            {sessionSelectionStatus ? (
+              <div className={`px-4 pb-2 text-[10px] ${sessionSelectionStatus.type === 'error' ? 'text-[var(--color-accent-red)]' : sessionSelectionStatus.type === 'success' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-text-muted)]'}`}>
+                {sessionSelectionStatus.message}
+              </div>
+            ) : null}
           </div>
 
           {usage && (

@@ -39,6 +39,7 @@ const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
 const runtimeOperationChains = new Map();
+const sessionSettingChains = new Map();
 let dirtyFileConfirmationResolve = null;
 
 function beginScopedRequest(key, state, scope = 'project') {
@@ -73,6 +74,15 @@ function queueProjectRuntimeOperation(projectId, operation) {
     if (runtimeOperationChains.get(projectId) === tracked) runtimeOperationChains.delete(projectId);
   });
   runtimeOperationChains.set(projectId, tracked);
+  return tracked;
+}
+function queueSessionSettingOperation(key, operation) {
+  const previous = sessionSettingChains.get(key) || Promise.resolve();
+  const next = previous.catch(() => false).then(operation);
+  const tracked = next.finally(() => {
+    if (sessionSettingChains.get(key) === tracked) sessionSettingChains.delete(key);
+  });
+  sessionSettingChains.set(key, tracked);
   return tracked;
 }
 
@@ -1181,46 +1191,50 @@ export const useStore = create((set, get) => ({
     const state = get();
     const threadId = state.activeThreadId;
     const sessionId = state.sessionId;
-    try {
-      const client = get().getThreadClient(threadId);
-      if (!client) throw new Error('当前会话未连接');
-      await client.request('session/set_model', {
-        sessionId,
-        modelId,
-      });
-      const thread = get().threadsById[threadId];
-      if (!thread || thread.sessionId !== sessionId) return false;
-      get().patchThreadRuntime(threadId, { currentModel: modelId });
-      if (get().activeThreadId === threadId) set({ currentModel: modelId });
-      await get().updateThreadRecord(threadId, { modelId });
-      return true;
-    } catch (error) {
-      if (get().activeThreadId === threadId) set({ error: error.message });
-      return false;
-    }
+    if (!threadId || !sessionId || !modelId) return false;
+    return queueSessionSettingOperation(`${threadId}:model`, async () => {
+      const target = get().threadsById[threadId];
+      if (!target || target.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('session/set_model', { sessionId, modelId });
+        const thread = get().threadsById[threadId];
+        if (!thread || thread.sessionId !== sessionId) return false;
+        get().patchThreadRuntime(threadId, { currentModel: modelId });
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentModel: modelId });
+        await get().updateThreadRecord(threadId, { modelId });
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
   },
 
   async setMode(modeId) {
     const state = get();
     const threadId = state.activeThreadId;
     const sessionId = state.sessionId;
-    try {
-      const client = get().getThreadClient(threadId);
-      if (!client) throw new Error('当前会话未连接');
-      await client.request('session/set_mode', {
-        sessionId,
-        modeId,
-      });
-      const thread = get().threadsById[threadId];
-      if (!thread || thread.sessionId !== sessionId) return false;
-      get().patchThreadRuntime(threadId, { currentMode: modeId });
-      if (get().activeThreadId === threadId) set({ currentMode: modeId });
-      await get().updateThreadRecord(threadId, { modeId });
-      return true;
-    } catch (error) {
-      if (get().activeThreadId === threadId) set({ error: error.message });
-      return false;
-    }
+    if (!threadId || !sessionId || !modeId) return false;
+    return queueSessionSettingOperation(`${threadId}:mode`, async () => {
+      const target = get().threadsById[threadId];
+      if (!target || target.sessionId !== sessionId) return false;
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('session/set_mode', { sessionId, modeId });
+        const thread = get().threadsById[threadId];
+        if (!thread || thread.sessionId !== sessionId) return false;
+        get().patchThreadRuntime(threadId, { currentMode: modeId });
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentMode: modeId });
+        await get().updateThreadRecord(threadId, { modeId });
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
   },
 
   async newSession() {
