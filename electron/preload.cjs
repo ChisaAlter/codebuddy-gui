@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runGit: (request) => ipcRenderer.invoke('git:run', request),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),
+  readAttachments: (filePaths) => ipcRenderer.invoke('attachment:read', filePaths),
   loadProductState: () => ipcRenderer.invoke('productState:load'),
   saveProductState: (state) => ipcRenderer.invoke('productState:save', state),
   saveProductStateSync: (state) => ipcRenderer.sendSync('productState:saveSync', state),

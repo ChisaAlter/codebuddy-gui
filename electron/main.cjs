@@ -602,34 +602,31 @@ ipcMain.handle('workspace:choose', async () => {
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
 });
-ipcMain.handle('attachment:choose', async () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return [];
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile', 'multiSelections'],
-    title: '选择要发送的文件或图片',
-  });
-  if (result.canceled) return [];
-  const imageTypes = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-  };
-  const textExtensions = new Set([
-    '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
-    '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
-    '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env', '.lock', '.vue',
-    '.svelte', '.rb', '.php', '.kt', '.kts', '.swift', '.lua', '.r', '.graphql', '.gql',
-    '.proto', '.dart', '.scala', '.cs', '.fs', '.fsx', '.vb', '.gradle', '.properties',
-    '.conf', '.cfg', '.bat', '.cmd',
-  ]);
-  const textFileNames = new Set([
-    'dockerfile', 'makefile', 'license', 'notice', 'readme', '.gitignore', '.gitattributes',
-    '.gitmodules', '.npmrc', '.editorconfig', '.prettierrc', '.eslintrc',
-  ]);
+const ATTACHMENT_IMAGE_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+const ATTACHMENT_TEXT_EXTENSIONS = new Set([
+  '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
+  '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
+  '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env', '.lock', '.vue',
+  '.svelte', '.rb', '.php', '.kt', '.kts', '.swift', '.lua', '.r', '.graphql', '.gql',
+  '.proto', '.dart', '.scala', '.cs', '.fs', '.fsx', '.vb', '.gradle', '.properties',
+  '.conf', '.cfg', '.bat', '.cmd',
+]);
+const ATTACHMENT_TEXT_FILE_NAMES = new Set([
+  'dockerfile', 'makefile', 'license', 'notice', 'readme', '.gitignore', '.gitattributes',
+  '.gitmodules', '.npmrc', '.editorconfig', '.prettierrc', '.eslintrc',
+]);
+
+async function readAttachmentFiles(filePaths) {
   const attachments = [];
-  for (const filePath of result.filePaths) {
+  const uniquePaths = [...new Set((Array.isArray(filePaths) ? filePaths : [])
+    .filter((filePath) => typeof filePath === 'string' && filePath.trim()))];
+  for (const filePath of uniquePaths) {
     const name = path.basename(filePath);
     try {
       const stat = await fs.promises.stat(filePath);
@@ -639,17 +636,17 @@ ipcMain.handle('attachment:choose', async () => {
         attachments.push({ ...base, kind: 'unsupported', error: '所选路径不是文件' });
         continue;
       }
-      if (imageTypes[ext]) {
+      if (ATTACHMENT_IMAGE_TYPES[ext]) {
         if (stat.size > 20 * 1024 * 1024) {
           attachments.push({ ...base, kind: 'unsupported', error: '超过 20MB 图片限制' });
           continue;
         }
         const data = await fs.promises.readFile(filePath);
-        attachments.push({ ...base, kind: 'image', mimeType: imageTypes[ext], data: data.toString('base64') });
+        attachments.push({ ...base, kind: 'image', mimeType: ATTACHMENT_IMAGE_TYPES[ext], data: data.toString('base64') });
         continue;
       }
-      const extensionlessText = !ext && textFileNames.has(name.toLowerCase());
-      if (!textExtensions.has(ext) && !extensionlessText) {
+      const extensionlessText = !ext && ATTACHMENT_TEXT_FILE_NAMES.has(name.toLowerCase());
+      if (!ATTACHMENT_TEXT_EXTENSIONS.has(ext) && !extensionlessText) {
         attachments.push({ ...base, kind: 'unsupported', error: '该文件类型无法作为文本发送' });
         continue;
       }
@@ -664,7 +661,19 @@ ipcMain.handle('attachment:choose', async () => {
     }
   }
   return attachments;
+}
+
+ipcMain.handle('attachment:choose', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return [];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: '选择要发送的文件或图片',
+  });
+  if (result.canceled) return [];
+  return readAttachmentFiles(result.filePaths);
 });
+ipcMain.handle('attachment:read', (_event, filePaths) => readAttachmentFiles(filePaths));
+
 ipcMain.handle('productState:load', () => productStateStore.load());
 ipcMain.handle('productState:save', (_event, state) => productStateStore.save(state));
 ipcMain.on('productState:saveSync', (event, state) => {

@@ -355,6 +355,7 @@ export default function ReplicaChatView() {
   const activeThreadId = useStore((s) => s.activeThreadId);
   const promptQueue = useStore((s) => s.promptQueue || []);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
+  const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || []);
   const chooseAttachments = useStore((s) => s.chooseAttachments);
   const removePendingAttachment = useStore((s) => s.removePendingAttachment);
@@ -375,6 +376,8 @@ export default function ReplicaChatView() {
   const sessionSelectionBusy = sessionSelectionStatus?.type === 'busy';
   const [cancelBusy, setCancelBusy] = useState(false);
   const cancelRequestRef = useRef(0);
+  const [queueActionBusy, setQueueActionBusy] = useState(false);
+  const queueActionRequestRef = useRef(0);
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
@@ -384,8 +387,10 @@ export default function ReplicaChatView() {
   useEffect(() => {
     sessionSelectionRequestRef.current += 1;
     cancelRequestRef.current += 1;
+    queueActionRequestRef.current += 1;
     setSessionSelectionStatus(null);
     setCancelBusy(false);
+    setQueueActionBusy(false);
     setShowModelPicker(false);
     setShowModePicker(false);
   }, [activeProjectId, activeThreadId]);
@@ -534,6 +539,51 @@ export default function ReplicaChatView() {
     }
   };
 
+  const resumePromptQueue = async () => {
+    if (queueActionBusy || !activeThreadId || !canSend || isStreaming) return;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const requestId = ++queueActionRequestRef.current;
+    const isCurrent = () => (
+      requestId === queueActionRequestRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setQueueActionBusy(true);
+    setChatError(null);
+    try {
+      const resumed = await drainThreadPromptQueue(threadId);
+      if (!isCurrent()) return;
+      if (!resumed) setChatError(useStore.getState().error || '待发送队列暂时无法继续，请检查会话连接后重试。');
+    } catch (error) {
+      if (isCurrent()) setChatError(error?.message || '继续发送队列失败');
+    } finally {
+      if (isCurrent()) setQueueActionBusy(false);
+    }
+  };
+
+  const removePromptFromQueue = async (promptId) => {
+    if (queueActionBusy || !activeThreadId) return;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const requestId = ++queueActionRequestRef.current;
+    const isCurrent = () => (
+      requestId === queueActionRequestRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setQueueActionBusy(true);
+    setChatError(null);
+    try {
+      const removed = await removeQueuedPrompt(threadId, promptId);
+      if (isCurrent() && !removed) setChatError(useStore.getState().error || '移除待发送提示失败，请重试。');
+    } catch (error) {
+      if (isCurrent()) setChatError(error?.message || '移除待发送提示失败');
+    } finally {
+      if (isCurrent()) setQueueActionBusy(false);
+    }
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -652,15 +702,26 @@ export default function ReplicaChatView() {
           ) : null}
           {promptQueue.length > 0 ? (
             <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
-              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">待发送 {promptQueue.length}</div>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">待发送 {promptQueue.length}</div>
+                <button
+                  className="rounded px-2 py-0.5 text-[10px] text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)] disabled:cursor-wait disabled:opacity-50"
+                  disabled={queueActionBusy || !canSend || isStreaming}
+                  onClick={resumePromptQueue}
+                  title={!canSend ? '等待会话连接' : isStreaming ? '当前消息完成后会自动继续' : '发送队列中的下一条消息'}
+                >
+                  {queueActionBusy ? '处理中...' : '继续发送'}
+                </button>
+              </div>
               <div className="space-y-1">
                 {promptQueue.map((item, index) => (
                   <div key={item.id} className="flex items-center gap-2 text-xs">
                     <span className="text-[var(--color-text-muted)]">{index + 1}</span>
                     <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]" title={item.text}>{item.text}</span>
                     <button
-                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                      onClick={() => removeQueuedPrompt(activeThreadId, item.id)}
+                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+                      disabled={queueActionBusy}
+                      onClick={() => removePromptFromQueue(item.id)}
                       title="移除待发送提示"
                       aria-label="移除待发送提示"
                     >

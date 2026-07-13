@@ -44,6 +44,7 @@ const confirmedSettingValues = new Map();
 const runtimeOperationChains = new Map();
 const sessionSettingChains = new Map();
 const sessionActionOperations = new Map();
+const promptQueueOperationChains = new Map();
 let dirtyFileConfirmationResolve = null;
 
 function beginProjectNavigation(set, targetId) {
@@ -121,6 +122,16 @@ function runUniqueSessionAction(key, operation) {
   return tracked;
 }
 
+function queuePromptQueueOperation(threadId, operation) {
+  const previous = promptQueueOperationChains.get(threadId) || Promise.resolve();
+  const next = previous.catch(() => false).then(operation);
+  const tracked = next.finally(() => {
+    if (promptQueueOperationChains.get(threadId) === tracked) promptQueueOperationChains.delete(threadId);
+  });
+  promptQueueOperationChains.set(threadId, tracked);
+  return tracked;
+}
+
 function sessionActionItemId(item) {
   return item?.interruptionId
     || item?.toolCallId
@@ -156,6 +167,26 @@ async function connectActiveProjectRuntime(set, get, projectId, runtime) {
     if (projectId !== get().activeProjectId) return false;
     throw error;
   }
+}
+
+function serializePromptQueue(queue) {
+  return (Array.isArray(queue) ? queue : [])
+    .filter((item) => item && typeof item.text === 'string')
+    .map((item) => ({
+      id: item.id || `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: item.text,
+      draftText: typeof item.draftText === 'string' ? item.draftText : item.text,
+      createdAt: Number(item.createdAt) || Date.now(),
+      attachments: (Array.isArray(item.attachments) ? item.attachments : [])
+        .filter((attachment) => attachment && typeof attachment.path === 'string')
+        .map((attachment) => ({
+          name: attachment.name || attachment.path,
+          path: attachment.path,
+          size: Number(attachment.size) || 0,
+          kind: attachment.kind === 'image' ? 'image' : 'text',
+          mimeType: attachment.mimeType || null,
+        })),
+    }));
 }
 
 function emptyThreadRuntime() {
@@ -671,6 +702,7 @@ export const useStore = create((set, get) => ({
       {
         ...emptyThreadRuntime(),
         timeline: Array.isArray(item.timeline) ? item.timeline : [],
+        promptQueue: serializePromptQueue(item.metadata?.promptQueue),
         currentModel: item.modelId || null,
         currentMode: item.modeId || 'default',
       },
@@ -2985,6 +3017,31 @@ export const useStore = create((set, get) => ({
     });
   },
 
+  setThreadPromptQueue(threadId, promptQueue, patch = {}) {
+    const serializedQueue = serializePromptQueue(promptQueue);
+    set((state) => {
+      const thread = state.threadsById[threadId];
+      if (!thread) return {};
+      return {
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...thread,
+            ...patch,
+            metadata: { ...(thread.metadata || {}), promptQueue: serializedQueue },
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      };
+    });
+  },
+
+  async persistThreadPromptQueue(threadId, promptQueue, patch = {}) {
+    if (!get().threadsById[threadId]) return false;
+    get().setThreadPromptQueue(threadId, promptQueue, patch);
+    return get().persistProductState();
+  },
+
   async sendPrompt(text) {
     const threadId = get().activeThreadId;
     const thread = get().threadsById[threadId];
@@ -2998,17 +3055,31 @@ export const useStore = create((set, get) => ({
     const draftText = String(text || '');
     const content = String(text || '').trim() || (attachments.length ? '请查看附件。' : '');
     if (!content) return false;
-    if (thread.status === 'running' || runtime.isAwaitingResponse) {
-      const queuedPrompt = {
-        id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        text: content,
-        attachments,
-        draftText,
-        createdAt: Date.now(),
-      };
-      get().patchThreadRuntime(threadId, { promptQueue: [...runtime.promptQueue, queuedPrompt], pendingAttachments: [] });
-      await get().updateThreadRecord(threadId, { draft: '' });
-      return { queued: true, id: queuedPrompt.id };
+    if (thread.status === 'running' || runtime.isAwaitingResponse || runtime.promptQueue.length > 0) {
+      return queuePromptQueueOperation(threadId, async () => {
+        const latestThread = get().threadsById[threadId];
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        if (!latestThread) return false;
+        const queuedPrompt = {
+          id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text: content,
+          attachments,
+          draftText,
+          createdAt: Date.now(),
+        };
+        const promptQueue = [...latestRuntime.promptQueue, queuedPrompt];
+        get().patchThreadRuntime(threadId, { promptQueue, pendingAttachments: [] });
+        const persisted = await get().persistThreadPromptQueue(threadId, promptQueue, { draft: '' });
+        if (!persisted) {
+          get().patchThreadRuntime(threadId, { promptQueue: latestRuntime.promptQueue, pendingAttachments: attachments });
+          get().setThreadPromptQueue(threadId, latestRuntime.promptQueue, { draft: draftText });
+          return false;
+        }
+        if (latestThread.status !== 'running' && !latestRuntime.isAwaitingResponse) {
+          setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+        }
+        return { queued: true, id: queuedPrompt.id };
+      });
     }
     get().patchThreadRuntime(threadId, { pendingAttachments: [] });
     return get().runThreadPrompt(threadId, content, attachments, draftText);
@@ -3028,11 +3099,12 @@ export const useStore = create((set, get) => ({
     }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
+    const timeline = pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`);
     get().patchThreadRuntime(threadId, {
-      timeline: pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`),
+      timeline,
       isAwaitingResponse: true,
     });
-    await get().updateThreadRecord(threadId, { status: 'running', draft: '', unread: false });
+    await get().updateThreadRecord(threadId, { status: 'running', draft: '', unread: false, timeline: timeline.slice(-300) });
     try {
       const prompt = [{ type: 'text', text: content }];
       for (const attachment of attachments) {
@@ -3057,7 +3129,9 @@ export const useStore = create((set, get) => ({
         status: 'idle',
         unread: get().activeThreadId !== threadId,
       });
-      await get().drainThreadPromptQueue(threadId);
+      if ((get().threadRuntimeById[threadId]?.promptQueue || []).length > 0) {
+        setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
+      }
       return true;
     } catch (error) {
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -3085,17 +3159,73 @@ export const useStore = create((set, get) => ({
   },
 
   async drainThreadPromptQueue(threadId) {
-    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-    const [next, ...rest] = runtime.promptQueue;
-    if (!next) return false;
-    get().patchThreadRuntime(threadId, { promptQueue: rest });
-    return get().runThreadPrompt(threadId, next.text, next.attachments || [], next.draftText ?? next.text);
+    const prepared = await queuePromptQueueOperation(threadId, async () => {
+      const thread = get().threadsById[threadId];
+      const client = get().getThreadClient(threadId);
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const [next, ...rest] = runtime.promptQueue;
+      if (!thread || !client || !next) return null;
+      if (thread.status === 'running' || runtime.isAwaitingResponse) return null;
+
+      let attachments = Array.isArray(next.attachments) ? next.attachments : [];
+      const requiresReload = attachments.some((attachment) => (
+        (attachment.kind === 'image' && !attachment.data)
+        || (attachment.kind === 'text' && typeof attachment.text !== 'string')
+      ));
+      if (requiresReload) {
+        if (!window.electronAPI?.readAttachments) {
+          set({ error: '无法恢复待发送附件：桌面文件读取接口不可用' });
+          return null;
+        }
+        const loaded = await window.electronAPI.readAttachments(attachments.map((attachment) => attachment.path));
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== thread.sessionId) return null;
+        const rejected = (loaded || []).filter((attachment) => attachment.kind === 'unsupported');
+        if (rejected.length) {
+          set({ error: `无法恢复待发送附件：${rejected.map((attachment) => `${attachment.name}: ${attachment.error}`).join('；')}` });
+          return null;
+        }
+        const loadedByPath = new Map((loaded || []).map((attachment) => [attachment.path, attachment]));
+        attachments = attachments.map((attachment) => loadedByPath.get(attachment.path)).filter(Boolean);
+        if (attachments.length !== next.attachments.length) {
+          set({ error: '无法恢复全部待发送附件，请确认文件仍在原位置' });
+          return null;
+        }
+        const imageSupported = Boolean(
+          runtime.capabilities?.promptCapabilities?.image
+          || runtime.capabilities?.prompt_capabilities?.image,
+        );
+        if (!imageSupported && attachments.some((attachment) => attachment.kind === 'image')) {
+          set({ error: '当前运行时未声明图片输入能力，无法继续发送队列中的图片' });
+          return null;
+        }
+      }
+
+      get().patchThreadRuntime(threadId, { promptQueue: rest });
+      const persisted = await get().persistThreadPromptQueue(threadId, rest);
+      if (!persisted) {
+        get().patchThreadRuntime(threadId, { promptQueue: runtime.promptQueue });
+        get().setThreadPromptQueue(threadId, runtime.promptQueue);
+        return null;
+      }
+      return { next, attachments };
+    });
+    if (!prepared) return false;
+    return get().runThreadPrompt(threadId, prepared.next.text, prepared.attachments, prepared.next.draftText ?? prepared.next.text);
   },
 
-  removeQueuedPrompt(threadId, promptId) {
-    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-    get().patchThreadRuntime(threadId, {
-      promptQueue: runtime.promptQueue.filter((item) => item.id !== promptId),
+  async removeQueuedPrompt(threadId, promptId) {
+    return queuePromptQueueOperation(threadId, async () => {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const promptQueue = runtime.promptQueue.filter((item) => item.id !== promptId);
+      if (promptQueue.length === runtime.promptQueue.length) return true;
+      get().patchThreadRuntime(threadId, { promptQueue });
+      const persisted = await get().persistThreadPromptQueue(threadId, promptQueue);
+      if (!persisted) {
+        get().patchThreadRuntime(threadId, { promptQueue: runtime.promptQueue });
+        get().setThreadPromptQueue(threadId, runtime.promptQueue);
+      }
+      return persisted;
     });
   },
 
