@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowReload: () => ipcRenderer.send('window:reload'),
   openDevTools: () => ipcRenderer.send('window:openDevTools'),
   getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
+  reportRendererError: (payload) => ipcRenderer.invoke('app:reportRendererError', payload),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   openReleasePage: (releaseUrl) => ipcRenderer.invoke('app:openReleasePage', releaseUrl),
   exportDiagnostics: () => ipcRenderer.invoke('app:exportDiagnostics'),

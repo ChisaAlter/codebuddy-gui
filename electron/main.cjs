@@ -254,6 +254,20 @@ ipcMain.handle('app:getInfo', () => ({
   packaged: app.isPackaged,
   userDataPath: app.getPath('userData'),
 }));
+
+ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
+  const message = String(payload.message || 'Renderer error').slice(0, 4000);
+  const stack = String(payload.stack || '').slice(0, 40000);
+  const componentStack = String(payload.componentStack || '').slice(0, 20000);
+  const route = String(payload.route || '').slice(0, 500);
+  writeCrashLog('rendererErrorBoundary', {
+    stack: [message, stack, componentStack && ('Component stack:' + componentStack), route && ('Route: ' + route)]
+      .filter(Boolean)
+      .join('\n'),
+  });
+  return { reported: true };
+});
+
 ipcMain.handle('app:exportDiagnostics', async () => {
   const timestamp = new Date().toISOString();
   const fileTimestamp = timestamp.replace(/[:.]/g, '-');
@@ -400,6 +414,46 @@ async function createWindow() {
     winOpts.y = savedBounds.y;
   }
   mainWindow = new BrowserWindow(winOpts);
+  mainWindow.webContents.on('render-process-gone', async (_event, details = {}) => {
+    const reason = details.reason || 'unknown';
+    writeCrashLog('renderProcessGone', new Error(
+      'reason=' + reason + ' exitCode=' + (details.exitCode ?? 'unknown'),
+    ));
+    if (reallyQuitting || reason === 'clean-exit') return;
+    const targetWindow = mainWindow;
+    try {
+      const options = {
+        type: 'error',
+        title: 'CodeBuddy GUI 界面异常退出',
+        message: '应用界面进程已异常退出，错误已写入 crash.log。',
+        detail: '可以重新加载界面，或先打开诊断目录获取日志。',
+        buttons: ['重新加载界面', '打开诊断目录并重新加载', '退出应用'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      };
+      const result = targetWindow && !targetWindow.isDestroyed()
+        ? await dialog.showMessageBox(targetWindow, options)
+        : await dialog.showMessageBox(options);
+      if (result.response === 2) {
+        reallyQuitting = true;
+        app.quit();
+        return;
+      }
+      if (result.response === 1) {
+        const userDataPath = app.getPath('userData');
+        await fs.promises.mkdir(userDataPath, { recursive: true });
+        const openError = await shell.openPath(userDataPath);
+        if (openError) logStartup('Unable to open diagnostics after renderer exit: ' + openError);
+      }
+      if (targetWindow && !targetWindow.isDestroyed()) targetWindow.reload();
+    } catch (error) {
+      logStartup('Renderer exit recovery failed: ' + (error?.message || error));
+      if (targetWindow && !targetWindow.isDestroyed()) targetWindow.reload();
+    }
+  });
+  mainWindow.on('unresponsive', () => logStartup('Main window became unresponsive'));
+  mainWindow.on('responsive', () => logStartup('Main window became responsive again'));
   if (savedBounds?.isMaximized) {
     mainWindow.maximize();
   }
@@ -980,8 +1034,15 @@ ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents
 function writeCrashLog(type, err) {
   try {
     const logPath = path.join(app.getPath('userData'), 'crash.log');
+    try {
+      const stats = fs.statSync(logPath);
+      if (stats.size > 1024 * 1024) {
+        const tail = fs.readFileSync(logPath);
+        fs.writeFileSync(logPath, tail.slice(-200 * 1024));
+      }
+    } catch (_) { /* 文件不存在或轮转失败不阻塞崩溃记录 */ }
     const ts = new Date().toISOString();
-    const stack = err?.stack || String(err);
+    const stack = redactDiagnosticText(err?.stack || String(err));
     fs.appendFileSync(logPath, `\n[${ts}] ${type}: ${stack}\n`);
   } catch (_) { /* 写失败不阻塞 */ }
 }
