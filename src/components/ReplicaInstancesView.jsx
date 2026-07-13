@@ -25,7 +25,7 @@ export default function ReplicaInstancesView() {
   const projectOrder = useStore((state) => state.projectOrder);
   const activeProjectId = useStore((state) => state.activeProjectId);
   const applyProjectRuntimeStatus = useStore((state) => state.applyProjectRuntimeStatus);
-  const ensureProjectRuntime = useStore((state) => state.ensureProjectRuntime);
+  const startProjectRuntime = useStore((state) => state.startProjectRuntime);
   const stopProjectRuntime = useStore((state) => state.stopProjectRuntime);
   const restartProjectRuntime = useStore((state) => state.restartProjectRuntime);
   const chooseWorkspace = useStore((state) => state.chooseWorkspace);
@@ -111,7 +111,9 @@ export default function ReplicaInstancesView() {
       const result = await action(projectId);
       if (!isCurrentAction()) return;
       if (result === false || result == null) {
-        const projectError = useStore.getState().projectsById[projectId]?.runtimeError;
+        const currentState = useStore.getState();
+        const projectError = currentState.projectsById[projectId]?.runtimeError
+          || (currentState.activeProjectId === projectId ? currentState.error : null);
         setActionStateByProject((current) => ({
           ...current,
           [projectId]: { busy: actionName, error: projectError || '运行时操作失败', message: '' },
@@ -198,11 +200,11 @@ export default function ReplicaInstancesView() {
                           {actionState.busy === 'stop' ? '停止中...' : '停止'}
                         </button>
                       ) : (
-                        <button className="btn-primary px-2.5 py-1 text-xs" disabled={busy} onClick={() => runAction(projectId, ensureProjectRuntime, 'start', '运行时已启动')}>
+                        <button className="btn-primary px-2.5 py-1 text-xs" disabled={busy} onClick={() => runAction(projectId, startProjectRuntime, 'start', projectId === activeProjectId ? '运行时与当前会话已连接' : '运行时已启动')}>
                           {actionState.busy === 'start' ? '启动中...' : '启动'}
                         </button>
                       )}
-                      <button className="btn-ghost px-2.5 py-1 text-xs" disabled={busy} onClick={() => runAction(projectId, restartProjectRuntime, 'restart', '运行时已重启')}>
+                      <button className="btn-ghost px-2.5 py-1 text-xs" disabled={busy} onClick={() => runAction(projectId, restartProjectRuntime, 'restart', projectId === activeProjectId ? '运行时已重启，当前会话已重连' : '运行时已重启')}>
                         {actionState.busy === 'restart' ? '重启中...' : '重启'}
                       </button>
                     </div>

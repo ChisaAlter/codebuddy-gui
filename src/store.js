@@ -1334,9 +1334,16 @@ export const useStore = create((set, get) => ({
       workspacePath: project.workspacePath,
       connectionState: 'connecting',
     });
+    const preservedRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
+    const preservedPromptQueue = preservedRuntime.promptQueue?.length
+      ? preservedRuntime.promptQueue
+      : serializePromptQueue(thread.metadata?.promptQueue);
     get().patchThreadRuntime(thread.id, {
       ...emptyThreadRuntime(),
-      timeline: (get().threadRuntimeById[thread.id]?.timeline || thread.timeline || []).slice(-300),
+      timeline: (preservedRuntime.timeline || thread.timeline || []).slice(-300),
+      promptQueue: preservedPromptQueue,
+      pendingAttachments: preservedRuntime.pendingAttachments || [],
+      promptSuggestion: preservedRuntime.promptSuggestion || null,
       connectionState: 'connecting',
       currentModel: thread.modelId || null,
       currentMode: thread.modeId || 'default',
@@ -1400,6 +1407,9 @@ export const useStore = create((set, get) => ({
           lastError: null,
         } : { ...(thread.metadata || {}), lastError: null },
       });
+      if ((get().threadRuntimeById[thread.id]?.promptQueue || []).length > 0) {
+        setTimeout(() => get().drainThreadPromptQueue(thread.id), 0);
+      }
       if (recoveryError) {
         const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
         const warning = `原会话恢复失败，已创建新会话继续工作。${recoveryError}`;
@@ -2026,7 +2036,51 @@ export const useStore = create((set, get) => ({
         } : {}),
       };
     });
-    if (terminalStateReset) get().persistProductState();
+    const runtimeUnavailable = ['stopped', 'error'].includes(runtime.status || '');
+    if (runtimeUnavailable) {
+      conversations.disposeProject(get().threadOrderByProject[runtime.projectId] || []);
+      if (get().activeProjectId === runtime.projectId) {
+        setAcpSessionToken(null);
+        setAuthToken(null);
+      }
+      get().disconnectProjectThreads(runtime.projectId);
+    } else if (terminalStateReset) {
+      get().persistProductState();
+    }
+  },
+
+  async disconnectProjectThreads(projectId) {
+    if (!projectId) return false;
+    const disconnectedAt = new Date().toISOString();
+    set((state) => {
+      const threadIds = state.threadOrderByProject[projectId] || [];
+      const threadsById = { ...state.threadsById };
+      const threadRuntimeById = { ...state.threadRuntimeById };
+      for (const threadId of threadIds) {
+        const record = threadsById[threadId];
+        if (record) {
+          const status = ['idle', 'connecting', 'running', 'waiting'].includes(record.status)
+            ? 'disconnected'
+            : record.status;
+          threadsById[threadId] = { ...record, status, updatedAt: disconnectedAt };
+        }
+        const runtime = threadRuntimeById[threadId] || emptyThreadRuntime();
+        threadRuntimeById[threadId] = {
+          ...runtime,
+          connectionState: 'disconnected',
+          permissionRequests: [],
+          questions: [],
+          isAwaitingResponse: false,
+          teamState: null,
+          agentPhase: null,
+          progress: null,
+          historyReplayActive: false,
+        };
+      }
+      return { threadsById, threadRuntimeById };
+    });
+    if (get().activeProjectId === projectId) get().activateThreadRuntime(get().activeThreadId);
+    return get().persistProductState();
   },
 
   async ensureProjectRuntime(projectId = get().activeProjectId) {
@@ -2054,10 +2108,24 @@ export const useStore = create((set, get) => ({
     });
   },
 
+  async startProjectRuntime(projectId = get().activeProjectId) {
+    if (projectId === get().activeProjectId) set({ error: null });
+    const runtime = await get().ensureProjectRuntime(projectId);
+    if (!runtime) return false;
+    if (projectId !== get().activeProjectId) return runtime;
+    const thread = activeThread(get());
+    if (!thread || thread.projectId !== projectId) return runtime;
+    const initialized = await get().initializeActiveThread(thread.sessionId);
+    if (!initialized) return false;
+    await get().refreshProjectViews();
+    return runtime;
+  },
+
   async stopProjectRuntime(projectId = get().activeProjectId) {
     return queueProjectRuntimeOperation(projectId, async () => {
       if (!projectId || !window.electronAPI?.stopProjectRuntime) return false;
       await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+      await get().disconnectProjectThreads(projectId);
       if (projectId === get().activeProjectId) {
         setAcpSessionToken(null);
         setAuthToken(null);
@@ -2091,6 +2159,7 @@ export const useStore = create((set, get) => ({
       const project = get().projectsById[projectId];
       if (!project || !window.electronAPI?.restartProjectRuntime) return false;
       await conversations.disposeProject(get().threadOrderByProject[projectId] || []);
+      await get().disconnectProjectThreads(projectId);
       if (projectId === get().activeProjectId) {
         setAcpSessionToken(null);
         setAuthToken(null);
@@ -2100,7 +2169,9 @@ export const useStore = create((set, get) => ({
         get().applyProjectRuntimeStatus(runtime);
         const connected = await connectActiveProjectRuntime(set, get, projectId, runtime);
         if (connected && projectId === get().activeProjectId) {
-          return get().initializeActiveThread(undefined);
+          const initialized = await get().initializeActiveThread(undefined);
+          if (!initialized) return false;
+          await get().refreshProjectViews();
         }
         return true;
       } catch (error) {

@@ -151,6 +151,7 @@ export default function ReplicaSidebar() {
     connecting: '连接中',
     running: '运行中',
     waiting: '等待输入',
+    disconnected: '已断开',
     error: '出错',
     cancelled: '已取消',
   }[status] || '');
