@@ -50,6 +50,20 @@ npm run build
 npm run build:dir
 ```
 
+## 本地发布准备
+
+不依赖 CI 的 Windows 发布材料可在本机统一生成：
+
+```powershell
+npm run release:prepare
+```
+
+该命令会运行生产构建，检查 Windows 代码签名，并在 `dist/` 中生成连字符资产名、`latest.yml`、`SHA256SUMS.txt` 和 Release 说明。正式发布默认要求有效签名；仅预览版可显式允许未签名安装包：
+
+```powershell
+npm run release:prepare -- -AllowUnsigned
+```
+
 ## 数据与运行时
 
 - 项目、对话、终端输出和恢复信息保存在 Electron `userData` 下的产品状态文件中；Windows 默认目录为 `%APPDATA%\\codebuddy-gui`。实际路径可在应用的“设置 → 系统信息 → 用户数据目录”中查看和复制。
