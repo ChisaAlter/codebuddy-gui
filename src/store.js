@@ -36,6 +36,7 @@ let fileDiskSyncRequestId = 0;
 let fileWatcherRequestId = 0;
 let projectNavigationVersion = 0;
 let authRequestVersion = 0;
+let productStateSaveChain = Promise.resolve(true);
 const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
@@ -539,23 +540,19 @@ export const useStore = create((set, get) => ({
   },
 
   async persistProductState() {
-    if (!window.electronAPI?.saveProductState) return false;
-    try {
-      const saved = await window.electronAPI.saveProductState(productStateSnapshot(get()));
-      const normalized = normalizeProductState(saved);
-      set({
-        projectsById: normalized.projectsById,
-        projectOrder: normalized.projectOrder,
-        threadsById: normalized.threadsById,
-        threadOrderByProject: normalized.threadOrderByProject,
-        activeProjectId: normalized.activeProjectId,
-        activeThreadId: normalized.activeThreadId,
-      });
-      return true;
-    } catch (error) {
-      set({ error: `保存项目状态失败: ${error.message}` });
-      return false;
-    }
+    const saveProductState = window.electronAPI?.saveProductState;
+    if (!saveProductState) return false;
+    const operation = productStateSaveChain.catch(() => false).then(async () => {
+      try {
+        await saveProductState(productStateSnapshot(get()));
+        return true;
+      } catch (error) {
+        set({ error: `保存项目状态失败: ${error.message}` });
+        return false;
+      }
+    });
+    productStateSaveChain = operation;
+    return operation;
   },
 
   flushProductStateSync() {
