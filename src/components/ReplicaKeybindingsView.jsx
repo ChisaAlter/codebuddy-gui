@@ -94,12 +94,14 @@ function warningMessage(warning) {
 export default function ReplicaKeybindingsView() {
   const activeProjectId = useStore((state) => state.activeProjectId);
   const requestRef = useRef(0);
+  const writeInFlightRef = useRef(null);
   const projectGenerationRef = useRef(0);
   const renderedProjectRef = useRef(activeProjectId);
   if (renderedProjectRef.current !== activeProjectId) {
     renderedProjectRef.current = activeProjectId;
     projectGenerationRef.current += 1;
     requestRef.current += 1;
+    writeInFlightRef.current = null;
   }
   const [config, setConfig] = useState(() => normalizeConfig(null));
   const [loading, setLoading] = useState(true);
@@ -136,6 +138,7 @@ export default function ReplicaKeybindingsView() {
   useEffect(() => {
     setConfig(normalizeConfig(null));
     setLoading(true);
+    writeInFlightRef.current = null;
     setSaving(false);
     setError('');
     setEditor(null);
@@ -168,7 +171,22 @@ export default function ReplicaKeybindingsView() {
   }, [contextFilter, rows, search]);
   const customCount = rows.filter((row) => row.custom).length;
 
+  const beginWriteOperation = () => {
+    if (writeInFlightRef.current) return null;
+    const operation = {};
+    writeInFlightRef.current = operation;
+    return operation;
+  };
+
+  const finishWriteOperation = (operation, isCurrent) => {
+    if (writeInFlightRef.current !== operation) return;
+    writeInFlightRef.current = null;
+    if (isCurrent()) setSaving(false);
+  };
+
   const persist = async (bindings, successMessage) => {
+    const operation = beginWriteOperation();
+    if (!operation) return false;
     const projectId = activeProjectId;
     const generation = projectGenerationRef.current;
     const isCurrent = () => (
@@ -195,11 +213,12 @@ export default function ReplicaKeybindingsView() {
       if (isCurrent()) setError(saveError?.message || '保存快捷键失败');
       return false;
     } finally {
-      if (isCurrent()) setSaving(false);
+      finishWriteOperation(operation, isCurrent);
     }
   };
 
   const openAdd = () => {
+    if (writeInFlightRef.current) return;
     setEditor({
       context: contextFilter !== 'all'
         ? contextFilter
@@ -211,6 +230,7 @@ export default function ReplicaKeybindingsView() {
   };
 
   const openEdit = (row) => {
+    if (writeInFlightRef.current) return;
     setEditor({
       context: row.context,
       shortcut: row.shortcut,
@@ -241,6 +261,8 @@ export default function ReplicaKeybindingsView() {
   };
 
   const handleReset = async () => {
+    const operation = beginWriteOperation();
+    if (!operation) return;
     const projectId = activeProjectId;
     const generation = projectGenerationRef.current;
     const isCurrent = () => (
@@ -261,7 +283,7 @@ export default function ReplicaKeybindingsView() {
     } catch (caughtError) {
       if (isCurrent()) setResetError(caughtError?.message || '恢复默认快捷键失败');
     } finally {
-      if (isCurrent()) setSaving(false);
+      finishWriteOperation(operation, isCurrent);
     }
   };
 
@@ -273,7 +295,7 @@ export default function ReplicaKeybindingsView() {
           <button className="btn-ghost text-xs" disabled={loading || saving} onClick={() => load()}>
             {loading ? '刷新中...' : '刷新'}
           </button>
-          <button className="btn-ghost text-xs text-[var(--color-error)]" disabled={loading || saving || customCount === 0} onClick={() => { setResetDialogOpen(true); setResetError(''); }}>
+          <button className="btn-ghost text-xs text-[var(--color-error)]" disabled={loading || saving || customCount === 0} onClick={() => { if (writeInFlightRef.current) return; setResetDialogOpen(true); setResetError(''); }}>
             恢复默认
           </button>
         </div>
@@ -340,7 +362,7 @@ export default function ReplicaKeybindingsView() {
                 </label>
                 <div className="flex items-center gap-2">
                   <button className="btn-primary text-xs" disabled={saving} onClick={submitEditor}>{saving ? '保存中...' : '保存'}</button>
-                  <button className="btn-ghost text-xs" disabled={saving} onClick={() => setEditor(null)}>取消</button>
+                  <button className="btn-ghost text-xs" disabled={saving} onClick={() => { if (!writeInFlightRef.current) setEditor(null); }}>取消</button>
                 </div>
               </div>
               {contextDescriptions.get(editor.context) ? <div className="mt-2 text-[11px] text-[var(--color-text-muted)]">{contextDescriptions.get(editor.context)}</div> : null}
@@ -414,7 +436,7 @@ export default function ReplicaKeybindingsView() {
         confirmLabel="恢复默认"
         busy={saving}
         error={resetError}
-        onCancel={() => { setResetDialogOpen(false); setResetError(''); }}
+        onCancel={() => { if (writeInFlightRef.current) return; setResetDialogOpen(false); setResetError(''); }}
         onConfirm={handleReset}
       />
     </div>

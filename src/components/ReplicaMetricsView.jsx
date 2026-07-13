@@ -286,34 +286,46 @@ export default function ReplicaMetricsView() {
   const [memHistory, setMemHistory] = useState([]);
   const sampleIndexRef = useRef(0);
   const prevMetricsRef = useRef(null);
+  const refreshInFlightRef = useRef(null);
 
   useEffect(() => {
     setCpuHistory([]);
     setMemHistory([]);
     setError(null);
     setLoading(true);
+    setRefreshing(false);
+    refreshInFlightRef.current = null;
     sampleIndexRef.current = 0;
     prevMetricsRef.current = null;
   }, [activeProjectId]);
 
   // 拉取数据
   const doRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) return false;
+    const operation = {};
+    refreshInFlightRef.current = operation;
     const projectId = activeProjectId;
     try {
       setRefreshing(true);
       setError(null);
       const ok = await refreshMetrics();
-      if (useStore.getState().activeProjectId !== projectId) return;
+      if (useStore.getState().activeProjectId !== projectId) return false;
       if (ok === false) {
         setError(useStore.getState().metricsError || '请求失败');
+        return false;
       }
+      return true;
     } catch (e) {
-      if (useStore.getState().activeProjectId !== projectId) return;
+      if (useStore.getState().activeProjectId !== projectId) return false;
       setError(e?.message || '请求失败');
+      return false;
     } finally {
-      if (useStore.getState().activeProjectId === projectId) {
-        setLoading(false);
-        setRefreshing(false);
+      if (refreshInFlightRef.current === operation) {
+        refreshInFlightRef.current = null;
+        if (useStore.getState().activeProjectId === projectId) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     }
   }, [activeProjectId, refreshMetrics]);

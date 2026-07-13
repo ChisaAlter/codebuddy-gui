@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 
 function formatNumber(value) {
@@ -49,6 +49,7 @@ function StatCard({ title, value, subtitle }) {
 }
 
 export default function ReplicaStatsView() {
+  const activeProjectId = useStore((state) => state.activeProjectId);
   const sessionId = useStore((state) => state.sessionId);
   const stats = useStore((state) => state.stats);
   const sessionStats = useStore((state) => state.sessionStats);
@@ -56,17 +57,30 @@ export default function ReplicaStatsView() {
   const statsError = useStore((state) => state.statsError);
   const refreshStats = useStore((state) => state.refreshStats);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshInFlightRef = useRef(null);
+
+  useEffect(() => {
+    refreshInFlightRef.current = null;
+    setRefreshing(false);
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (stats === null && !statsLoading && !statsError) refreshStats();
   }, [stats, statsLoading, statsError, refreshStats]);
 
   const handleRefresh = async () => {
+    if (refreshInFlightRef.current) return;
+    const operation = {};
+    refreshInFlightRef.current = operation;
+    const projectId = activeProjectId;
     setRefreshing(true);
     try {
       await refreshStats();
     } finally {
-      setRefreshing(false);
+      if (refreshInFlightRef.current === operation) {
+        refreshInFlightRef.current = null;
+        if (useStore.getState().activeProjectId === projectId) setRefreshing(false);
+      }
     }
   };
 

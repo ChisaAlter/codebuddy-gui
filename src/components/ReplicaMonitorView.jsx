@@ -50,6 +50,7 @@ function formatDiskUsage(metrics) {
 export default function ReplicaMonitorView() {
   const activeProjectId = useStore((state) => state.activeProjectId);
   const loadRequestRef = useRef(0);
+  const loadInFlightRef = useRef(null);
   const [auth, setAuth] = useState(null);
   const [info, setInfo] = useState(null);
   const [daemon, setDaemon] = useState(null);
@@ -60,6 +61,9 @@ export default function ReplicaMonitorView() {
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
+    if (loadInFlightRef.current) return false;
+    const operation = {};
+    loadInFlightRef.current = operation;
     const requestId = ++loadRequestRef.current;
     const projectId = activeProjectId;
     setLoading(true);
@@ -73,7 +77,7 @@ export default function ReplicaMonitorView() {
         fetchJson('/api/v1/workers'),
         fetchJson('/api/v1/channels'),
       ]);
-      if (requestId !== loadRequestRef.current || useStore.getState().activeProjectId !== projectId) return;
+      if (requestId !== loadRequestRef.current || useStore.getState().activeProjectId !== projectId) return false;
       const failed = [];
       const read = (index, label, apply) => {
         const result = results[index];
@@ -94,12 +98,17 @@ export default function ReplicaMonitorView() {
         setChannels((Array.isArray(channelList) ? channelList : []).filter((item) => !item.hidden));
       });
       if (failed.length) setError(`部分数据暂时不可用：${failed.join('、')}`);
+      return failed.length === 0;
     } catch (err) {
       if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) {
         setError(err.message || '加载失败');
       }
+      return false;
     } finally {
-      if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
+      if (loadInFlightRef.current === operation) {
+        loadInFlightRef.current = null;
+        if (requestId === loadRequestRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
+      }
     }
   }, [activeProjectId]);
 
@@ -110,6 +119,8 @@ export default function ReplicaMonitorView() {
     setMetrics(null);
     setWorkers([]);
     setChannels([]);
+    setLoading(true);
+    loadInFlightRef.current = null;
     load();
   }, [load]);
 
