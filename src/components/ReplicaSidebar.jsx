@@ -101,7 +101,7 @@ export default function ReplicaSidebar() {
   const {
     route, setRoute, sidebarCollapsed,
     info, currentModel, currentMode, models, modes,
-    connectionState, newSession, setModel, setMode, changesCount,
+    connectionState, newSession, newSessionBusy, newSessionProjectId, newSessionError, setModel, setMode, changesCount,
     workspacePath, projectsById, projectOrder, activeProjectId, activeThreadId, fileDirty, selectedFile,
     threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
   } = useStore();
@@ -326,12 +326,24 @@ export default function ReplicaSidebar() {
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
-              className="flex w-full items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-              onClick={() => { setRoute('chat'); newSession(); }}
+              className="flex w-full items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+              disabled={newSessionBusy}
+              onClick={async () => {
+                if (newSessionBusy) return;
+                setRoute('chat');
+                await newSession();
+              }}
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 2v12M2 8h12" /></svg>
-              新对话
+              {newSessionBusy ? (
+                <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 2v12M2 8h12" /></svg>
+              )}
+              {newSessionBusy ? '正在创建...' : '新对话'}
             </button>
+            {newSessionError && newSessionProjectId === activeProjectId ? (
+              <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{newSessionError}</div>
+            ) : null}
           </div>
         )}
 

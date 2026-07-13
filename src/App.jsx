@@ -162,6 +162,9 @@ function StatusBar() {
   const connectionState = useStore((s) => s.connectionState);
   const apiBase = useStore((s) => s.apiBase);
   const activeProjectId = useStore((s) => s.activeProjectId);
+  const newSessionBusy = useStore((s) => s.newSessionBusy);
+  const newSessionProjectId = useStore((s) => s.newSessionProjectId);
+  const newSessionError = useStore((s) => s.newSessionError);
 
   return (
     <div className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] pl-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
@@ -202,17 +205,25 @@ function StatusBar() {
           </span>
         ) : null}
         <button
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
-          onClick={() => {
+          type="button"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+          disabled={newSessionBusy}
+          onClick={async () => {
+            if (newSessionBusy) return;
             const store = useStore.getState();
             store.setRoute('chat');
-            store.newSession();
+            await store.newSession();
           }}
-          title="New chat"
+          title={newSessionError && newSessionProjectId === activeProjectId ? newSessionError : newSessionBusy ? '正在创建新对话' : '新对话'}
+          aria-label={newSessionBusy ? '正在创建新对话' : '新对话'}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M8 2v12M2 8h12" />
-          </svg>
+          {newSessionBusy ? (
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M8 2v12M2 8h12" />
+            </svg>
+          )}
         </button>
         <WindowControls />
       </div>

@@ -314,6 +314,9 @@ export const useStore = create((set, get) => ({
   models: [],
   modes: [],
   currentMode: 'default',
+  newSessionBusy: false,
+  newSessionProjectId: null,
+  newSessionError: null,
   info: null,
   settings: null,
   infoLoaded: false,
@@ -1221,22 +1224,59 @@ export const useStore = create((set, get) => ({
   },
 
   async newSession() {
+    if (get().newSessionBusy) return false;
     const projectId = get().activeProjectId;
-    if (!projectId) {
-      await get().chooseWorkspace();
-      return Boolean(get().activeThreadId);
+    const previousThreadId = get().activeThreadId;
+    let thread = null;
+    set({ newSessionBusy: true, newSessionProjectId: projectId, newSessionError: null, error: null });
+    try {
+      if (!projectId) {
+        await get().chooseWorkspace();
+        const created = Boolean(get().activeThreadId);
+        if (!created) set({ newSessionError: get().error || '未能创建新会话' });
+        return created;
+      }
+
+      thread = createThreadRecord(projectId);
+      set((state) => ({
+        threadsById: { ...state.threadsById, [thread.id]: thread },
+        threadOrderByProject: {
+          ...state.threadOrderByProject,
+          [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+        },
+        activeThreadId: thread.id,
+      }));
+
+      const persisted = await get().persistProductState();
+      if (!persisted) {
+        set((state) => {
+          const threadsById = { ...state.threadsById };
+          delete threadsById[thread.id];
+          return {
+            threadsById,
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: (state.threadOrderByProject[projectId] || []).filter((id) => id !== thread.id),
+            },
+            activeThreadId: state.activeThreadId === thread.id ? previousThreadId : state.activeThreadId,
+            newSessionError: state.error || '保存新会话失败',
+          };
+        });
+        return false;
+      }
+
+      if (get().activeProjectId !== projectId || get().activeThreadId !== thread.id) return true;
+      const initialized = await get().initializeActiveThread(null);
+      if (!initialized && get().activeProjectId === projectId && get().activeThreadId === thread.id) {
+        set({ newSessionError: get().error || '新会话连接失败，请重试' });
+      }
+      return initialized;
+    } catch (error) {
+      if (get().activeProjectId === projectId) set({ newSessionError: error?.message || '创建新会话失败' });
+      return false;
+    } finally {
+      set({ newSessionBusy: false });
     }
-    const thread = createThreadRecord(projectId);
-    set((state) => ({
-      threadsById: { ...state.threadsById, [thread.id]: thread },
-      threadOrderByProject: {
-        ...state.threadOrderByProject,
-        [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
-      },
-      activeThreadId: thread.id,
-    }));
-    await get().persistProductState();
-    return get().initializeActiveThread(null);
   },
 
   // 切工作区：经 IPC 弹目录选择框 → set workspacePath + 持久化 → 用新 cwd 起新会话 + 重定向文件树根
