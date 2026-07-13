@@ -43,6 +43,7 @@ const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
 const runtimeOperationChains = new Map();
 const sessionSettingChains = new Map();
+const threadMutationChains = new Map();
 const sessionActionOperations = new Map();
 const promptQueueOperationChains = new Map();
 let dirtyFileConfirmationResolve = null;
@@ -112,6 +113,16 @@ function queueSessionSettingOperation(key, operation) {
   sessionSettingChains.set(key, tracked);
   return tracked;
 }
+function queueThreadMutation(threadId, operation) {
+  const previous = threadMutationChains.get(threadId) || Promise.resolve();
+  const next = previous.catch(() => false).then(operation);
+  const tracked = next.finally(() => {
+    if (threadMutationChains.get(threadId) === tracked) threadMutationChains.delete(threadId);
+  });
+  threadMutationChains.set(threadId, tracked);
+  return tracked;
+}
+
 function runUniqueSessionAction(key, operation) {
   const existing = sessionActionOperations.get(key);
   if (existing) return existing;
@@ -1225,68 +1236,72 @@ export const useStore = create((set, get) => ({
   },
 
   async renameThread(threadId, name) {
-    const thread = get().threadsById[threadId];
-    const projectId = thread?.projectId;
-    const title = String(name || '').trim();
-    if (!thread || !title) return false;
-    if (thread.sessionId) {
-      if (projectId !== get().activeProjectId) return false;
-      try {
-        await apiRenameSession(thread.sessionId, title);
-      } catch (error) {
-        if (projectId === get().activeProjectId) set({ error: error.message || '重命名会话失败' });
-        return false;
+    return queueThreadMutation(threadId, async () => {
+      const thread = get().threadsById[threadId];
+      const projectId = thread?.projectId;
+      const title = String(name || '').trim();
+      if (!thread || !title) return false;
+      if (thread.sessionId) {
+        if (projectId !== get().activeProjectId) return false;
+        try {
+          await apiRenameSession(thread.sessionId, title);
+        } catch (error) {
+          if (projectId === get().activeProjectId) set({ error: error.message || '重命名会话失败' });
+          return false;
+        }
       }
-    }
-    if (!get().threadsById[threadId]) return false;
-    set((state) => ({
-      threadsById: {
-        ...state.threadsById,
-        [threadId]: { ...state.threadsById[threadId], title, updatedAt: new Date().toISOString() },
-      },
-      sessionTitle: state.activeThreadId === threadId ? title : state.sessionTitle,
-      sessions: state.sessions.map((session) => (
-        (session.id || session.sessionId) === thread.sessionId ? { ...session, name: title } : session
-      )),
-    }));
-    await get().persistProductState();
-    return true;
+      if (!get().threadsById[threadId]) return false;
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: { ...state.threadsById[threadId], title, updatedAt: new Date().toISOString() },
+        },
+        sessionTitle: state.activeThreadId === threadId ? title : state.sessionTitle,
+        sessions: state.sessions.map((session) => (
+          (session.id || session.sessionId) === thread.sessionId ? { ...session, name: title } : session
+        )),
+      }));
+      await get().persistProductState();
+      return true;
+    });
   },
 
   async deleteThread(threadId) {
-    const thread = get().threadsById[threadId];
-    const projectId = thread?.projectId;
-    if (!thread) return false;
-    if (thread.sessionId) {
-      if (projectId !== get().activeProjectId) return false;
-      try {
-        await apiDeleteSession(thread.sessionId);
-      } catch (error) {
-        if (projectId === get().activeProjectId) set({ error: error.message || '删除会话失败' });
-        return false;
+    return queueThreadMutation(threadId, async () => {
+      const thread = get().threadsById[threadId];
+      const projectId = thread?.projectId;
+      if (!thread) return false;
+      if (thread.sessionId) {
+        if (projectId !== get().activeProjectId) return false;
+        try {
+          await apiDeleteSession(thread.sessionId);
+        } catch (error) {
+          if (projectId === get().activeProjectId) set({ error: error.message || '删除会话失败' });
+          return false;
+        }
       }
-    }
-    if (!get().threadsById[threadId]) return false;
-    await conversations.dispose(threadId);
-    const wasActive = get().activeThreadId === threadId;
-    set((state) => {
-      const threadsById = { ...state.threadsById };
-      delete threadsById[threadId];
-      const order = (state.threadOrderByProject[thread.projectId] || []).filter((id) => id !== threadId);
-      return {
-        threadsById,
-        threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
-        sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
-        activeThreadId: wasActive ? (order[0] || null) : state.activeThreadId,
-      };
+      if (!get().threadsById[threadId]) return false;
+      await conversations.dispose(threadId);
+      const wasActive = get().activeThreadId === threadId;
+      set((state) => {
+        const threadsById = { ...state.threadsById };
+        delete threadsById[threadId];
+        const order = (state.threadOrderByProject[thread.projectId] || []).filter((id) => id !== threadId);
+        return {
+          threadsById,
+          threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
+          sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
+          activeThreadId: wasActive ? (order[0] || null) : state.activeThreadId,
+        };
+      });
+      await get().persistProductState();
+      if (wasActive) {
+        const replacementId = get().activeThreadId;
+        if (replacementId) await get().activateThread(replacementId);
+        else await get().newSession();
+      }
+      return true;
     });
-    await get().persistProductState();
-    if (wasActive) {
-      const replacementId = get().activeThreadId;
-      if (replacementId) await get().activateThread(replacementId);
-      else await get().newSession();
-    }
-    return true;
   },
 
   async setModel(modelId) {

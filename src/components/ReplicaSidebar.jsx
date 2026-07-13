@@ -139,6 +139,9 @@ export default function ReplicaSidebar() {
   const scopeGenerationRef = React.useRef(0);
   const renameRequestRef = React.useRef(0);
   const renameInFlightRef = React.useRef(false);
+  const deleteInFlightRef = React.useRef(null);
+  const projectActionInFlightRef = React.useRef(null);
+  const selectionInFlightRef = React.useRef(null);
 
   const startRename = (thread) => {
     setRenamingId(thread.id);
@@ -181,7 +184,9 @@ export default function ReplicaSidebar() {
   };
 
   const confirmDelete = async () => {
-    if (!pendingDelete || threadDeleteBusy) return;
+    if (!pendingDelete || deleteInFlightRef.current) return;
+    const operation = {};
+    deleteInFlightRef.current = operation;
     const projectId = activeProjectId;
     const generation = scopeGenerationRef.current;
     const thread = pendingDelete;
@@ -200,12 +205,15 @@ export default function ReplicaSidebar() {
         setThreadDeleteError(error?.message || '删除会话失败，请重试');
       }
     } finally {
-      if (generation === scopeGenerationRef.current && projectId === useStore.getState().activeProjectId) setThreadDeleteBusy(false);
+      if (deleteInFlightRef.current === operation) {
+        deleteInFlightRef.current = null;
+        if (generation === scopeGenerationRef.current && projectId === useStore.getState().activeProjectId) setThreadDeleteBusy(false);
+      }
     }
   };
 
   const openProjectDialog = (mode, project) => {
-    if (projectNavigationBusy || projectActionBusy) return;
+    if (projectNavigationBusy || projectActionInFlightRef.current) return;
     setProjectMenuOpenId(null);
     setProjectDialog({ mode, project });
     setProjectName(project.name || '');
@@ -213,13 +221,13 @@ export default function ReplicaSidebar() {
   };
 
   const closeProjectDialog = () => {
-    if (projectActionBusy) return;
+    if (projectActionInFlightRef.current) return;
     setProjectDialog(null);
     setProjectActionError('');
   };
 
   const submitProjectDialog = async () => {
-    if (!projectDialog || projectActionBusy) return;
+    if (!projectDialog || projectActionInFlightRef.current) return;
     const generation = scopeGenerationRef.current;
     const dialog = projectDialog;
     const { mode, project } = dialog;
@@ -227,6 +235,8 @@ export default function ReplicaSidebar() {
       setProjectActionError('项目名称不能为空');
       return;
     }
+    const operation = {};
+    projectActionInFlightRef.current = operation;
     setProjectActionBusy(true);
     setProjectActionError('');
     try {
@@ -244,12 +254,17 @@ export default function ReplicaSidebar() {
         setProjectActionError(error.message || (mode === 'rename' ? '重命名失败' : '移除失败'));
       }
     } finally {
-      if (generation === scopeGenerationRef.current) setProjectActionBusy(false);
+      if (projectActionInFlightRef.current === operation) {
+        projectActionInFlightRef.current = null;
+        if (generation === scopeGenerationRef.current) setProjectActionBusy(false);
+      }
     }
   };
 
   const changeSessionSetting = async (kind, value) => {
-    if (selectionBusy || connectionState !== 'connected' || !activeThreadId) return;
+    if (selectionInFlightRef.current || connectionState !== 'connected' || !activeThreadId) return;
+    const operation = {};
+    selectionInFlightRef.current = operation;
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const generation = scopeGenerationRef.current;
@@ -274,7 +289,10 @@ export default function ReplicaSidebar() {
       setSelectionError(true);
       setSelectionMessage(error?.message || (kind === 'model' ? '模型切换失败' : '模式切换失败'));
     } finally {
-      if (isCurrent()) setSelectionBusy(false);
+      if (selectionInFlightRef.current === operation) {
+        selectionInFlightRef.current = null;
+        if (isCurrent()) setSelectionBusy(false);
+      }
     }
   };
 
@@ -282,6 +300,9 @@ export default function ReplicaSidebar() {
     scopeGenerationRef.current += 1;
     renameRequestRef.current += 1;
     renameInFlightRef.current = false;
+    deleteInFlightRef.current = null;
+    projectActionInFlightRef.current = null;
+    selectionInFlightRef.current = null;
     setRenamingId(null);
     setRenameValue('');
     setThreadRenameBusy(false);
@@ -617,7 +638,7 @@ export default function ReplicaSidebar() {
                                 重命名
                               </button>
                               <button
-                                onClick={() => { setMenuOpenId(null); setThreadDeleteError(''); setPendingDelete(thread); }}
+                                onClick={() => { if (deleteInFlightRef.current) return; setMenuOpenId(null); setThreadDeleteError(''); setPendingDelete(thread); }}
                                 className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
                               >
                                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4h10M5 4V2h6v2M4 4v9h8V4" /></svg>
@@ -705,7 +726,7 @@ export default function ReplicaSidebar() {
         confirmLabel="删除会话"
         busy={threadDeleteBusy}
         error={threadDeleteError}
-        onCancel={() => { if (!threadDeleteBusy) setPendingDelete(null); }}
+        onCancel={() => { if (!deleteInFlightRef.current) setPendingDelete(null); }}
         onConfirm={confirmDelete}
       />
 

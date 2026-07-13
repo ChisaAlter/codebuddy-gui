@@ -373,11 +373,16 @@ export default function ReplicaChatView() {
   const [showModePicker, setShowModePicker] = useState(false);
   const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
   const sessionSelectionRequestRef = useRef(0);
+  const sessionSelectionInFlightRef = useRef(null);
   const sessionSelectionBusy = sessionSelectionStatus?.type === 'busy';
   const [cancelBusy, setCancelBusy] = useState(false);
   const cancelRequestRef = useRef(0);
+  const cancelInFlightRef = useRef(null);
   const [queueActionBusy, setQueueActionBusy] = useState(false);
   const queueActionRequestRef = useRef(0);
+  const queueActionInFlightRef = useRef(null);
+  const recoveryInFlightRef = useRef(null);
+  const sendLaunchInFlightRef = useRef(null);
   // Auto-dismiss error banner after 8 seconds
   useEffect(() => {
     if (!chatError) return;
@@ -388,7 +393,14 @@ export default function ReplicaChatView() {
     sessionSelectionRequestRef.current += 1;
     cancelRequestRef.current += 1;
     queueActionRequestRef.current += 1;
+    sessionSelectionInFlightRef.current = null;
+    cancelInFlightRef.current = null;
+    queueActionInFlightRef.current = null;
+    recoveryInFlightRef.current = null;
+    sendLaunchInFlightRef.current = null;
     setSessionSelectionStatus(null);
+    setRecovering(false);
+    setChatError(null);
     setCancelBusy(false);
     setQueueActionBusy(false);
     setShowModelPicker(false);
@@ -431,7 +443,9 @@ export default function ReplicaChatView() {
   const recoveryMessage = activeProject?.runtimeError || recoveryError || (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
 
   const changeSessionSetting = async (kind, value) => {
-    if (sessionSelectionBusy || connectionState !== 'connected' || !activeThreadId || !value) return;
+    if (sessionSelectionInFlightRef.current || connectionState !== 'connected' || !activeThreadId || !value) return;
+    const operation = {};
+    sessionSelectionInFlightRef.current = operation;
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const requestId = ++sessionSelectionRequestRef.current;
@@ -441,24 +455,28 @@ export default function ReplicaChatView() {
       && projectId === useStore.getState().activeProjectId
       && threadId === useStore.getState().activeThreadId
     );
-    setSessionSelectionStatus({ type: 'busy', message: `正在切换${label}...` });
+    setSessionSelectionStatus({ type: 'busy', message: '正在切换' + label + '...' });
     try {
       const changed = kind === 'model' ? await setModel(value) : await setMode(value);
       if (!isCurrent()) return;
       if (changed) {
-        setSessionSelectionStatus({ type: 'success', message: `${label}已切换` });
+        setSessionSelectionStatus({ type: 'success', message: label + '已切换' });
         if (kind === 'model') setShowModelPicker(false);
         else setShowModePicker(false);
       } else {
-        setSessionSelectionStatus({ type: 'error', message: useStore.getState().error || `${label}切换失败` });
+        setSessionSelectionStatus({ type: 'error', message: useStore.getState().error || (label + '切换失败') });
       }
     } catch (error) {
-      if (isCurrent()) setSessionSelectionStatus({ type: 'error', message: error?.message || `${label}切换失败` });
+      if (isCurrent()) setSessionSelectionStatus({ type: 'error', message: error?.message || (label + '切换失败') });
+    } finally {
+      if (sessionSelectionInFlightRef.current === operation) sessionSelectionInFlightRef.current = null;
     }
   };
 
   const cancelActiveSession = async () => {
-    if (cancelBusy || !activeThreadId) return;
+    if (cancelInFlightRef.current || !activeThreadId) return;
+    const operation = {};
+    cancelInFlightRef.current = operation;
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const requestId = ++cancelRequestRef.current;
@@ -475,24 +493,39 @@ export default function ReplicaChatView() {
     } catch (cancelError) {
       if (isCurrent()) setChatError(cancelError?.message || '停止生成失败，请重试。');
     } finally {
-      if (isCurrent()) setCancelBusy(false);
+      if (cancelInFlightRef.current === operation) {
+        cancelInFlightRef.current = null;
+        if (isCurrent()) setCancelBusy(false);
+      }
     }
   };
 
   const recoverConnection = async () => {
-    if (!activeProjectId || recovering) return;
+    if (!activeProjectId || recoveryInFlightRef.current) return;
+    const operation = {};
+    recoveryInFlightRef.current = operation;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
     setRecovering(true);
     setChatError(null);
     try {
-      const recovered = runtimeUnavailable ? await restartProjectRuntime(activeProjectId) : await initializeActiveThread(undefined);
+      const recovered = runtimeUnavailable ? await restartProjectRuntime(projectId) : await initializeActiveThread(undefined);
+      if (!isCurrent()) return;
       if (!recovered) {
         const currentError = useStore.getState().error;
         setChatError(currentError || '重新连接失败，请检查 CodeBuddy CLI 状态后重试。');
       }
     } catch (error) {
-      setChatError('重新连接失败: ' + (error?.message || '未知错误'));
+      if (isCurrent()) setChatError('重新连接失败: ' + (error?.message || '未知错误'));
     } finally {
-      setRecovering(false);
+      if (recoveryInFlightRef.current === operation) {
+        recoveryInFlightRef.current = null;
+        if (isCurrent()) setRecovering(false);
+      }
     }
   };
 
@@ -523,24 +556,40 @@ export default function ReplicaChatView() {
 
   const onSubmit = async () => {
     const value = input.trim();
-    if (!value && pendingAttachments.length === 0) return;
+    if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
     if (!canSend) {
       setChatError('当前会话尚未连接，请先重新连接后再发送。');
       return;
     }
+    const operation = {};
+    sendLaunchInFlightRef.current = operation;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const isCurrent = () => (
+      projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    const releaseTimer = setTimeout(() => {
+      if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
+    }, 0);
     setChatError(null);
     try {
       const sent = await sendPrompt(value);
-      if (!sent) {
+      if (isCurrent() && !sent) {
         setChatError('发送失败，草稿和附件已恢复，可重新连接后再次发送。');
       }
     } catch (err) {
-      setChatError('发送消息失败: ' + (err.message || '未知错误'));
+      if (isCurrent()) setChatError('发送消息失败: ' + (err.message || '未知错误'));
+    } finally {
+      clearTimeout(releaseTimer);
+      if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }
   };
 
   const resumePromptQueue = async () => {
-    if (queueActionBusy || !activeThreadId || !canSend || isStreaming) return;
+    if (queueActionInFlightRef.current || !activeThreadId || !canSend || isStreaming) return;
+    const operation = {};
+    queueActionInFlightRef.current = operation;
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const requestId = ++queueActionRequestRef.current;
@@ -558,12 +607,17 @@ export default function ReplicaChatView() {
     } catch (error) {
       if (isCurrent()) setChatError(error?.message || '继续发送队列失败');
     } finally {
-      if (isCurrent()) setQueueActionBusy(false);
+      if (queueActionInFlightRef.current === operation) {
+        queueActionInFlightRef.current = null;
+        if (isCurrent()) setQueueActionBusy(false);
+      }
     }
   };
 
   const removePromptFromQueue = async (promptId) => {
-    if (queueActionBusy || !activeThreadId) return;
+    if (queueActionInFlightRef.current || !activeThreadId) return;
+    const operation = {};
+    queueActionInFlightRef.current = operation;
     const projectId = activeProjectId;
     const threadId = activeThreadId;
     const requestId = ++queueActionRequestRef.current;
@@ -580,7 +634,10 @@ export default function ReplicaChatView() {
     } catch (error) {
       if (isCurrent()) setChatError(error?.message || '移除待发送提示失败');
     } finally {
-      if (isCurrent()) setQueueActionBusy(false);
+      if (queueActionInFlightRef.current === operation) {
+        queueActionInFlightRef.current = null;
+        if (isCurrent()) setQueueActionBusy(false);
+      }
     }
   };
 
