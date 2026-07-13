@@ -40,7 +40,7 @@ npm run build
 构建会生成：
 
 - 前端产物：`out/dist/`
-- Windows 安装包：`dist/CodeBuddy GUI Setup 0.1.0.exe`
+- Windows 安装包：`dist/CodeBuddy GUI Setup <version>.exe`
 
 安装器支持选择安装目录，并会创建桌面和开始菜单快捷方式。安装新版本时可直接覆盖原有版本；项目、对话和界面状态保存在用户数据目录中，卸载应用默认不会删除这些数据。
 

@@ -1,8 +1,14 @@
-# CodeBuddy GUI 0.1.0
+# CodeBuddy GUI 0.1.1
 
-首个可安装预览版本，面向本地多项目 CodeBuddy CLI 工作流。
+0.1.1 维护版本，新增脱敏诊断报告，并完善本地发布材料与 Windows 代码签名门槛。
 
-## 已提供
+## 本版本重点
+
+- 设置页新增脱敏 JSON 诊断报告导出，方便安装版故障反馈。
+- 新增 `npm run release:prepare` 本地发布材料流程，统一资产命名、SHA256、`latest.yml` 和 Release 说明。
+- 正式发布默认拒绝未签名、自签名或发布者不匹配的 Windows 安装包。
+
+## 完整功能
 
 - 设置页可一键导出 JSON 诊断报告，包含应用、系统、窗口、运行时状态和最近启动/崩溃日志；密码、Token、API Key、用户目录和项目路径会脱敏，不读取对话、草稿、项目文件或 `product-state.json`。
 - 设置页新增 CodeBuddy GUI 手动更新检查：显示当前与最新版本、区分尚无正式发布与网络失败，15 秒超时后可重试；外部打开只允许本仓库 GitHub Releases 路径，不会后台下载或自动安装。
