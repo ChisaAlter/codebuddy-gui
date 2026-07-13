@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-gui",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Multi-project desktop client for CodeBuddy CLI",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
@@ -39,6 +39,7 @@
     "@xterm/xterm": "^5.5.0",
     "electron-store": "^8.2.0",
     "express": "^4.21.2",
+    "jsonc-parser": "^3.3.1",
     "monaco-editor": "^0.55.1",
     "node-fetch": "^2.7.0",
     "qrcode": "^1.5.4",

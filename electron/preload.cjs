@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   openReleasePage: (releaseUrl) => ipcRenderer.invoke('app:openReleasePage', releaseUrl),
   openUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:openUpdateDownload', downloadUrl),
+  listMcpConfigs: (cwd) => ipcRenderer.invoke('mcp:listConfigs', cwd),
   exportDiagnostics: () => ipcRenderer.invoke('app:exportDiagnostics'),
   showTaskNotification: (payload) => ipcRenderer.invoke('notification:showTaskResult', payload),
   consumeTaskNotificationTarget: () => ipcRenderer.invoke('notification:consumeOpenThread'),

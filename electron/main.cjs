@@ -1,7 +1,9 @@
 const { app, BrowserWindow, ipcMain, shell, net, dialog, session, Tray, Menu, Notification } = require('electron');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const { parse: parseJsonc } = require('jsonc-parser');
 const http = require('http');
 const express = require('express');
 const { createProductStateStore } = require('./product-state.cjs');
@@ -155,6 +157,122 @@ function trustedGuiDownloadUrl(value) {
   return null;
 }
 
+function firstExistingPath(candidates) {
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function readMcpConfigFile(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8').trim();
+    if (!text) return {};
+    const errors = [];
+    const value = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false });
+    if (errors.length || !value || typeof value !== 'object' || Array.isArray(value)) {
+      const offset = errors[0]?.offset;
+      throw new Error(`JSONC 格式无效${Number.isFinite(offset) ? `（位置 ${offset}）` : ''}`);
+    }
+    return value;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error(`${filePath}: ${error?.message || error}`);
+  }
+}
+
+function comparableMcpPath(value) {
+  const resolved = path.resolve(String(value || ''));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function publicMcpArgs(args) {
+  let redactNext = false;
+  return (Array.isArray(args) ? args : []).map((value) => {
+    const text = String(value);
+    if (redactNext) {
+      redactNext = false;
+      return '[redacted]';
+    }
+    const assignment = text.match(/^(--?[^=]*(?:token|api[-_]?key|secret|password|auth|credential)[^=]*)=(.*)$/i);
+    if (assignment) return `${assignment[1]}=[redacted]`;
+    if (/^--?[^=]*(?:token|api[-_]?key|secret|password|auth|credential)/i.test(text)) redactNext = true;
+    return redactSecrets(text);
+  });
+}
+
+function publicMcpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    if (parsed.username) parsed.username = 'redacted';
+    if (parsed.password) parsed.password = 'redacted';
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (/(?:token|api[-_]?key|secret|password|auth|credential)/i.test(key)) parsed.searchParams.set(key, '[redacted]');
+    }
+    return redactSecrets(parsed.toString());
+  } catch (_) {
+    return redactSecrets(value);
+  }
+}
+
+function publicMcpConfig(config = {}) {
+  return {
+    type: String(config.type || (config.command ? 'stdio' : config.url ? 'http' : 'unknown')),
+    command: typeof config.command === 'string' ? redactSecrets(config.command) : '',
+    args: publicMcpArgs(config.args),
+    url: typeof config.url === 'string' ? publicMcpUrl(config.url) : '',
+    description: typeof config.description === 'string' ? config.description : '',
+    envKeys: config.env && typeof config.env === 'object' && !Array.isArray(config.env) ? Object.keys(config.env) : [],
+    headerKeys: config.headers && typeof config.headers === 'object' && !Array.isArray(config.headers) ? Object.keys(config.headers) : [],
+  };
+}
+
+function resolveMcpConfigLocations(cwd) {
+  const rawCwd = String(cwd || '').trim();
+  if (!rawCwd || !path.isAbsolute(rawCwd)) throw new Error('MCP 配置需要有效的项目绝对路径');
+  const resolvedCwd = path.resolve(rawCwd);
+  try {
+    if (!fs.statSync(resolvedCwd).isDirectory()) throw new Error('not a directory');
+  } catch (_) {
+    throw new Error(`项目目录不存在或不可访问: ${resolvedCwd}`);
+  }
+  const homeDir = os.homedir();
+  const configRoot = String(process.env.CODEBUDDY_CONFIG_DIR || '').trim() || path.join(homeDir, '.codebuddy');
+  return {
+    cwd: resolvedCwd,
+    user: firstExistingPath([path.join(configRoot, '.mcp.json'), path.join(configRoot, 'mcp.json'), path.join(homeDir, '.codebuddy.json')]),
+    project: firstExistingPath([path.join(resolvedCwd, '.mcp.json'), path.join(resolvedCwd, 'mcp.json')]),
+    local: path.join(homeDir, '.mcp.json'),
+  };
+}
+
+function configuredMcpServers(scope, config, filePath) {
+  const servers = config?.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers) ? config.mcpServers : {};
+  const disabled = new Set(Array.isArray(config?.disabledMcpServers) ? config.disabledMcpServers.map(String) : []);
+  return Object.entries(servers).map(([name, value]) => ({ name, scope, filePath, disabled: disabled.has(name), config: publicMcpConfig(value) }));
+}
+
+function listConfiguredMcpServers(cwd) {
+  const locations = resolveMcpConfigLocations(cwd);
+  const errors = [];
+  const readScope = (scope, filePath, select = (value) => value) => {
+    try {
+      return configuredMcpServers(scope, select(readMcpConfigFile(filePath)) || {}, filePath);
+    } catch (error) {
+      errors.push({ scope, filePath, message: error?.message || String(error) });
+      return [];
+    }
+  };
+  const user = readScope('user', locations.user);
+  const project = readScope('project', locations.project);
+  const local = readScope('local', locations.local, (value) => {
+    const projects = value?.projects && typeof value.projects === 'object' && !Array.isArray(value.projects) ? value.projects : {};
+    const target = comparableMcpPath(locations.cwd);
+    const projectKey = Object.keys(projects).find((candidate) => comparableMcpPath(candidate) === target);
+    return projectKey ? projects[projectKey] : {};
+  });
+  const scopeRank = { local: 0, project: 1, user: 2 };
+  const servers = [...local, ...project, ...user].sort((left, right) => (scopeRank[left.scope] - scopeRank[right.scope]) || left.name.localeCompare(right.name));
+  return { cwd: locations.cwd, locations, servers, errors };
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -279,6 +397,8 @@ ipcMain.handle('app:getInfo', () => ({
   packaged: app.isPackaged,
   userDataPath: app.getPath('userData'),
 }));
+
+ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

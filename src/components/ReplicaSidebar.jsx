@@ -51,6 +51,11 @@ const ITEM_ICONS = {
       <path d="M8 2l2 4 4 2-4 2-2 4-2-4-4-2 4-2z" />
     </svg>
   ),
+  mcp: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="4" cy="8" r="2" /><circle cx="12" cy="4" r="2" /><circle cx="12" cy="12" r="2" /><path d="M6 8h2.5M9.5 7l1.2-1.6M9.5 9l1.2 1.6" />
+    </svg>
+  ),
   stats: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M2 14V6h3v8H2zm4.5 0V1h3v13h-3zm4.5 0V4h3v10h-3z" />

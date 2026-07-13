@@ -17,6 +17,7 @@ export const NAV_GROUPS = [
       { id: 'editor', label: '编辑器' },
       { id: 'changes', label: '变更' },
       { id: 'plugins', label: '插件' },
+      { id: 'mcp', label: 'MCP' },
     ],
   },
   {

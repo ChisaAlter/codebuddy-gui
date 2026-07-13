@@ -5,6 +5,7 @@ export const ROUTES = [
   'terminal',
   'tasks',
   'plugins',
+  'mcp',
   'editor',
   'changes',
   'stats',
