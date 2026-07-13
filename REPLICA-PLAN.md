@@ -45,3 +45,4 @@
 - MCP 配置与运行时管理 ✅
 - E2B Sandbox 状态、项目映射、终止和清理管理 ✅
 - CodeBuddy 后台会话启动、结构化列表、日志、Endpoint 与终止管理 ✅
+- CodeBuddy Daemon 系统服务状态、登录自启动安装与卸载管理 ✅

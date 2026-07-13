@@ -2,6 +2,7 @@ import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { fetchDaemonStatus, restartDaemon, startDaemon, stopDaemon, stopWorker } from '../lib/ops';
+import { getDaemonServiceStatus, installDaemonService, uninstallDaemonService } from '../lib/daemon-service';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 const STATUS_CONFIG = {
@@ -49,6 +50,66 @@ function formatDateTime(value) {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN');
 }
 
+const DAEMON_PERMISSION_OPTIONS = [
+  ['default', '默认确认'],
+  ['acceptEdits', '自动接受编辑'],
+  ['plan', '计划模式'],
+  ['dontAsk', '不主动询问'],
+  ['auto', '自动模式'],
+  ['bypassPermissions', '跳过权限确认'],
+];
+
+function DaemonServiceInstallDialog({ open, busy, error, onCancel, onSubmit }) {
+  const [port, setPort] = React.useState('');
+  const [permissionMode, setPermissionMode] = React.useState('default');
+  const [validationError, setValidationError] = React.useState('');
+
+  React.useEffect(() => {
+    if (!open) return;
+    setPort('');
+    setPermissionMode('default');
+    setValidationError('');
+  }, [open]);
+
+  if (!open) return null;
+
+  const submit = () => {
+    const portText = port.trim();
+    if (portText) {
+      const value = Number(portText);
+      if (!Number.isInteger(value) || value < 1 || value > 65535) {
+        setValidationError('端口必须是 1 到 65535 之间的整数');
+        return;
+      }
+    }
+    setValidationError('');
+    onSubmit({ port: portText, permissionMode });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4" role="dialog" aria-modal="true" aria-label="安装 Daemon 系统服务" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onCancel(); }}>
+      <div className="w-full max-w-md rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+        <div className="text-sm font-semibold text-[var(--color-text-primary)]">安装 Daemon 系统服务</div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <label className="text-xs text-[var(--color-text-secondary)]">端口
+            <input className="input-field mt-1 w-full font-mono" inputMode="numeric" value={port} disabled={busy} onChange={(event) => { setPort(event.target.value); setValidationError(''); }} placeholder="自动分配" />
+          </label>
+          <label className="text-xs text-[var(--color-text-secondary)]">权限模式
+            <select className="input-field mt-1 w-full" value={permissionMode} disabled={busy} onChange={(event) => setPermissionMode(event.target.value)}>{DAEMON_PERMISSION_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+          </label>
+        </div>
+        <div className="mt-3 text-xs leading-5 text-[var(--color-text-muted)]">Windows 将创建用户级任务计划，并在登录后自动启动 CodeBuddy Daemon。</div>
+        {permissionMode === 'bypassPermissions' ? <div className="mt-3 rounded-md border border-[rgba(250,204,21,0.25)] bg-[rgba(250,204,21,0.08)] px-3 py-2 text-xs text-[var(--color-accent-yellow)]">跳过权限确认会让后台会话直接执行操作，仅应在隔离环境中使用。</div> : null}
+        {(validationError || error) ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{validationError || error}</div> : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn-ghost px-3 py-1.5 text-xs" disabled={busy} onClick={onCancel}>取消</button>
+          <button className="btn-primary px-3 py-1.5 text-xs" disabled={busy} onClick={submit}>{busy ? '安装中...' : '安装服务'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReplicaWorkersView() {
   const { workers, refreshWorkers, workersError, setRoute } = useStore(useShallow((state) => ({
     workers: state.workers,
@@ -63,12 +124,19 @@ export default function ReplicaWorkersView() {
   const [loading, setLoading] = React.useState(true);
   const [daemon, setDaemon] = React.useState(null);
   const [daemonBusy, setDaemonBusy] = React.useState(false);
+  const [daemonService, setDaemonService] = React.useState(null);
+  const [daemonServiceBusy, setDaemonServiceBusy] = React.useState(false);
+  const [daemonServiceError, setDaemonServiceError] = React.useState('');
+  const [daemonServiceNotice, setDaemonServiceNotice] = React.useState('');
+  const [daemonInstallOpen, setDaemonInstallOpen] = React.useState(false);
+  const [daemonUninstallOpen, setDaemonUninstallOpen] = React.useState(false);
   const [workerBusyPid, setWorkerBusyPid] = React.useState(null);
   const [actionError, setActionError] = React.useState('');
   const [pendingStopWorker, setPendingStopWorker] = React.useState(null);
   const [workerActionError, setWorkerActionError] = React.useState('');
   const projectGenerationRef = React.useRef(0);
   const refreshRequestRef = React.useRef(0);
+  const daemonServiceOperationRef = React.useRef(null);
 
   const handleRefresh = React.useCallback(async () => {
     const projectId = activeProjectId;
@@ -76,9 +144,10 @@ export default function ReplicaWorkersView() {
     setRefreshing(true);
     setActionError('');
     try {
-      const [workersResult, daemonResult] = await Promise.allSettled([
+      const [workersResult, daemonResult, daemonServiceResult] = await Promise.allSettled([
         refreshWorkers(),
         fetchDaemonStatus(),
+        getDaemonServiceStatus(),
       ]);
       if (requestId !== refreshRequestRef.current || useStore.getState().activeProjectId !== projectId) return false;
       if (workersResult.status === 'rejected') {
@@ -89,7 +158,13 @@ export default function ReplicaWorkersView() {
       } else {
         setActionError((current) => current || daemonResult.reason?.message || '加载 Daemon 状态失败');
       }
-      return workersResult.status === 'fulfilled' && workersResult.value !== false && daemonResult.status === 'fulfilled';
+      if (daemonServiceResult.status === 'fulfilled') {
+        setDaemonService(daemonServiceResult.value);
+        setDaemonServiceError('');
+      } else {
+        setDaemonServiceError(daemonServiceResult.reason?.message || '加载 Daemon 系统服务状态失败');
+      }
+      return workersResult.status === 'fulfilled' && workersResult.value !== false && daemonResult.status === 'fulfilled' && daemonServiceResult.status === 'fulfilled';
     } finally {
       if (requestId === refreshRequestRef.current && useStore.getState().activeProjectId === projectId) {
         setRefreshing(false);
@@ -102,9 +177,16 @@ export default function ReplicaWorkersView() {
     projectGenerationRef.current += 1;
     refreshRequestRef.current += 1;
     setDaemon(null);
+    setDaemonService(null);
     setLoading(true);
     setRefreshing(false);
     setDaemonBusy(false);
+    setDaemonServiceBusy(false);
+    setDaemonServiceError('');
+    setDaemonServiceNotice('');
+    setDaemonInstallOpen(false);
+    setDaemonUninstallOpen(false);
+    daemonServiceOperationRef.current = null;
     setWorkerBusyPid(null);
     setExpandedPid(null);
     setActionError('');
@@ -128,6 +210,50 @@ export default function ReplicaWorkersView() {
       }
     } finally {
       if (projectId === useStore.getState().activeProjectId && generation === projectGenerationRef.current) setDaemonBusy(false);
+    }
+  };
+
+  const submitDaemonServiceInstall = async (options) => {
+    if (daemonServiceOperationRef.current) return;
+    const operation = {};
+    daemonServiceOperationRef.current = operation;
+    const generation = projectGenerationRef.current;
+    setDaemonServiceBusy(true);
+    setDaemonServiceError('');
+    setDaemonServiceNotice('');
+    try {
+      const result = await installDaemonService(options);
+      if (daemonServiceOperationRef.current !== operation || generation !== projectGenerationRef.current) return;
+      setDaemonService(result?.snapshot || await getDaemonServiceStatus());
+      setDaemonInstallOpen(false);
+      setDaemonServiceNotice(result?.output || 'Daemon 系统服务已安装');
+    } catch (error) {
+      if (daemonServiceOperationRef.current === operation && generation === projectGenerationRef.current) setDaemonServiceError(error?.message || '安装 Daemon 系统服务失败');
+    } finally {
+      if (daemonServiceOperationRef.current === operation) daemonServiceOperationRef.current = null;
+      if (generation === projectGenerationRef.current) setDaemonServiceBusy(false);
+    }
+  };
+
+  const confirmDaemonServiceUninstall = async () => {
+    if (daemonServiceOperationRef.current) return;
+    const operation = {};
+    daemonServiceOperationRef.current = operation;
+    const generation = projectGenerationRef.current;
+    setDaemonServiceBusy(true);
+    setDaemonServiceError('');
+    setDaemonServiceNotice('');
+    try {
+      const result = await uninstallDaemonService();
+      if (daemonServiceOperationRef.current !== operation || generation !== projectGenerationRef.current) return;
+      setDaemonService(result?.snapshot || await getDaemonServiceStatus());
+      setDaemonUninstallOpen(false);
+      setDaemonServiceNotice(result?.output || 'Daemon 系统服务已卸载');
+    } catch (error) {
+      if (daemonServiceOperationRef.current === operation && generation === projectGenerationRef.current) setDaemonServiceError(error?.message || '卸载 Daemon 系统服务失败');
+    } finally {
+      if (daemonServiceOperationRef.current === operation) daemonServiceOperationRef.current = null;
+      if (generation === projectGenerationRef.current) setDaemonServiceBusy(false);
     }
   };
 
@@ -242,6 +368,20 @@ export default function ReplicaWorkersView() {
               <button className="btn-ghost text-xs" disabled={daemonBusy} onClick={() => runDaemonAction(restartDaemon, '重启 Daemon 失败')}>
                 {daemonBusy ? '处理中...' : '重启'}
               </button>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border-default)] pt-4">
+            <div>
+              <div className="text-sm font-medium text-[var(--color-text-primary)]">登录自启动</div>
+              <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                {daemonService?.systemService?.installed ? '已安装' : daemonService ? '未安装' : '状态未知'}
+                {daemonService?.systemService?.backend ? ` · ${daemonService.systemService.backend}` : ''}
+              </div>
+              {daemonServiceNotice ? <div className="mt-2 text-xs whitespace-pre-wrap text-[var(--color-accent-green)]">{daemonServiceNotice}</div> : null}
+              {daemonServiceError ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{daemonServiceError}</div> : null}
+            </div>
+            <div className="flex items-center gap-2">
+              {daemonService?.systemService?.installed ? <button className="btn-ghost text-xs text-[var(--color-accent-red)]" disabled={daemonServiceBusy} onClick={() => { setDaemonServiceError(''); setDaemonUninstallOpen(true); }}>卸载自启动</button> : <button className="btn-primary text-xs" disabled={daemonServiceBusy || !daemonService} onClick={() => { setDaemonServiceError(''); setDaemonInstallOpen(true); }}>安装自启动</button>}
             </div>
           </div>
         </div>
@@ -415,6 +555,8 @@ export default function ReplicaWorkersView() {
           </div>
         )}
       </div>
+      <DaemonServiceInstallDialog open={daemonInstallOpen} busy={daemonServiceBusy} error={daemonServiceError} onCancel={() => { if (!daemonServiceBusy) { setDaemonInstallOpen(false); setDaemonServiceError(''); } }} onSubmit={submitDaemonServiceInstall} />
+      <ActionConfirmDialog open={daemonUninstallOpen} title="卸载 Daemon 登录自启动？" description="将删除 CodeBuddy Daemon 的系统服务注册。当前已运行的 Daemon 不会被此操作强制终止。" confirmLabel="卸载自启动" busy={daemonServiceBusy} error={daemonServiceError} onCancel={() => { if (!daemonServiceBusy) { setDaemonUninstallOpen(false); setDaemonServiceError(''); } }} onConfirm={confirmDaemonServiceUninstall} />
       <ActionConfirmDialog
         open={Boolean(pendingStopWorker)}
         title="终止 Worker？"

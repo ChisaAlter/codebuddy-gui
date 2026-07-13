@@ -604,6 +604,82 @@ async function runExclusiveBackgroundSessionOperation(operation) {
   }
 }
 
+function publicDaemonServiceStatus(value = {}) {
+  const service = value?.systemService && typeof value.systemService === 'object' ? value.systemService : {};
+  return {
+    status: typeof value.status === 'string' ? value.status : 'unknown',
+    pid: Number.isInteger(Number(value.pid)) ? Number(value.pid) : null,
+    port: Number.isInteger(Number(value.port)) ? Number(value.port) : null,
+    endpoint: typeof value.endpoint === 'string' ? value.endpoint : '',
+    systemService: {
+      installed: service.installed === true,
+      backend: typeof service.backend === 'string' ? service.backend : 'unknown',
+      configPath: typeof service.configPath === 'string' ? service.configPath : '',
+    },
+  };
+}
+
+async function readDaemonServiceStatus() {
+  const result = await runCodeBuddyCli(['daemon', 'status'], { timeoutMs: 30000 });
+  const output = String(result.stdout || result.output || '').trim();
+  let parsed;
+  try {
+    const objectStart = output.indexOf('{');
+    const objectEnd = output.lastIndexOf('}');
+    parsed = JSON.parse(objectStart >= 0 && objectEnd > objectStart ? output.slice(objectStart, objectEnd + 1) : output);
+  } catch (error) {
+    throw new Error(`CodeBuddy Daemon 状态格式无效: ${error?.message || error}`);
+  }
+  return publicDaemonServiceStatus(parsed);
+}
+
+const DAEMON_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto']);
+
+function normalizeDaemonInstallOptions(payload = {}) {
+  const args = ['daemon', 'install'];
+  const portText = String(payload.port ?? '').trim();
+  if (portText) {
+    const port = Number(portText);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Daemon 端口必须是 1 到 65535 之间的整数');
+    args.push('--port', String(port));
+  }
+  const permissionMode = String(payload.permissionMode || 'default').trim();
+  if (!DAEMON_PERMISSION_MODES.has(permissionMode)) throw new Error('Daemon 权限模式无效');
+  args.push('--permission-mode', permissionMode);
+  return args;
+}
+
+async function installDaemonService(payload) {
+  const current = await readDaemonServiceStatus();
+  if (current.systemService.installed) return { output: 'CodeBuddy Daemon 系统服务已安装', snapshot: current };
+  const result = await runCodeBuddyCli(normalizeDaemonInstallOptions(payload), { timeoutMs: 60000 });
+  const snapshot = await readDaemonServiceStatus();
+  if (!snapshot.systemService.installed) throw new Error('CodeBuddy 命令已完成，但系统服务仍未安装');
+  return { output: stripTerminalFormatting(result.output), snapshot };
+}
+
+async function uninstallDaemonService() {
+  const current = await readDaemonServiceStatus();
+  if (!current.systemService.installed) return { output: 'CodeBuddy Daemon 系统服务未安装', snapshot: current };
+  const result = await runCodeBuddyCli(['daemon', 'uninstall'], { timeoutMs: 60000 });
+  const snapshot = await readDaemonServiceStatus();
+  if (snapshot.systemService.installed) throw new Error('CodeBuddy 命令已完成，但系统服务仍然存在');
+  return { output: stripTerminalFormatting(result.output), snapshot };
+}
+
+let daemonServiceOperation = null;
+
+async function runExclusiveDaemonServiceOperation(operation) {
+  if (daemonServiceOperation) throw new Error('另一个 Daemon 系统服务操作正在进行，请稍候');
+  const promise = Promise.resolve().then(operation);
+  daemonServiceOperation = promise;
+  try {
+    return await promise;
+  } finally {
+    if (daemonServiceOperation === promise) daemonServiceOperation = null;
+  }
+}
+
 logStartup('main.cjs loaded');
 
 const runtimeManager = createCodeBuddyRuntimeManager({
@@ -738,6 +814,9 @@ ipcMain.handle('backgroundSession:start', (_event, payload) => runExclusiveBackg
 ipcMain.handle('backgroundSession:logs', (_event, pid) => readBackgroundSessionLogs(pid));
 ipcMain.handle('backgroundSession:kill', (_event, pid) => runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)));
 ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackgroundSessionEndpoint(endpoint));
+ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
+ipcMain.handle('daemonService:install', (_event, payload) => runExclusiveDaemonServiceOperation(() => installDaemonService(payload)));
+ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperation(() => uninstallDaemonService()));
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
   const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';

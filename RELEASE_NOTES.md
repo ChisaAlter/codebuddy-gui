@@ -1,8 +1,15 @@
-# CodeBuddy GUI 0.4.0
+# CodeBuddy GUI 0.5.0
 
-0.4.0 功能版本，补齐 CodeBuddy CLI 后台会话的桌面端生命周期管理。
+0.5.0 功能版本，补齐 CodeBuddy Daemon 的系统自启动管理。
 
 ## 本版本重点
+
+- Workers 页新增 Daemon 登录自启动状态，直接读取 `codebuddy daemon status` 的系统服务信息。
+- 支持配置可选端口和权限模式，并通过真实 `codebuddy daemon install` 注册用户级 Windows 任务计划。
+- 卸载操作使用应用内确认，调用 `codebuddy daemon uninstall` 后重新读取状态确认任务计划已删除。
+- 系统服务操作与当前项目运行时隔离；切换项目时迟到结果不会覆盖新页面，卸载自启动不会强制终止当前 Daemon。
+
+## 0.4.0
 
 - 实例页新增“项目运行时 / 后台会话”双视图，后台会话列表直接读取 `codebuddy ps --json` 的结构化结果。
 - 可选择已添加项目并输入任务内容，通过真实 `codebuddy --bg` 启动独立后台任务；名称、工作目录和任务内容均在主进程重新校验。
