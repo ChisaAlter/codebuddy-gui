@@ -765,7 +765,7 @@ export const useStore = create((set, get) => ({
         currentMode: item.modeId || 'default',
       },
     ]));
-    const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], false);
+    const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], true);
     set({
       projectsById: restoredProjects,
       projectOrder: loaded.projectOrder,
@@ -1929,23 +1929,52 @@ export const useStore = create((set, get) => ({
 
   applyProjectRuntimeStatus(runtime) {
     if (!runtime?.projectId) return;
+    let terminalStateReset = false;
     set((state) => {
       const project = state.projectsById[runtime.projectId];
       if (!project) return {};
-      return {
-        projectsById: {
-          ...state.projectsById,
-          [runtime.projectId]: {
-            ...project,
-            runtimeStatus: runtime.status || 'idle',
-            runtimePort: runtime.port || null,
-            runtimePid: runtime.pid || null,
-            runtimeStartedAt: runtime.startedAt || null,
-            runtimeError: runtime.error || null,
+      const runtimeStatus = runtime.status || 'idle';
+      const runtimeStartedAt = runtime.startedAt || (runtimeStatus === 'starting' ? project.runtimeStartedAt : null);
+      const runtimeChanged = runtimeStatus === 'running'
+        && Boolean(runtimeStartedAt)
+        && runtimeStartedAt !== project.runtimeStartedAt;
+      const runtimeUnavailable = ['stopped', 'error'].includes(runtimeStatus);
+      const currentTerminalState = terminalStateFromProject(project, false);
+      const hasTerminalSessions = currentTerminalState.panes.some((pane) => pane.sessionId)
+        || (state.activeProjectId === runtime.projectId && state.terminalPanes.some((pane) => pane.sessionId));
+      const resetTerminalSessions = (runtimeChanged || runtimeUnavailable) && hasTerminalSessions;
+      terminalStateReset = resetTerminalSessions;
+      const terminalState = resetTerminalSessions
+        ? terminalStateFromProject(project, true)
+        : currentTerminalState;
+      const nextProject = {
+        ...project,
+        runtimeStatus,
+        runtimePort: runtime.port || null,
+        runtimePid: runtime.pid || null,
+        runtimeStartedAt,
+        runtimeError: runtime.error || null,
+        ...(resetTerminalSessions ? {
+          preferences: {
+            ...(project.preferences || {}),
+            terminalState: {
+              activePaneId: terminalState.activePaneId,
+              panes: terminalState.panes,
+            },
           },
-        },
+        } : {}),
+      };
+      return {
+        projectsById: { ...state.projectsById, [runtime.projectId]: nextProject },
+        ...(resetTerminalSessions && state.activeProjectId === runtime.projectId ? {
+          terminalPanes: terminalState.panes,
+          activePaneId: terminalState.activePaneId,
+          terminalSessions: [],
+          ptySessionId: null,
+        } : {}),
       };
     });
+    if (terminalStateReset) get().persistProductState();
   },
 
   async ensureProjectRuntime(projectId = get().activeProjectId) {
