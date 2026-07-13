@@ -380,7 +380,7 @@ export default function ReplicaChangesView() {
   return (
     <>
       <div className="flex min-h-0 flex-1 bg-[var(--color-bg-primary)]">
-        <div className="flex min-h-0 w-[380px] shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]">
+        <div className="flex min-h-0 w-[clamp(300px,32vw,380px)] shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]">
           <div className="border-b border-[var(--color-border-default)] p-3">
             <div className="mb-2 text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">
               Source Control

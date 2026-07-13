@@ -395,8 +395,8 @@ async function createWindow() {
   const winOpts = {
     width: savedBounds?.width || 1440,
     height: savedBounds?.height || 920,
-    minWidth: 1200,
-    minHeight: 760,
+    minWidth: 900,
+    minHeight: 640,
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#000000',

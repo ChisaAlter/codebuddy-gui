@@ -374,7 +374,7 @@ export default function ReplicaSidebar() {
     <aside
       role="navigation" aria-label="Main navigation"
       className="sidebar-nav flex h-full shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] transition-all duration-200"
-      style={{ width: sidebarCollapsed ? 60 : 252 }}
+      style={{ width: sidebarCollapsed ? 60 : 'clamp(220px, 21vw, 252px)' }}
     >
       {/* Brand */}
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">

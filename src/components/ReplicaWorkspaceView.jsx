@@ -720,7 +720,7 @@ export default function ReplicaWorkspaceView() {
 
   return (
     <div className="flex min-h-0 flex-1 bg-[var(--color-bg-primary)]">
-      <div className="flex min-h-0 w-[360px] shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]">
+      <div className="flex min-h-0 w-[clamp(280px,30vw,360px)] shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]">
         <SearchPanel />
         <div className="flex items-center border-b border-[var(--color-border-default)]">
           <Breadcrumbs />
