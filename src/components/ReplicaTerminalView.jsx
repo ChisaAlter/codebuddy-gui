@@ -44,16 +44,22 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
       socketRef.current?.sendInput(data);
     });
 
+    let resizeFrame = null;
     const resizeObserver = new ResizeObserver(() => {
-      try {
-        fitAddon.fit();
-        socketRef.current?.resize(term.cols, term.rows);
-      } catch (_) {}
+      if (resizeFrame !== null) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        try {
+          fitAddon.fit();
+          socketRef.current?.resize(term.cols, term.rows);
+        } catch (_) {}
+      });
     });
     resizeObserver.observe(containerRef.current);
 
     return () => {
       resizeObserver.disconnect();
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
       socketRef.current?.close();
       term.dispose();
       terminalRef.current = null;

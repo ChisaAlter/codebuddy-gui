@@ -31,6 +31,7 @@ export default function ReplicaLogsView() {
   const [logError, setLogError] = useState(null);
   const containerRef = useRef(null);
   const logRequestIdRef = useRef(0);
+  const logLoadInFlightRef = useRef(null);
   const preferredWorkerPidRef = useRef('');
   const preferredWorkerProjectRef = useRef(null);
 
@@ -38,6 +39,7 @@ export default function ReplicaLogsView() {
     let active = true;
     const projectId = activeProjectId;
     logRequestIdRef.current += 1;
+    logLoadInFlightRef.current = null;
     setInitialWorkersLoad(true);
     setWorkerPid('');
     setLogs('');
@@ -88,6 +90,7 @@ export default function ReplicaLogsView() {
 
   useEffect(() => {
     logRequestIdRef.current += 1;
+    logLoadInFlightRef.current = null;
     setLogs('');
     setLogPath('');
     setLogError(null);
@@ -95,7 +98,9 @@ export default function ReplicaLogsView() {
   }, [workerPid]);
 
   const loadLogs = useCallback(async () => {
-    if (!workerPid) return false;
+    if (!workerPid || logLoadInFlightRef.current) return false;
+    const operation = {};
+    logLoadInFlightRef.current = operation;
     const projectId = activeProjectId;
     const requestedPid = workerPid;
     const requestId = ++logRequestIdRef.current;
@@ -118,6 +123,7 @@ export default function ReplicaLogsView() {
       setLogs('');
       return false;
     } finally {
+      if (logLoadInFlightRef.current === operation) logLoadInFlightRef.current = null;
       if (requestId === logRequestIdRef.current && useStore.getState().activeProjectId === projectId) setLoading(false);
     }
   }, [activeProjectId, workerPid, logType, loadWorkerLogs]);
