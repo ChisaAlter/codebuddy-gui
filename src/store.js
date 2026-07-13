@@ -3886,6 +3886,26 @@ export const useStore = create((set, get) => ({
     return get().runThreadPrompt(threadId, prepared.next.text, prepared.attachments, prepared.next.draftText ?? prepared.next.text);
   },
 
+  async moveQueuedPrompt(threadId, promptId, direction) {
+    if (!threadId || !promptId || !['up', 'down'].includes(direction)) return false;
+    return queuePromptQueueOperation(threadId, async () => {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const index = runtime.promptQueue.findIndex((item) => item.id === promptId);
+      if (index < 0) return false;
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= runtime.promptQueue.length) return true;
+      const promptQueue = [...runtime.promptQueue];
+      [promptQueue[index], promptQueue[targetIndex]] = [promptQueue[targetIndex], promptQueue[index]];
+      get().patchThreadRuntime(threadId, { promptQueue });
+      const persisted = await get().persistThreadPromptQueue(threadId, promptQueue);
+      if (!persisted) {
+        get().patchThreadRuntime(threadId, { promptQueue: runtime.promptQueue });
+        get().setThreadPromptQueue(threadId, runtime.promptQueue);
+      }
+      return persisted;
+    });
+  },
+
   async removeQueuedPrompt(threadId, promptId) {
     return queuePromptQueueOperation(threadId, async () => {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();

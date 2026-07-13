@@ -645,6 +645,7 @@ export default function ReplicaChatView() {
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
   const activeThreadId = useStore((s) => s.activeThreadId);
   const promptQueue = useStore((s) => s.promptQueue || []);
+  const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
   const drainThreadPromptQueue = useStore((s) => s.drainThreadPromptQueue);
   const pendingAttachments = useStore((s) => s.pendingAttachments || []);
@@ -921,6 +922,33 @@ export default function ReplicaChatView() {
     }
   };
 
+  const movePromptInQueue = async (promptId, direction) => {
+    if (queueActionInFlightRef.current || !activeThreadId) return;
+    const operation = {};
+    queueActionInFlightRef.current = operation;
+    const projectId = activeProjectId;
+    const threadId = activeThreadId;
+    const requestId = ++queueActionRequestRef.current;
+    const isCurrent = () => (
+      requestId === queueActionRequestRef.current
+      && projectId === useStore.getState().activeProjectId
+      && threadId === useStore.getState().activeThreadId
+    );
+    setQueueActionBusy(true);
+    setChatError(null);
+    try {
+      const moved = await moveQueuedPrompt(threadId, promptId, direction);
+      if (isCurrent() && !moved) setChatError(useStore.getState().error || '调整待发送顺序失败，请重试。');
+    } catch (error) {
+      if (isCurrent()) setChatError(error?.message || '调整待发送顺序失败');
+    } finally {
+      if (queueActionInFlightRef.current === operation) {
+        queueActionInFlightRef.current = null;
+        if (isCurrent()) setQueueActionBusy(false);
+      }
+    }
+  };
+
   const removePromptFromQueue = async (promptId) => {
     if (queueActionInFlightRef.current || !activeThreadId) return;
     const operation = {};
@@ -1155,6 +1183,24 @@ export default function ReplicaChatView() {
                   <div key={item.id} className="flex items-center gap-2 text-xs">
                     <span className="text-[var(--color-text-muted)]">{index + 1}</span>
                     <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]" title={item.text}>{item.text}</span>
+                    <button
+                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
+                      disabled={queueActionBusy || index === 0}
+                      onClick={() => movePromptInQueue(item.id, 'up')}
+                      title="上移"
+                      aria-label="上移待发送提示"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 10l4-4 4 4" /></svg>
+                    </button>
+                    <button
+                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
+                      disabled={queueActionBusy || index === promptQueue.length - 1}
+                      onClick={() => movePromptInQueue(item.id, 'down')}
+                      title="下移"
+                      aria-label="下移待发送提示"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 6l4 4 4-4" /></svg>
+                    </button>
                     <button
                       className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
                       disabled={queueActionBusy}
