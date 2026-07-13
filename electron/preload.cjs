@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readBackgroundSessionLogs: (pid) => ipcRenderer.invoke('backgroundSession:logs', pid),
   killBackgroundSession: (pid) => ipcRenderer.invoke('backgroundSession:kill', pid),
   openBackgroundSessionEndpoint: (endpoint) => ipcRenderer.invoke('backgroundSession:openEndpoint', endpoint),
+  attachBackgroundSession: (pid) => ipcRenderer.invoke('backgroundSession:attach', pid),
   getDaemonServiceStatus: () => ipcRenderer.invoke('daemonService:status'),
   installDaemonService: (payload) => ipcRenderer.invoke('daemonService:install', payload),
   uninstallDaemonService: () => ipcRenderer.invoke('daemonService:uninstall'),

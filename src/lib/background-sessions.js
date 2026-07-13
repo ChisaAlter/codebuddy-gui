@@ -29,3 +29,9 @@ export async function killBackgroundSession(pid) {
 export async function openBackgroundSessionEndpoint(endpoint) {
   return requireBackgroundSessionApi('openBackgroundSessionEndpoint')(endpoint);
 }
+
+export async function attachBackgroundSession(pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) throw new Error('后台会话 PID 无效');
+  return requireBackgroundSessionApi('attachBackgroundSession')(value);
+}

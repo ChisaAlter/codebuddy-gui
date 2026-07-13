@@ -615,6 +615,60 @@ async function openBackgroundSessionEndpoint(value) {
   return { url: target.toString() };
 }
 
+function spawnDetachedInteractiveProcess(command, args, { cwd, windowsHide }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide,
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve({ pid: child.pid });
+    });
+  });
+}
+
+async function attachBackgroundSession(pidValue) {
+  const pid = validateBackgroundPid(pidValue);
+  const snapshot = await listBackgroundSessions();
+  const target = snapshot.sessions.find((item) => item.pid === pid);
+  if (!target) throw new Error('后台会话已结束或不存在');
+  if (target.kind !== 'bg') throw new Error(`只能接管 CodeBuddy 后台任务，当前类型为 ${target.kind}`);
+  if (process.platform !== 'win32') throw new Error('当前版本仅支持在 Windows 交互终端中接管后台会话');
+
+  const cwd = validateBackgroundCwd(target.cwd);
+  const windowsPowerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const powershell = fs.existsSync(windowsPowerShell) ? windowsPowerShell : 'powershell.exe';
+  const command = `& codebuddy attach ${pid}`;
+  const title = `CodeBuddy · ${target.name || `PID ${pid}`}`.slice(0, 80);
+  const windowsTerminal = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'wt.exe');
+
+  if (fs.existsSync(windowsTerminal)) {
+    try {
+      const launched = await spawnDetachedInteractiveProcess(windowsTerminal, [
+        '-w', '0', 'new-tab', '--title', title, '-d', cwd,
+        powershell, '-NoLogo', '-NoProfile', '-NoExit', '-Command', command,
+      ], { cwd, windowsHide: true });
+      return { session: target, terminal: 'Windows Terminal', launcherPid: launched.pid };
+    } catch (error) {
+      logStartup(`Windows Terminal attach launch failed: ${error?.message || error}`);
+    }
+  }
+
+  try {
+    const launched = await spawnDetachedInteractiveProcess(powershell, [
+      '-NoLogo', '-NoProfile', '-NoExit', '-Command', command,
+    ], { cwd, windowsHide: false });
+    return { session: target, terminal: 'Windows PowerShell', launcherPid: launched.pid };
+  } catch (error) {
+    throw new Error(`无法打开交互终端: ${error?.message || error}`);
+  }
+}
+
 let backgroundSessionOperation = null;
 
 async function runExclusiveBackgroundSessionOperation(operation) {
@@ -996,6 +1050,7 @@ ipcMain.handle('backgroundSession:start', (_event, payload) => runExclusiveBackg
 ipcMain.handle('backgroundSession:logs', (_event, pid) => readBackgroundSessionLogs(pid));
 ipcMain.handle('backgroundSession:kill', (_event, pid) => runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)));
 ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackgroundSessionEndpoint(endpoint));
+ipcMain.handle('backgroundSession:attach', (_event, pid) => attachBackgroundSession(pid));
 ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
 ipcMain.handle('daemonService:install', (_event, payload) => runExclusiveDaemonServiceOperation(() => installDaemonService(payload)));
 ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperation(() => uninstallDaemonService()));

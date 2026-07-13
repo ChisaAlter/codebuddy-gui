@@ -3,6 +3,7 @@ import ActionConfirmDialog from './ActionConfirmDialog';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
+  attachBackgroundSession,
   killBackgroundSession,
   listBackgroundSessions,
   openBackgroundSessionEndpoint,
@@ -146,6 +147,7 @@ export default function ReplicaBackgroundSessionsView() {
   const [pendingKill, setPendingKill] = React.useState(null);
   const [killBusy, setKillBusy] = React.useState(false);
   const [killError, setKillError] = React.useState('');
+  const [attachBusyPid, setAttachBusyPid] = React.useState(null);
   const [logsDialog, setLogsDialog] = React.useState(null);
   const [logsAutoRefresh, setLogsAutoRefresh] = React.useState(false);
   const [copyStatus, setCopyStatus] = React.useState('idle');
@@ -278,6 +280,25 @@ export default function ReplicaBackgroundSessionsView() {
     }
   };
 
+  const attachSession = async (session) => {
+    if (operationRef.current) return;
+    const operation = {};
+    operationRef.current = operation;
+    setAttachBusyPid(session.pid);
+    setError('');
+    setNotice('');
+    try {
+      const result = await attachBackgroundSession(session.pid);
+      if (!mountedRef.current || operationRef.current !== operation) return;
+      setNotice(`已在 ${result?.terminal || '交互终端'} 中接管 ${session.name || `PID ${session.pid}`}。关闭终端窗口不会终止后台任务。`);
+    } catch (attachError) {
+      if (mountedRef.current && operationRef.current === operation) setError(attachError?.message || '接管后台会话失败');
+    } finally {
+      if (operationRef.current === operation) operationRef.current = null;
+      if (mountedRef.current) setAttachBusyPid(null);
+    }
+  };
+
   const query = search.trim().toLowerCase();
   const filtered = sessions.filter((session) => {
     if (kindFilter !== 'all' && session.kind !== kindFilter) return false;
@@ -295,8 +316,8 @@ export default function ReplicaBackgroundSessionsView() {
           <select className="input-field w-36" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="all">全部类型</option>{kinds.map((kind) => <option key={kind} value={kind}>{KIND_LABELS[kind] || kind}</option>)}</select>
         </div>
         <div className="flex items-center gap-2">
-          <button className="btn-ghost px-3 py-1.5 text-xs" disabled={refreshing || startBusy || killBusy} onClick={() => refresh()}>{refreshing ? '刷新中...' : '刷新'}</button>
-          <button className="btn-primary px-3 py-1.5 text-xs" disabled={!projects.length || startBusy || killBusy} onClick={() => { setStartError(''); setStartOpen(true); }}>启动后台任务</button>
+          <button className="btn-ghost px-3 py-1.5 text-xs" disabled={refreshing || startBusy || killBusy || Boolean(attachBusyPid)} onClick={() => refresh()}>{refreshing ? '刷新中...' : '刷新'}</button>
+          <button className="btn-primary px-3 py-1.5 text-xs" disabled={!projects.length || startBusy || killBusy || Boolean(attachBusyPid)} onClick={() => { setStartError(''); setStartOpen(true); }}>启动后台任务</button>
         </div>
       </div>
 
@@ -309,6 +330,7 @@ export default function ReplicaBackgroundSessionsView() {
               const heartbeatAge = session.lastHeartbeat ? Date.now() - session.lastHeartbeat : null;
               const active = heartbeatAge == null || heartbeatAge < 45000;
               const canKill = session.kind === 'bg';
+              const canAttach = session.kind === 'bg';
               return <section key={`${session.kind}:${session.pid}`} className={index ? 'border-t border-[var(--color-border-default)]' : ''}>
                 <div className="flex flex-wrap items-start gap-4 px-4 py-4">
                   <div className="min-w-0 flex-1">
@@ -325,9 +347,10 @@ export default function ReplicaBackgroundSessionsView() {
                     {session.endpoint ? <div className="mt-2 truncate font-mono text-[10px] text-[var(--color-text-muted)]" title={session.endpoint}>{session.endpoint}</div> : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    {canAttach ? <button className="btn-ghost px-2 py-1 text-xs text-[var(--color-accent-blue)]" disabled={startBusy || killBusy || Boolean(attachBusyPid)} title="在交互终端中运行 codebuddy attach" onClick={() => attachSession(session)}>{attachBusyPid === session.pid ? '打开中...' : '接管'}</button> : null}
                     {session.endpoint ? <button className="btn-ghost px-2 py-1 text-xs" onClick={() => openEndpoint(session)}>打开</button> : null}
                     {session.logPath ? <button className="btn-ghost px-2 py-1 text-xs" onClick={() => { setCopyStatus('idle'); setLogsAutoRefresh(false); loadLogs(session); }}>日志</button> : null}
-                    {canKill ? <button className="btn-ghost px-2 py-1 text-xs text-[var(--color-accent-red)]" disabled={startBusy || killBusy} onClick={() => { setKillError(''); setPendingKill(session); }}>终止</button> : null}
+                    {canKill ? <button className="btn-ghost px-2 py-1 text-xs text-[var(--color-accent-red)]" disabled={startBusy || killBusy || Boolean(attachBusyPid)} onClick={() => { setKillError(''); setPendingKill(session); }}>终止</button> : null}
                   </div>
                 </div>
               </section>;
