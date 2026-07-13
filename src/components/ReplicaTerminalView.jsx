@@ -16,6 +16,7 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
   const appendPaneOutput = useStore((s) => s.appendPaneOutput);
   const setPaneSession = useStore((s) => s.setPaneSession);
   const currentSessionIdRef = useRef(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const isCurrentProject = () => useStore.getState().activeProjectId === projectId;
 
   useEffect(() => {
@@ -80,6 +81,18 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
       if (isCurrentProject()) setPaneStatus(pane.id, 'error', projectId);
     });
   }, [projectId, pane.id, pane.sessionId, createPty, bindPtyToPane, setPaneStatus]);
+
+  useEffect(() => {
+    if (!helpOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setHelpOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [helpOpen]);
 
   useEffect(() => {
     if (!pane.sessionId || !terminalRef.current) return;
@@ -166,11 +179,30 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBu
         <div className="flex items-center gap-1">
           <button className="btn-ghost" disabled={!canSplit} onClick={(e) => { e.stopPropagation(); onSplitRight(); }}>右分</button>
           <button className="btn-ghost" disabled={!canSplit} onClick={(e) => { e.stopPropagation(); onSplitDown(); }}>下分</button>
-          <div className="relative group">
-            <button className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 7.5h3V7h-3v.5zM5 9l.5 1h5l.5-1H5zM8 1a7 7 0 100 14A7 7 0 008 1zm0 12.5A5.5 5.5 0 1113.5 8 5.5 5.5 0 018 13.5z"/></svg>
+          <div className="relative z-50 group">
+            {helpOpen ? (
+              <div
+                className="fixed inset-0 z-40"
+                aria-hidden="true"
+                onClick={(event) => { event.stopPropagation(); setHelpOpen(false); }}
+              />
+            ) : null}
+            <button
+              type="button"
+              className="relative z-50 flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
+              title="终端快捷键"
+              aria-label="查看终端快捷键"
+              aria-expanded={helpOpen}
+              aria-controls={'terminal-shortcuts-' + pane.id}
+              onClick={(event) => { event.stopPropagation(); setHelpOpen((value) => !value); }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.5 7.5h3V7h-3v.5zM5 9l.5 1h5l.5-1H5zM8 1a7 7 0 100 14A7 7 0 008 1zm0 12.5A5.5 5.5 0 1113.5 8 5.5 5.5 0 018 13.5z"/></svg>
             </button>
-            <div className="absolute right-0 top-7 z-50 hidden group-hover:block w-48 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl p-2 text-[10px] text-[var(--color-text-secondary)] space-y-1">
+            <div
+              id={'terminal-shortcuts-' + pane.id}
+              role="tooltip"
+              className={'absolute right-0 top-7 z-50 w-48 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl p-2 text-[10px] text-[var(--color-text-secondary)] space-y-1 ' + (helpOpen ? 'block' : 'hidden group-hover:block group-focus-within:block')}
+            >
               <div className="font-medium text-[var(--color-text-primary)] mb-1">终端快捷键</div>
               <div>Ctrl+Shift+N 新建终端</div>
               <div>Ctrl+Shift+W 关闭终端</div>
