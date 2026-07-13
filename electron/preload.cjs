@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowReload: () => ipcRenderer.send('window:reload'),
   openDevTools: () => ipcRenderer.send('window:openDevTools'),
   getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
+  openUserData: () => ipcRenderer.invoke('app:openUserData'),
   runGit: (request) => ipcRenderer.invoke('git:run', request),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
   chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),

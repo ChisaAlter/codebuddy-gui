@@ -89,6 +89,13 @@ ipcMain.handle('app:getInfo', () => ({
   packaged: app.isPackaged,
   userDataPath: app.getPath('userData'),
 }));
+ipcMain.handle('app:openUserData', async () => {
+  const userDataPath = app.getPath('userData');
+  await fs.promises.mkdir(userDataPath, { recursive: true });
+  const openError = await shell.openPath(userDataPath);
+  if (openError) throw new Error(openError);
+  return { path: userDataPath };
+});
 
 function getRendererEntry() {
   if (isDev) return 'http://localhost:5173';

@@ -304,6 +304,9 @@ export default function ReplicaSettingsView() {
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [appInfo, setAppInfo] = useState(null);
+  const [appInfoError, setAppInfoError] = useState('');
+  const [systemAction, setSystemAction] = useState(null);
+  const [openingUserData, setOpeningUserData] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [selectionStatus, setSelectionStatus] = useState(null);
   const activeProjectId = useStore((state) => state.activeProjectId);
@@ -382,11 +385,55 @@ export default function ReplicaSettingsView() {
 
   useEffect(() => {
     let active = true;
-    window.electronAPI?.getAppInfo?.()
-      .then((value) => { if (active) setAppInfo(value); })
-      .catch(() => {});
+    setAppInfoError('');
+    const request = window.electronAPI?.getAppInfo?.();
+    if (!request) {
+      setAppInfoError('应用信息接口不可用');
+      return () => { active = false; };
+    }
+    request
+      .then((value) => {
+        if (!active) return;
+        setAppInfo(value);
+        setAppInfoError('');
+      })
+      .catch((error) => {
+        if (active) setAppInfoError(error?.message || '加载应用信息失败');
+      });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (systemAction?.type !== 'success') return undefined;
+    const timer = setTimeout(() => setSystemAction(null), 3000);
+    return () => clearTimeout(timer);
+  }, [systemAction]);
+
+  const copySystemPath = async (value, label) => {
+    if (!value) return;
+    setSystemAction(null);
+    try {
+      await navigator.clipboard.writeText(value);
+      if (mountedRef.current) setSystemAction({ type: 'success', message: `已复制${label}` });
+    } catch (error) {
+      if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || `复制${label}失败` });
+    }
+  };
+
+  const openUserDataDirectory = async () => {
+    if (openingUserData) return;
+    setOpeningUserData(true);
+    setSystemAction(null);
+    try {
+      if (!window.electronAPI?.openUserData) throw new Error('打开目录接口不可用');
+      await window.electronAPI.openUserData();
+      if (mountedRef.current) setSystemAction({ type: 'success', message: '已打开用户数据目录' });
+    } catch (error) {
+      if (mountedRef.current) setSystemAction({ type: 'error', message: error?.message || '打开用户数据目录失败' });
+    } finally {
+      if (mountedRef.current) setOpeningUserData(false);
+    }
+  };
 
   const modelOptions = (models || []).map((m) => ({
     value: m.id || m.modelId,
@@ -638,30 +685,33 @@ export default function ReplicaSettingsView() {
         {/* 系统信息 */}
         <div className="settings-group">
           <h2 className="settings-heading">系统信息</h2>
-          <div className="rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-            <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.version ? `v${appInfo.version}` : '开发模式'}</span>} />
-            <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo?.packaged ? '安装版' : '开发版'}</span>} />
+          <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
+            <SettingRow label="CodeBuddy GUI" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfoError ? '信息不可用' : appInfo?.version ? `v${appInfo.version}` : '加载中...'}</span>} />
+            <SettingRow label="应用模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{appInfo ? (appInfo.packaged ? '安装版' : '开发版') : '-'}</span>} />
             <SettingRow label="用户数据目录" desc="项目、对话、界面状态和诊断日志的本地保存位置" control={
               <div className="flex min-w-0 items-center gap-1">
-                <span className="max-w-[180px] truncate text-xs text-[var(--color-text-secondary)]" title={appInfo?.userDataPath || ''}>{appInfo?.userDataPath || '-'}</span>
+                <span className="max-w-[160px] truncate text-xs text-[var(--color-text-secondary)]" title={appInfo?.userDataPath || ''}>{appInfo?.userDataPath || '-'}</span>
                 <button
                   className="btn-icon ml-1 shrink-0"
                   title="复制用户数据目录"
                   disabled={!appInfo?.userDataPath}
-                  onClick={() => { navigator.clipboard.writeText(appInfo?.userDataPath || '').catch(() => {}); }}
+                  onClick={() => copySystemPath(appInfo?.userDataPath, '用户数据目录')}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                     <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                   </svg>
                 </button>
+                <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={openingUserData || !appInfo?.userDataPath} onClick={openUserDataDirectory}>
+                  {openingUserData ? '打开中...' : '打开'}
+                </button>
               </div>
             } />
             <SettingRow label="工作目录" control={
               <div className="flex items-center gap-1">
-                <span className="text-xs text-[var(--color-text-secondary)] truncate max-w-[180px]">{info?.cwd || '-'}</span>
-                <button className="btn-icon ml-1 shrink-0" title="复制路径" onClick={() => { navigator.clipboard.writeText(info?.cwd || '').catch(() => {}); }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <span className="max-w-[180px] truncate text-xs text-[var(--color-text-secondary)]" title={info?.cwd || ''}>{info?.cwd || '-'}</span>
+                <button className="btn-icon ml-1 shrink-0" title="复制工作目录" disabled={!info?.cwd} onClick={() => copySystemPath(info?.cwd, '工作目录')}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                     <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                   </svg>
@@ -672,7 +722,10 @@ export default function ReplicaSettingsView() {
             <SettingRow label="Node.js" control={<span className="text-xs text-[var(--color-text-secondary)]">{info?.nodeVersion || '-'}</span>} />
             <SettingRow label="网关模式" control={<span className="text-xs text-[var(--color-text-secondary)]">{info?.gatewayMode || '-'}</span>} />
           </div>
+          {appInfoError ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{appInfoError}</div> : null}
+          {systemAction ? <div className={`mt-2 text-xs ${systemAction.type === 'success' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'}`}>{systemAction.message}</div> : null}
         </div>
+
         </>)}
       </div>
     </div>
