@@ -1024,6 +1024,13 @@ export const useStore = create((set, get) => ({
     if (metadata['codebuddy.ai/historyReplay'] === 'end') runtimePatch.historyReplayActive = false;
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
 
+    if (metadata['codebuddy.ai/sessionReset'] && metadata['codebuddy.ai/newSessionId']) {
+      get().handleThreadSessionReset(threadId, metadata['codebuddy.ai/newSessionId']).catch((error) => {
+        console.warn('Failed to synchronize reset CodeBuddy session:', error);
+      });
+      return;
+    }
+
     if (metadata['codebuddy.ai/permissionResolved']) {
       const interruptionId = metadata['codebuddy.ai/toolCallId'];
       const decision = metadata['codebuddy.ai/decision'];
@@ -2277,6 +2284,171 @@ export const useStore = create((set, get) => ({
     const threadId = get().activeThreadId;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     get().patchThreadRuntime(threadId, { timeline: closeAssistantStream(runtime.timeline) });
+  },
+
+  handleThreadSessionReset(threadId, newSessionId) {
+    const normalizedSessionId = String(newSessionId || '').trim();
+    if (!threadId || !normalizedSessionId) return Promise.resolve(false);
+    return queueThreadMutation(threadId, async () => {
+      const initialState = get();
+      const thread = initialState.threadsById[threadId];
+      const project = thread ? initialState.projectsById[thread.projectId] : null;
+      if (!thread || !project) return false;
+      const existingRuntime = initialState.threadRuntimeById[threadId] || emptyThreadRuntime();
+      if (thread.sessionId === normalizedSessionId && existingRuntime.connectionState === 'connected') return true;
+
+      const previousSessionId = thread.sessionId || null;
+      const resetAt = new Date().toISOString();
+      const resetRuntime = {
+        ...emptyThreadRuntime(),
+        sessionId: normalizedSessionId,
+        connectionState: 'connecting',
+        availableCommands: existingRuntime.availableCommands,
+        models: existingRuntime.models,
+        modes: existingRuntime.modes,
+        currentModel: existingRuntime.currentModel || thread.modelId || null,
+        currentMode: existingRuntime.currentMode || thread.modeId || 'default',
+        capabilities: existingRuntime.capabilities,
+        historyReplayActive: true,
+      };
+
+      set((state) => {
+        const current = state.threadsById[threadId];
+        if (!current || current.projectId !== project.id) return {};
+        return {
+          threadsById: {
+            ...state.threadsById,
+            [threadId]: {
+              ...current,
+              sessionId: normalizedSessionId,
+              title: '新对话',
+              draft: '',
+              timeline: [],
+              status: 'connecting',
+              unread: false,
+              metadata: {
+                ...(current.metadata || {}),
+                promptQueue: [],
+                previousSessionId,
+                sessionResetAt: resetAt,
+                sessionResetLoadError: null,
+                lastError: null,
+              },
+              updatedAt: resetAt,
+            },
+          },
+          ...(state.activeThreadId === threadId ? {
+            sessionId: normalizedSessionId,
+            sessionTitle: '新对话',
+            error: null,
+          } : {}),
+        };
+      });
+      get().patchThreadRuntime(threadId, resetRuntime);
+      await get().persistProductState();
+
+      const client = conversations.peek(threadId) || get().getThreadClient(threadId);
+      if (!client?.connected) {
+        const message = 'CodeBuddy 已重置会话，但 ACP 连接不可用，请重新连接。';
+        get().patchThreadRuntime(threadId, { connectionState: 'error', historyReplayActive: false });
+        await get().updateThreadRecord(threadId, {
+          status: 'error',
+          metadata: { ...(get().threadsById[threadId]?.metadata || {}), sessionResetLoadError: message, lastError: message },
+        });
+        if (get().activeThreadId === threadId) set({ connectionState: 'error', error: message });
+        return false;
+      }
+
+      try {
+        const loaded = await client.request('session/load', {
+          sessionId: normalizedSessionId,
+          cwd: project.workspacePath || '.',
+          mcpServers: [],
+        });
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== normalizedSessionId) return true;
+        const currentRuntime = get().threadRuntimeById[threadId] || resetRuntime;
+        const configPatch = get().applySessionConfigUpdate(loaded?.configOptions || []);
+        const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models);
+        const modes = normalizeModes(loaded?.modes?.availableModes || currentRuntime.modes);
+        const currentModel = loaded?.models?.currentModelId || configPatch.currentModel || currentRuntime.currentModel;
+        const currentMode = loaded?.modes?.currentModeId || configPatch.currentMode || currentRuntime.currentMode || 'default';
+        const title = loaded?.title || loaded?.name || '新对话';
+        get().patchThreadRuntime(threadId, {
+          connectionState: 'connected',
+          models,
+          modes,
+          currentModel,
+          currentMode,
+          historyReplayActive: false,
+          agentPhase: null,
+          progress: null,
+        });
+        set((state) => {
+          const current = state.threadsById[threadId];
+          if (!current || current.sessionId !== normalizedSessionId) return {};
+          return {
+            threadsById: {
+              ...state.threadsById,
+              [threadId]: {
+                ...current,
+                title,
+                modelId: currentModel || null,
+                modeId: currentMode,
+                status: 'idle',
+                metadata: { ...(current.metadata || {}), sessionResetLoadError: null, lastError: null },
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            ...(state.activeThreadId === threadId ? {
+              sessionId: normalizedSessionId,
+              sessionTitle: title,
+              currentModel,
+              currentMode,
+              connectionState: 'connected',
+              error: null,
+            } : {}),
+          };
+        });
+        await get().persistProductState();
+        if (get().activeProjectId === project.id) await get().refreshSessions().catch(() => false);
+        return true;
+      } catch (error) {
+        const currentThread = get().threadsById[threadId];
+        if (!currentThread || currentThread.sessionId !== normalizedSessionId) return false;
+        const message = 'CodeBuddy 会话已重置，但刷新新会话信息失败: ' + (error?.message || '未知错误');
+        get().patchThreadRuntime(threadId, {
+          connectionState: 'connected',
+          historyReplayActive: false,
+          agentPhase: null,
+          progress: null,
+        });
+        get().appendThreadTimelineEvent(threadId, 'error', { type: 'error', message });
+        set((state) => {
+          const current = state.threadsById[threadId];
+          if (!current || current.sessionId !== normalizedSessionId) return {};
+          return {
+            threadsById: {
+              ...state.threadsById,
+              [threadId]: {
+                ...current,
+                status: 'idle',
+                metadata: { ...(current.metadata || {}), sessionResetLoadError: message, lastError: message },
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            ...(state.activeThreadId === threadId ? {
+              sessionId: normalizedSessionId,
+              sessionTitle: current.title || '新对话',
+              connectionState: 'connected',
+              error: message,
+            } : {}),
+          };
+        });
+        await get().persistProductState();
+        return false;
+      }
+    });
   },
 
   applyInterruptionResolution(threadId, interruptionId, decision, resolvedAt = Date.now()) {
