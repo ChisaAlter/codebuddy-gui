@@ -17,6 +17,7 @@ let mainWindow = null;
 let tray = null;
 let pendingWindowShow = false;
 let windowCreationPromise = null;
+let closeToTrayHintShown = false;
 // startup.log 放 userData：打包后 __dirname 在 asar 内（只读虚拟路径），相对路径写失败被静默吞
 const startupLog = path.join(app.getPath('userData'), 'electron-startup.log');
 
@@ -36,6 +37,20 @@ function readWindowState() {
 
 function writeWindowState(state) {
   try { fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state)); } catch (_) { /* 写失败不阻塞 */ }
+}
+
+function showCloseToTrayHint() {
+  if (!tray || typeof tray.displayBalloon !== 'function') return;
+  try {
+    tray.displayBalloon({
+      title: 'CodeBuddy GUI 仍在运行',
+      content: '窗口已隐藏到系统托盘。点击托盘图标可恢复，右键选择“完全退出”可关闭应用。',
+      iconType: 'info',
+      noSound: true,
+    });
+  } catch (error) {
+    logStartup(`Tray hint failed: ${error?.message || error}`);
+  }
 }
 
 // 真退出标志：渲染进程确认退出后为 true，普通 X 关窗口仍只隐藏到托盘。
@@ -148,6 +163,7 @@ async function createWindow() {
 
   // 恢复上次窗口状态（P0-3）：bounds + isMaximized，最小化不存
   const savedBounds = readWindowState();
+  closeToTrayHintShown = Boolean(savedBounds?.closeToTrayHintShown);
   const winOpts = {
     width: savedBounds?.width || 1440,
     height: savedBounds?.height || 920,
@@ -176,13 +192,18 @@ async function createWindow() {
   }
 
   // 窗口状态持久化（P0-3）：关闭/最大化/移动/缩放时存，最小化不存
-  const saveWindowState = () => {
+  const saveWindowState = (options = {}) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (mainWindow.isMinimized()) return; // 最小化不存
+    const minimized = mainWindow.isMinimized();
+    if (minimized && !options.allowMinimized) return;
     const isMax = mainWindow.isMaximized();
-    const b = isMax ? (lastNormalBounds || mainWindow.getNormalBounds()) : mainWindow.getBounds();
-    if (!isMax) lastNormalBounds = b;
-    writeWindowState({ ...b, isMaximized: isMax });
+    const b = minimized
+      ? (lastNormalBounds || mainWindow.getNormalBounds())
+      : isMax
+        ? (lastNormalBounds || mainWindow.getNormalBounds())
+        : mainWindow.getBounds();
+    if (!isMax && !minimized) lastNormalBounds = b;
+    writeWindowState({ ...b, isMaximized: isMax, closeToTrayHintShown });
   };
   let lastNormalBounds = null;
   mainWindow.on('resize', saveWindowState);
@@ -190,11 +211,16 @@ async function createWindow() {
   mainWindow.on('maximize', () => { lastNormalBounds = mainWindow.getNormalBounds(); saveWindowState(); });
   mainWindow.on('unmaximize', saveWindowState);
   mainWindow.on('close', (event) => {
-    saveWindowState();
     if (!reallyQuitting && tray) {
       event.preventDefault();
+      const shouldShowHint = !closeToTrayHintShown;
+      closeToTrayHintShown = true;
+      saveWindowState({ allowMinimized: true });
       mainWindow.hide();
+      if (shouldShowHint) setTimeout(showCloseToTrayHint, 150);
+      return;
     }
+    saveWindowState();
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -826,10 +852,11 @@ app.whenReady().then(async () => {
     tray = new Tray(trayIconPath);
     tray.setToolTip('CodeBuddy GUI');
     tray.on('click', showOrCreateMainWindow);
+    tray.on('balloon-click', showOrCreateMainWindow);
     const menu = Menu.buildFromTemplate([
-      { label: '显示窗口', click: showOrCreateMainWindow },
+      { label: '打开 CodeBuddy GUI', click: showOrCreateMainWindow },
       { type: 'separator' },
-      { label: '退出', click: () => requestApplicationQuit().catch((error) => logStartup(`Quit request failed: ${error.message}`)) },
+      { label: '完全退出', click: () => requestApplicationQuit().catch((error) => logStartup(`Quit request failed: ${error.message}`)) },
     ]);
     tray.setContextMenu(menu);
     logStartup('Tray icon created');
