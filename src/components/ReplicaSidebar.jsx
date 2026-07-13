@@ -109,6 +109,8 @@ export default function ReplicaSidebar() {
   const projectThreads = (threadOrderByProject[activeProjectId] || [])
     .map((id) => threadsById[id])
     .filter(Boolean);
+  const projectMutationBusy = projectNavigationBusy
+    && String(projectNavigationTargetId || '').startsWith('project-action:');
   const threadStatusLabel = (status) => ({
     connecting: '连接中',
     running: '运行中',
@@ -203,6 +205,7 @@ export default function ReplicaSidebar() {
   };
 
   const openProjectDialog = (mode, project) => {
+    if (projectNavigationBusy || projectActionBusy) return;
     setProjectMenuOpenId(null);
     setProjectDialog({ mode, project });
     setProjectName(project.name || '');
@@ -354,8 +357,10 @@ export default function ReplicaSidebar() {
               <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">项目</div>
               <button
                 className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                disabled={projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:')}
-                onClick={() => useStore.getState().chooseWorkspace()}
+                disabled={projectNavigationBusy}
+                onClick={() => {
+                  if (!projectNavigationBusy) useStore.getState().chooseWorkspace();
+                }}
                 title="添加项目"
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 2v12M2 8h12" /></svg>
@@ -370,15 +375,16 @@ export default function ReplicaSidebar() {
                 const selected = projectId === activeProjectId;
                 const projectMenuOpen = projectMenuOpenId === projectId;
                 const switching = projectNavigationBusy && projectNavigationTargetId === `project:${projectId}`;
+                const mutating = projectMutationBusy && projectNavigationTargetId?.endsWith(`:${projectId}`);
                 return (
                   <div key={projectId} className="relative flex items-center">
                     <button
                       className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs disabled:cursor-wait disabled:opacity-60 ${selected ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'}`}
-                      disabled={switching}
+                      disabled={projectMutationBusy || switching}
                       onClick={() => activateProject(projectId)}
-                      title={switching ? '正在切换项目' : project.workspacePath}
+                      title={mutating ? '正在处理项目' : switching ? '正在切换项目' : project.workspacePath}
                     >
-                      {switching ? (
+                      {switching || mutating ? (
                         <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
                       ) : (
                         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 4h5l1.2 1.5h6.8v7.5h-13V4z" /></svg>
@@ -387,9 +393,12 @@ export default function ReplicaSidebar() {
                       <span className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${project.runtimeStatus === 'running' ? 'bg-[var(--color-accent-green)]' : project.runtimeStatus === 'error' ? 'bg-[var(--color-accent-red)]' : project.runtimeStatus === 'starting' ? 'bg-[var(--color-accent-yellow)]' : 'bg-[var(--color-text-muted)]'}`} title={project.runtimeError || project.runtimeStatus || 'idle'} />
                     </button>
                     <button
-                      className="ml-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                      onClick={() => setProjectMenuOpenId(projectMenuOpen ? null : projectId)}
-                      title="项目操作"
+                      className="ml-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+                      disabled={projectNavigationBusy || projectActionBusy}
+                      onClick={() => {
+                        if (!projectNavigationBusy && !projectActionBusy) setProjectMenuOpenId(projectMenuOpen ? null : projectId);
+                      }}
+                      title={projectNavigationBusy ? '请等待当前项目操作完成' : '项目操作'}
                     >
                       <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3" /><circle cx="8" cy="8" r="1.3" /><circle cx="13" cy="8" r="1.3" /></svg>
                     </button>
@@ -454,11 +463,13 @@ export default function ReplicaSidebar() {
               <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">工作区</div>
               <button
                 className="btn-ghost px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                disabled={projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:')}
-                title="切换工作区目录"
-                onClick={() => useStore.getState().chooseWorkspace()}
+                disabled={projectNavigationBusy}
+                title={projectNavigationBusy ? '请等待当前项目操作完成' : '切换工作区目录'}
+                onClick={() => {
+                  if (!projectNavigationBusy) useStore.getState().chooseWorkspace();
+                }}
               >
-                {projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:') ? '切换中...' : '切换'}
+                {projectMutationBusy ? '处理中...' : projectNavigationBusy && projectNavigationTargetId?.startsWith('workspace:') ? '切换中...' : '切换'}
               </button>
             </div>
             <div className="truncate text-[var(--color-text-secondary)]" title={workspacePath || info?.cwd || ''}>
@@ -566,7 +577,7 @@ export default function ReplicaSidebar() {
                         <>
                           <button
                             className="block min-w-0 flex-1 rounded-md px-2 py-1 text-left transition-colors disabled:cursor-wait disabled:opacity-60"
-                            disabled={switching}
+                            disabled={projectMutationBusy || switching}
                             onClick={() => activateThread(threadId)}
                             title={switching ? '正在切换会话' : (thread.sessionId || thread.title)}
                           >
@@ -582,9 +593,12 @@ export default function ReplicaSidebar() {
                             )}
                           </button>
                           <button
-                            onClick={() => setMenuOpenId(isMenuOpen ? null : threadId)}
-                            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                            title="会话操作"
+                            disabled={projectMutationBusy}
+                            onClick={() => {
+                              if (!projectMutationBusy) setMenuOpenId(isMenuOpen ? null : threadId);
+                            }}
+                            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+                            title={projectMutationBusy ? '请等待当前项目操作完成' : '会话操作'}
                             aria-label="会话操作菜单"
                           >
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.4" /><circle cx="8" cy="8" r="1.4" /><circle cx="13" cy="8" r="1.4" /></svg>

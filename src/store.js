@@ -59,6 +59,13 @@ function finishProjectNavigation(set, token, error = null) {
   set({ projectNavigationBusy: false, projectNavigationError: error });
 }
 
+function isProjectMutationNavigation(state) {
+  return Boolean(
+    state.projectNavigationBusy
+    && String(state.projectNavigationTargetId || '').startsWith('project-action:'),
+  );
+}
+
 function beginScopedRequest(key, state, scope = 'project') {
   const version = (scopedRequestVersions.get(key) || 0) + 1;
   scopedRequestVersions.set(key, version);
@@ -1156,6 +1163,7 @@ export const useStore = create((set, get) => ({
   },
 
   async activateThread(threadId) {
+    if (isProjectMutationNavigation(get())) return false;
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
     if (!thread || !project) return false;
@@ -1407,6 +1415,7 @@ export const useStore = create((set, get) => ({
 
   async setWorkspace(path) {
     if (!path) return false;
+    if (isProjectMutationNavigation(get())) return false;
     const normalizedPath = String(path);
     const navigation = beginProjectNavigation(set, `workspace:${normalizedPath}`);
     try {
@@ -1478,6 +1487,7 @@ export const useStore = create((set, get) => ({
   },
 
   async activateProject(projectId) {
+    if (isProjectMutationNavigation(get())) return false;
     const project = get().projectsById[projectId];
     if (!project || projectId === get().activeProjectId) return Boolean(project);
     const navigation = beginProjectNavigation(set, `project:${projectId}`);
@@ -1531,90 +1541,154 @@ export const useStore = create((set, get) => ({
   },
 
   async renameProject(projectId, name) {
+    if (get().projectNavigationBusy) return false;
     const project = get().projectsById[projectId];
     const nextName = String(name || '').trim();
     if (!project || !nextName) return false;
-    set((state) => ({
-      projectsById: {
-        ...state.projectsById,
-        [projectId]: { ...state.projectsById[projectId], name: nextName, updatedAt: new Date().toISOString() },
-      },
-    }));
-    const persisted = await get().persistProductState();
-    if (!persisted) {
-      set((state) => {
-        const current = state.projectsById[projectId];
-        if (!current || current.name !== nextName) return {};
-        return {
-          projectsById: {
-            ...state.projectsById,
-            [projectId]: { ...current, name: project.name, updatedAt: project.updatedAt },
-          },
-        };
-      });
+    const navigation = beginProjectNavigation(set, `project-action:rename:${projectId}`);
+    try {
+      set((state) => ({
+        projectsById: {
+          ...state.projectsById,
+          [projectId]: { ...state.projectsById[projectId], name: nextName, updatedAt: new Date().toISOString() },
+        },
+      }));
+      const persisted = await get().persistProductState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!persisted) {
+        set((state) => {
+          const current = state.projectsById[projectId];
+          if (!current || current.name !== nextName) return {};
+          return {
+            projectsById: {
+              ...state.projectsById,
+              [projectId]: { ...current, name: project.name, updatedAt: project.updatedAt },
+            },
+          };
+        });
+        throw new Error(get().error || '重命名项目失败');
+      }
+      return true;
+    } catch (error) {
+      if (isProjectNavigationCurrent(navigation)) {
+        const message = error?.message || '重命名项目失败';
+        set({ error: message });
+        finishProjectNavigation(set, navigation, message);
+      }
       return false;
+    } finally {
+      finishProjectNavigation(set, navigation, get().projectNavigationError);
     }
-    return true;
   },
 
   async removeProject(projectId, options = {}) {
-    const project = get().projectsById[projectId];
+    if (get().projectNavigationBusy) return false;
+    const initialState = get();
+    const project = initialState.projectsById[projectId];
     if (!project) return false;
-    if (projectId === get().activeProjectId && !options.skipDirtyCheck && !await requestDirtyFileConfirmation(set, get, '移除当前项目')) return false;
-    const previousState = get();
-    const threadIds = get().threadOrderByProject[projectId] || [];
-    await get().stopProjectRuntime(projectId).catch(() => null);
-    const wasActive = get().activeProjectId === projectId;
-    set((state) => {
-      const projectsById = { ...state.projectsById };
-      const threadsById = { ...state.threadsById };
-      const threadRuntimeById = { ...state.threadRuntimeById };
-      const threadOrderByProject = { ...state.threadOrderByProject };
-      delete projectsById[projectId];
-      delete threadOrderByProject[projectId];
-      for (const threadId of threadIds) {
-        delete threadsById[threadId];
-        delete threadRuntimeById[threadId];
+    const wasActive = initialState.activeProjectId === projectId;
+    const navigation = beginProjectNavigation(set, `project-action:remove:${projectId}`);
+    let removalPersisted = false;
+    try {
+      if (wasActive && !options.skipDirtyCheck) {
+        const confirmed = await requestDirtyFileConfirmation(set, get, '移除当前项目');
+        if (!isProjectNavigationCurrent(navigation) || !confirmed) return false;
       }
-      const projectOrder = state.projectOrder.filter((id) => id !== projectId);
-      const nextProjectId = wasActive ? (projectOrder[0] || null) : state.activeProjectId;
-      const nextThreadId = nextProjectId ? (threadOrderByProject[nextProjectId]?.[0] || null) : null;
-      return {
-        projectsById,
-        projectOrder,
-        threadsById,
-        threadRuntimeById,
-        threadOrderByProject,
-        activeProjectId: nextProjectId,
-        activeThreadId: wasActive ? nextThreadId : state.activeThreadId,
-        workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
-        ...(wasActive ? resetProjectRuntimeViews() : {}),
-        ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
-      };
-    });
-    const persisted = await get().persistProductState();
-    if (!persisted) {
-      const persistenceError = get().error;
-      set({ ...previousState, error: persistenceError });
-      if (wasActive || project.runtimeStatus === 'running') {
-        await get().ensureProjectRuntime(projectId).catch(() => null);
+      const previousState = get();
+      const threadIds = [...(previousState.threadOrderByProject[projectId] || [])];
+      await get().stopProjectRuntime(projectId).catch(() => false);
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!get().projectsById[projectId]) return false;
+
+      let nextProjectId = null;
+      let nextThread = null;
+      if (wasActive) {
+        nextProjectId = previousState.projectOrder.find((id) => id !== projectId && previousState.projectsById[id]) || null;
+        const nextThreadId = nextProjectId ? previousState.threadOrderByProject[nextProjectId]?.[0] : null;
+        nextThread = nextThreadId ? previousState.threadsById[nextThreadId] : null;
+        if (nextProjectId && !nextThread) nextThread = createThreadRecord(nextProjectId);
       }
-      return false;
-    }
-    if (wasActive && get().activeProjectId) {
-      const nextProject = activeProject(get());
-      const runtime = await get().ensureProjectRuntime(get().activeProjectId);
-      if (runtime && nextProject) {
-        await get().openDirectory(nextProject.workspacePath, { skipDirtyCheck: true });
-        const initialized = await get().initializeActiveThread(undefined);
-        if (initialized) await get().refreshProjectViews();
+
+      set((state) => {
+        const projectsById = { ...state.projectsById };
+        const threadsById = { ...state.threadsById };
+        const threadRuntimeById = { ...state.threadRuntimeById };
+        const threadOrderByProject = { ...state.threadOrderByProject };
+        delete projectsById[projectId];
+        delete threadOrderByProject[projectId];
+        for (const threadId of threadIds) {
+          delete threadsById[threadId];
+          delete threadRuntimeById[threadId];
+        }
+        if (nextThread) {
+          threadsById[nextThread.id] = nextThread;
+          threadOrderByProject[nextProjectId] = [
+            nextThread.id,
+            ...(threadOrderByProject[nextProjectId] || []).filter((id) => id !== nextThread.id),
+          ];
+        }
+        return {
+          projectsById,
+          projectOrder: state.projectOrder.filter((id) => id !== projectId),
+          threadsById,
+          threadRuntimeById,
+          threadOrderByProject,
+          activeProjectId: wasActive ? nextProjectId : state.activeProjectId,
+          activeThreadId: wasActive ? (nextThread?.id || null) : state.activeThreadId,
+          workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
+          ...(wasActive ? resetProjectRuntimeViews() : {}),
+          ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
+        };
+      });
+      if (wasActive) {
+        get().loadProjectTerminalState(nextProjectId);
+        get().activateThreadRuntime(nextThread?.id || null);
       }
+
+      const persisted = await get().persistProductState();
+      if (!isProjectNavigationCurrent(navigation)) return false;
+      if (!persisted) {
+        const persistenceError = get().error;
+        set({ ...previousState, error: persistenceError });
+        if (wasActive || project.runtimeStatus === 'running') {
+          const runtime = await get().ensureProjectRuntime(projectId).catch(() => null);
+          if (runtime && wasActive) {
+            const previousThread = previousState.threadsById[previousState.activeThreadId];
+            await get().initializeActiveThread(previousThread?.sessionId).catch(() => false);
+          }
+        }
+        throw new Error(persistenceError || '移除项目失败');
+      }
+      removalPersisted = true;
+
+      if (wasActive && nextProjectId && nextThread) {
+        const nextProject = get().projectsById[nextProjectId];
+        const runtime = await get().ensureProjectRuntime(nextProjectId);
+        if (!isProjectNavigationCurrent(navigation)) return true;
+        if (!runtime || !nextProject) throw new Error(get().error || '替代项目运行时启动失败');
+        const opened = await get().openDirectory(nextProject.workspacePath, { skipDirtyCheck: true });
+        if (!isProjectNavigationCurrent(navigation)) return true;
+        if (!opened) throw new Error(get().error || '替代项目目录打开失败');
+        const initialized = await get().initializeActiveThread(nextThread.sessionId);
+        if (!isProjectNavigationCurrent(navigation)) return true;
+        if (!initialized) throw new Error(get().error || '替代项目会话连接失败');
+        await get().refreshProjectViews();
+      } else if (wasActive) {
+        set({ sessionId: null, sessionTitle: null, connectionState: 'disconnected', ...resetProjectRuntimeViews() });
+        get().activateThreadRuntime(null);
+      }
+      return true;
+    } catch (error) {
+      if (isProjectNavigationCurrent(navigation)) {
+        const detail = error?.message || '移除项目失败';
+        const message = removalPersisted ? `项目已移除，但${detail}` : detail;
+        set({ error: message });
+        finishProjectNavigation(set, navigation, message);
+      }
+      return removalPersisted;
+    } finally {
+      finishProjectNavigation(set, navigation, get().projectNavigationError);
     }
-    if (wasActive && !get().activeProjectId) {
-      set({ sessionId: null, sessionTitle: null, connectionState: 'disconnected', ...resetProjectRuntimeViews() });
-      get().activateThreadRuntime(null);
-    }
-    return true;
   },
 
   applyProjectRuntimeStatus(runtime) {
