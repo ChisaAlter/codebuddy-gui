@@ -2067,17 +2067,17 @@ export const useStore = create((set, get) => ({
   },
 
   closePane(paneId) {
-    if (get().terminalPanes.length === 1) return;
-    const sessionId = get().terminalPanes.find((pane) => pane.id === paneId)?.sessionId;
+    if (get().terminalPanes.length === 1) return false;
+    if (!get().terminalPanes.some((pane) => pane.id === paneId)) return false;
     set((state) => {
-      const nextPanes = state.terminalPanes.filter((x) => x.id !== paneId);
+      const nextPanes = state.terminalPanes.filter((pane) => pane.id !== paneId);
       return {
         terminalPanes: nextPanes,
         activePaneId: state.activePaneId === paneId ? nextPanes[0]?.id || null : state.activePaneId,
       };
     });
-    if (sessionId) get().releasePty(sessionId);
     get().scheduleTerminalStatePersist();
+    return true;
   },
 
   bindPtyToPane(paneId, sessionId, projectId = get().activeProjectId) {
@@ -2981,15 +2981,21 @@ export const useStore = create((set, get) => ({
       ...(acpSessionToken ? { 'acp-session-token': acpSessionToken } : {}),
     };
     try {
-      await requestCodeBuddy(`${apiBase}/api/v1/pty/${encodeURIComponent(sessionId)}`, {
+      const response = await requestCodeBuddy(`${apiBase}/api/v1/pty/${encodeURIComponent(sessionId)}`, {
         method: 'DELETE',
         headers,
         omitAuthToken: true,
         omitAcpSessionToken: true,
         timeoutMs: 10000,
       });
-    } catch (_) {}
-    if (projectId !== get().activeProjectId || apiBase !== get().apiBase) return false;
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`PTY 释放失败: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      if (projectId === get().activeProjectId && apiBase === get().apiBase) set({ error: error.message || 'PTY 释放失败' });
+      return false;
+    }
+    if (projectId !== get().activeProjectId || apiBase !== get().apiBase) return true;
     set((current) => ({
       terminalSessions: current.terminalSessions.filter((item) => item.sessionId !== sessionId),
       ptySessionId: current.ptySessionId === sessionId ? null : current.ptySessionId,

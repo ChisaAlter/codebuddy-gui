@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useStore } from '../store';
 import { PtySocket } from '../lib/pty';
 
-function TerminalPane({ projectId, pane, active, canSplit, canClose, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
+function TerminalPane({ projectId, pane, active, canSplit, canClose, operationBusy, onFocus, onSplitRight, onSplitDown, onClose, onReconnect }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -143,9 +143,10 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, onFocus, on
             <span className="flex items-center gap-1.5 text-[10px]">
               <span className="text-[#f87171]">{pane.status === 'error' ? '连接失败' : '已断开'}</span>
               <button
+                disabled={operationBusy}
                 onClick={(e) => { e.stopPropagation(); onReconnect(pane.id); }}
-                className="rounded px-1.5 py-0.5 text-[10px] border border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
-              >重连</button>
+                className="rounded px-1.5 py-0.5 text-[10px] border border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:cursor-wait disabled:opacity-50"
+              >{operationBusy ? '处理中...' : '重连'}</button>
             </span>
           ) : (
             <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
@@ -174,11 +175,11 @@ function TerminalPane({ projectId, pane, active, canSplit, canClose, onFocus, on
           </div>
           <button
             className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={!canClose}
-            title={canClose ? '关闭终端' : '至少保留一个终端'}
+            disabled={!canClose || operationBusy}
+            title={operationBusy ? '正在处理终端' : canClose ? '关闭终端' : '至少保留一个终端'}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           >
-            关闭
+            {operationBusy ? '处理中...' : '关闭'}
           </button>
         </div>
       </div>
@@ -203,9 +204,15 @@ export default function ReplicaTerminalView() {
   const initializeTerminal = useStore((s) => s.initializeTerminal);
   const restartProjectRuntime = useStore((s) => s.restartProjectRuntime);
   const [runtimeRetrying, setRuntimeRetrying] = useState(false);
+  const [terminalOperationPaneId, setTerminalOperationPaneId] = useState(null);
+  const [terminalActionError, setTerminalActionError] = useState('');
+  const terminalOperationRef = useRef(null);
 
   useEffect(() => {
+    terminalOperationRef.current = null;
     setRuntimeRetrying(false);
+    setTerminalOperationPaneId(null);
+    setTerminalActionError('');
     initializeTerminal();
   }, [activeProjectId, initializeTerminal]);
 
@@ -230,59 +237,119 @@ export default function ReplicaTerminalView() {
     }
   };
 
+  const beginPaneOperation = (paneId, type) => {
+    if (terminalOperationRef.current) return null;
+    const operation = { paneId, projectId: activeProjectId, type };
+    terminalOperationRef.current = operation;
+    setTerminalOperationPaneId(paneId);
+    setTerminalActionError('');
+    return operation;
+  };
+
+  const isPaneOperationCurrent = (operation) => (
+    terminalOperationRef.current === operation
+    && useStore.getState().activeProjectId === operation.projectId
+  );
+
+  const finishPaneOperation = (operation) => {
+    if (terminalOperationRef.current !== operation) return;
+    terminalOperationRef.current = null;
+    setTerminalOperationPaneId(null);
+  };
+
+  const closeTerminalPane = async (paneId) => {
+    const pane = useStore.getState().terminalPanes.find((item) => item.id === paneId);
+    if (!pane || useStore.getState().terminalPanes.length <= 1) return false;
+    const operation = beginPaneOperation(paneId, 'close');
+    if (!operation) return false;
+    try {
+      if (pane.sessionId) {
+        const released = await releasePty(pane.sessionId);
+        if (!isPaneOperationCurrent(operation)) return false;
+        if (!released) {
+          setTerminalActionError(useStore.getState().error || '关闭终端失败：无法释放 PTY 会话');
+          setPaneStatus(paneId, 'error', operation.projectId);
+          return false;
+        }
+      }
+      if (!isPaneOperationCurrent(operation)) return false;
+      const closed = closePane(paneId);
+      if (!closed) setTerminalActionError('关闭终端失败，请重试');
+      return closed;
+    } catch (error) {
+      if (isPaneOperationCurrent(operation)) setTerminalActionError(error?.message || '关闭终端失败');
+      return false;
+    } finally {
+      finishPaneOperation(operation);
+    }
+  };
+
+  const reconnectPane = async (paneId) => {
+    const pane = useStore.getState().terminalPanes.find((item) => item.id === paneId);
+    if (!pane || !activeProjectId) return false;
+    const operation = beginPaneOperation(paneId, 'reconnect');
+    if (!operation) return false;
+    setPaneStatus(paneId, 'connecting', operation.projectId);
+    try {
+      if (pane.sessionId) {
+        const released = await releasePty(pane.sessionId);
+        if (!isPaneOperationCurrent(operation)) return false;
+        if (!released) {
+          setTerminalActionError(useStore.getState().error || '重连失败：无法释放旧 PTY 会话');
+          setPaneStatus(paneId, 'error', operation.projectId);
+          return false;
+        }
+      }
+      const created = await createPty(120, 32);
+      if (!isPaneOperationCurrent(operation)) return false;
+      if (!created?.sessionId) {
+        setTerminalActionError(useStore.getState().error || '重连失败：无法创建新的 PTY 会话');
+        setPaneStatus(paneId, 'error', operation.projectId);
+        return false;
+      }
+      bindPtyToPane(paneId, created.sessionId, operation.projectId);
+      return true;
+    } catch (error) {
+      if (isPaneOperationCurrent(operation)) {
+        setTerminalActionError(error?.message || '终端重连失败');
+        setPaneStatus(paneId, 'error', operation.projectId);
+      }
+      return false;
+    } finally {
+      finishPaneOperation(operation);
+    }
+  };
+
   useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'N') {
-        e.preventDefault();
-        splitPane(activePaneId, 'right');
+    const onKeyDown = (event) => {
+      if (event.ctrlKey && event.shiftKey && event.key === 'N') {
+        event.preventDefault();
+        if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
       }
-      if (e.ctrlKey && e.shiftKey && e.key === 'W') {
-        e.preventDefault();
-        const active = panes.find(p => p.id === activePaneId);
-        if (active && panes.length > 1) closePane(active.id);
+      if (event.ctrlKey && event.shiftKey && event.key === 'W') {
+        event.preventDefault();
+        const active = panes.find((pane) => pane.id === activePaneId);
+        if (active && panes.length > 1 && !terminalOperationRef.current) closeTerminalPane(active.id);
       }
-      if (e.ctrlKey && e.shiftKey && e.key === 'ArrowRight') {
-        e.preventDefault();
-        splitPane(activePaneId, 'right');
+      if (event.ctrlKey && event.shiftKey && event.key === 'ArrowRight') {
+        event.preventDefault();
+        if (!terminalOperationRef.current) splitPane(activePaneId, 'right');
       }
-      if (e.ctrlKey && e.shiftKey && e.key === 'ArrowDown') {
-        e.preventDefault();
-        splitPane(activePaneId, 'down');
+      if (event.ctrlKey && event.shiftKey && event.key === 'ArrowDown') {
+        event.preventDefault();
+        if (!terminalOperationRef.current) splitPane(activePaneId, 'down');
       }
-      if (e.altKey && /^[1-2]$/.test(e.key)) {
-        const pane = panes[Number(e.key) - 1];
+      if (event.altKey && /^[1-2]$/.test(event.key)) {
+        const pane = panes[Number(event.key) - 1];
         if (pane) {
-          e.preventDefault();
+          event.preventDefault();
           setActivePane(pane.id);
         }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [panes, activePaneId, splitPane, closePane, setActivePane]);
-
-  const reconnectPane = async (paneId) => {
-    const pane = panes.find((item) => item.id === paneId);
-    const projectId = activeProjectId;
-    if (!pane || !projectId) return;
-    setPaneStatus(paneId, 'connecting', projectId);
-    const previousSessionId = pane.sessionId;
-    if (previousSessionId) {
-      await releasePty(previousSessionId);
-      if (useStore.getState().activeProjectId !== projectId) return;
-    }
-    try {
-      const created = await createPty(120, 32);
-      if (useStore.getState().activeProjectId !== projectId) return;
-      if (created?.sessionId) {
-        bindPtyToPane(paneId, created.sessionId, projectId);
-      } else {
-        setPaneStatus(paneId, 'error', projectId);
-      }
-    } catch (err) {
-      if (useStore.getState().activeProjectId === projectId) setPaneStatus(paneId, 'error', projectId);
-    }
-  };
+  }, [panes, activePaneId, splitPane, closeTerminalPane, setActivePane]);
 
   const gridClass = useMemo(() => {
     if (panes.length <= 1) return 'grid-cols-1';
@@ -295,6 +362,12 @@ export default function ReplicaTerminalView() {
         <div className="text-sm">Terminal</div>
         <div className="text-xs text-[#9ca3af]">项目级 PTY 实时连接</div>
       </div>
+      {terminalActionError ? (
+        <div className="flex items-center justify-between gap-3 border-b border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-2 text-xs text-[var(--color-accent-red)]">
+          <span className="min-w-0 flex-1 break-words">{terminalActionError}</span>
+          <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => setTerminalActionError('')}>关闭</button>
+        </div>
+      ) : null}
       {runtimeUnavailable ? (
         <div className="flex flex-1 items-center justify-center bg-[var(--color-bg-primary)] px-6">
           <div className="max-w-lg text-center">
@@ -337,12 +410,13 @@ export default function ReplicaTerminalView() {
               projectId={activeProjectId}
               pane={pane}
               active={pane.id === activePaneId}
-              canSplit={panes.length < 2}
+              canSplit={panes.length < 2 && !terminalOperationPaneId}
+              operationBusy={terminalOperationPaneId === pane.id}
               onFocus={() => setActivePane(pane.id)}
-              canClose={panes.length > 1}
+              canClose={panes.length > 1 && !terminalOperationPaneId}
               onSplitRight={() => splitPane(pane.id, 'right')}
               onSplitDown={() => splitPane(pane.id, 'down')}
-              onClose={() => closePane(pane.id)}
+              onClose={() => closeTerminalPane(pane.id)}
               onReconnect={() => reconnectPane(pane.id)}
             />
           ))}
