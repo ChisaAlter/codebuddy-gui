@@ -96,6 +96,108 @@ describe('AcpClient GET SSE notification stream', () => {
     expect(closeCalled).toBe(true);
   });
 
+  it('request 在最终结果返回前逐条派发 POST SSE 更新', async () => {
+    setApiBase('http://127.0.0.1:34568');
+    let releaseResult;
+    const fetchMock = vi.fn(async (url, init = {}) => {
+      const method = init.method || 'GET';
+      if (url === 'http://127.0.0.1:34568/api/v1/acp' && method === 'POST') {
+        const body = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(
+                'data: {"method":"session/update","params":{"sessionId":"s-stream","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"第一段"}}}}\n\n',
+              ));
+              releaseResult = () => {
+                controller.enqueue(new TextEncoder().encode(
+                  `data: {"jsonrpc":"2.0","id":"${body.id}","result":null}\n\n`,
+                ));
+                controller.close();
+              };
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new AcpClient();
+    client.connected = true;
+    client.connectionId = 'conn-stream';
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+    let requestResolved = false;
+    const request = client.request('session/prompt', { sessionId: 's-stream', prompt: [] })
+      .then((result) => { requestResolved = true; return result; });
+
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(requestResolved).toBe(false);
+    expect(updates[0]).toMatchObject({
+      sessionId: 's-stream',
+      update: { sessionUpdate: 'agent_message_chunk', messageId: 'm1' },
+    });
+
+    releaseResult();
+    await expect(request).resolves.toBeNull();
+  });
+
+  it('Electron IPC POST 流在最终 RPC 结果前派发消息块', async () => {
+    let handlers;
+    let openedRequest;
+    let closeCalled = false;
+    window.electronAPI = {
+      openCodeBuddyStream(request, nextHandlers) {
+        openedRequest = request;
+        handlers = nextHandlers;
+        queueMicrotask(() => handlers.onMessage({
+          method: 'session/update',
+          params: {
+            sessionId: 's-ipc-stream',
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              messageId: 'thought-1',
+              content: { type: 'text', text: '正在分析' },
+            },
+          },
+        }));
+        return { close: () => { closeCalled = true; } };
+      },
+    };
+
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-ipc-stream';
+    client.sessionToken = 'token-ipc-stream';
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+    let requestResolved = false;
+    const request = client.request('session/prompt', { sessionId: 's-ipc-stream', prompt: [] })
+      .then((result) => { requestResolved = true; return result; });
+
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(requestResolved).toBe(false);
+    expect(openedRequest).toMatchObject({
+      url: 'http://127.0.0.1:45678/api/v1/acp',
+      method: 'POST',
+      rpcId: '1',
+      headers: expect.objectContaining({
+        'acp-connection-id': 'conn-ipc-stream',
+        'acp-session-token': 'token-ipc-stream',
+      }),
+    });
+    expect(updates[0]).toMatchObject({
+      update: { sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1' },
+    });
+
+    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: null });
+    await expect(request).resolves.toBeNull();
+    expect(closeCalled).toBe(true);
+  });
+
   it('request 收到 result:null 时仍视为匹配到响应', async () => {
     setApiBase('http://127.0.0.1:34567');
     const fetchMock = vi.fn(async (url, init = {}) => {

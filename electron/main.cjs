@@ -1559,6 +1559,9 @@ function parseSseMessagesFromBuffer(buffer) {
 ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   const streamId = String(request.streamId || '');
   const url = String(request.url || '');
+  const method = String(request.method || 'GET').toUpperCase();
+  const timeoutMs = Number.isFinite(Number(request.timeoutMs)) ? Number(request.timeoutMs) : CODEBUDDY_REQUEST_TIMEOUT_MS;
+  const expectedRpcId = request.rpcId == null ? null : String(request.rpcId);
   if (!streamId) return { ok: false, error: 'missing streamId' };
   if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
     return { ok: false, error: 'Only localhost CodeBuddy streams are allowed' };
@@ -1566,20 +1569,49 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
 
   const controller = new AbortController();
   codebuddyStreams.set(streamId, controller);
+  let timeoutId = null;
+  let timedOut = false;
+  const armTimeout = () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (timeoutMs <= 0) return;
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  armTimeout();
   try {
     const response = await net.fetch(url, {
-      method: 'GET',
+      method,
       headers: request.headers || {},
+      body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
       signal: controller.signal,
     });
     if (!response.ok) {
+      if (timeoutId) clearTimeout(timeoutId);
       codebuddyStreams.delete(streamId);
       event.sender.send('codebuddy:streamError', { streamId, error: `ACP stream failed: ${response.status}` });
       return { ok: false, status: response.status };
     }
     const reader = response.body?.getReader?.();
     if (!reader) {
+      const text = await response.text().catch(() => '');
       codebuddyStreams.delete(streamId);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (method !== 'GET' && !event.sender.isDestroyed()) {
+        const parsed = parseSseMessagesFromBuffer(`${text}\n\n`).messages;
+        if (!parsed.length && text.trim()) {
+          try { parsed.push(JSON.parse(text)); } catch (_) {}
+        }
+        for (const message of parsed) event.sender.send('codebuddy:streamMessage', { streamId, message });
+        event.sender.send('codebuddy:streamEnd', {
+          streamId,
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+        });
+        return { ok: true };
+      }
       event.sender.send('codebuddy:streamError', { streamId, error: 'ACP stream body unavailable' });
       return { ok: false, error: 'stream body unavailable' };
     }
@@ -1589,10 +1621,16 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     const sender = event.sender;
     (async () => {
       const emitMessages = (messages) => {
+        let matchedExpectedResponse = false;
         for (const message of messages) {
           if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
+          if (expectedRpcId !== null && !message?.method && String(message?.id) === expectedRpcId) {
+            matchedExpectedResponse = true;
+          }
         }
+        return matchedExpectedResponse;
       };
+      let streamError = null;
       try {
         while (!controller.signal.aborted) {
           const { done, value } = await reader.read();
@@ -1601,31 +1639,48 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
             if (buffer.trim()) {
               const parsed = parseSseMessagesFromBuffer(`${buffer}\n\n`);
               buffer = parsed.rest;
-              emitMessages(parsed.messages);
+              if (emitMessages(parsed.messages)) {
+                try { await reader.cancel(); } catch (_) {}
+              }
             }
             break;
           }
+          armTimeout();
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
-          emitMessages(parsed.messages);
+          if (emitMessages(parsed.messages)) {
+            try { await reader.cancel(); } catch (_) {}
+            break;
+          }
         }
       } catch (error) {
-        if (!controller.signal.aborted && !sender.isDestroyed()) {
-          sender.send('codebuddy:streamError', { streamId, error: error.message });
-        }
+        if (!controller.signal.aborted || timedOut) streamError = timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message;
       } finally {
+        if (timeoutId) clearTimeout(timeoutId);
         try { reader.releaseLock?.(); } catch (_) {}
         codebuddyStreams.delete(streamId);
-        if (!controller.signal.aborted && !sender.isDestroyed()) {
-          sender.send('codebuddy:streamError', { streamId, error: 'ACP stream closed' });
+        if (!sender.isDestroyed()) {
+          if (streamError) {
+            sender.send('codebuddy:streamError', { streamId, error: streamError });
+          } else if (method !== 'GET' && !controller.signal.aborted) {
+            sender.send('codebuddy:streamEnd', {
+              streamId,
+              ok: response.ok,
+              status: response.status,
+              statusText: response.statusText,
+            });
+          } else if (method === 'GET' && !controller.signal.aborted) {
+            sender.send('codebuddy:streamError', { streamId, error: 'ACP stream closed' });
+          }
         }
       }
     })();
     return { ok: true };
   } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
     codebuddyStreams.delete(streamId);
-    event.sender.send('codebuddy:streamError', { streamId, error: error.message });
+    event.sender.send('codebuddy:streamError', { streamId, error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message });
     return { ok: false, error: error.message };
   }
 });
@@ -1901,7 +1956,7 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
-  if (process.platform === 'win32') app.setAppUserModelId('com.codebuddy.gui');
+  if (process.platform === 'win32') app.setAppUserModelId('com.codebuddy.gui.cathead');
 
   // 注入 Content-Security-Policy：覆盖 dev/prod 双路，消除 Electron 安全告警
   // - 'wasm-unsafe-eval' 足 monaco-editor wasm，不开 'unsafe-eval'（Electron 告警源）

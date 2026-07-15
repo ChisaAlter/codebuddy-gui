@@ -4,6 +4,7 @@ export const ROUTES = [
   'remote-control',
   'terminal',
   'tasks',
+  'archived',
   'plugins',
   'mcp',
   'sandboxes',

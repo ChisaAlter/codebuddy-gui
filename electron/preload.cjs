@@ -76,6 +76,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openCodeBuddyStream: (request, handlers = {}) => {
     const streamId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     activeCodeBuddyStreams.add(streamId);
+    let closed = false;
+    const cleanup = (notifyMain = false) => {
+      if (closed) return;
+      closed = true;
+      activeCodeBuddyStreams.delete(streamId);
+      ipcRenderer.removeListener('codebuddy:streamMessage', onMessage);
+      ipcRenderer.removeListener('codebuddy:streamError', onError);
+      ipcRenderer.removeListener('codebuddy:streamEnd', onEnd);
+      if (notifyMain) ipcRenderer.send('codebuddy:closeStream', streamId);
+    };
     const onMessage = (_event, payload) => {
       if (payload?.streamId !== streamId) return;
       handlers.onMessage?.(payload.message);
@@ -83,19 +93,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const onError = (_event, payload) => {
       if (payload?.streamId !== streamId) return;
       handlers.onError?.(payload.error);
+      if (String(request.method || 'GET').toUpperCase() !== 'GET') cleanup();
+    };
+    const onEnd = (_event, payload) => {
+      if (payload?.streamId !== streamId) return;
+      handlers.onEnd?.(payload);
+      cleanup();
     };
     ipcRenderer.on('codebuddy:streamMessage', onMessage);
     ipcRenderer.on('codebuddy:streamError', onError);
+    ipcRenderer.on('codebuddy:streamEnd', onEnd);
     ipcRenderer.invoke('codebuddy:openStream', { ...request, streamId }).catch((error) => {
       handlers.onError?.(error?.message || String(error));
+      cleanup();
     });
     return {
-      close: () => {
-        activeCodeBuddyStreams.delete(streamId);
-        ipcRenderer.removeListener('codebuddy:streamMessage', onMessage);
-        ipcRenderer.removeListener('codebuddy:streamError', onError);
-        ipcRenderer.send('codebuddy:closeStream', streamId);
-      },
+      close: () => cleanup(true),
     };
   },
 });

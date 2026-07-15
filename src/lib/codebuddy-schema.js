@@ -13,6 +13,7 @@ export const NAV_GROUPS = [
     title: '工作区',
     items: [
       { id: 'tasks', label: '任务' },
+      { id: 'archived', label: '已归档' },
       { id: 'terminal', label: '终端' },
       { id: 'editor', label: '编辑器' },
       { id: 'changes', label: '变更' },

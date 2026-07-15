@@ -40,6 +40,32 @@ describe('reduceAcpEvent - timeline 归并', () => {
     const next = reduceAcpEvent(tl, 'agent_message_chunk', null);
     expect(Array.isArray(next)).toBe(true);
   });
+
+  it('重复加载同一条 assistant 历史消息时不再次拼接内容', () => {
+    const payload = {
+      sessionUpdate: 'agent_message_chunk',
+      messageId: 'history-assistant',
+      content: { type: 'text', text: '历史回复' },
+      _meta: { 'codebuddy.ai': { mode: 'history' } },
+    };
+    let next = reduceAcpEvent([], 'agent_message_chunk', payload);
+    next = reduceAcpEvent(next, 'agent_message_chunk', payload);
+
+    expect(next[0].content).toBe('历史回复');
+  });
+
+  it('重复加载同一条 user 历史消息时不再次拼接内容', () => {
+    const payload = {
+      sessionUpdate: 'user_message_chunk',
+      messageId: 'history-user',
+      content: { type: 'text', text: '历史问题' },
+      _meta: { 'codebuddy.ai': { mode: 'history' } },
+    };
+    let next = reduceAcpEvent([], 'user_message_chunk', payload);
+    next = reduceAcpEvent(next, 'user_message_chunk', payload);
+
+    expect(next[0].content).toBe('历史问题');
+  });
 });
 
 describe('closeAssistantStream', () => {

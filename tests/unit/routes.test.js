@@ -53,13 +53,13 @@ describe('setHashRoute - hash 路由设置', () => {
 });
 
 describe('ROUTES 常量', () => {
-  it('包含对照源全集 19 路由', () => {
+  it('包含当前应用支持的路由', () => {
     expect(ROUTES).toContain('chat');
     expect(ROUTES).toContain('instances');
     expect(ROUTES).toContain('remote-control');
     expect(ROUTES).toContain('terminal');
-    expect(ROUTES).toContain('canvas');
     expect(ROUTES).toContain('tasks');
+    expect(ROUTES).toContain('archived');
     expect(ROUTES).toContain('plugins');
     expect(ROUTES).toContain('editor');
     expect(ROUTES).toContain('changes');
@@ -70,7 +70,6 @@ describe('ROUTES 常量', () => {
     expect(ROUTES).toContain('logs');
     expect(ROUTES).toContain('workers');
     expect(ROUTES).toContain('settings');
-    expect(ROUTES).toContain('docs');
     expect(ROUTES).toContain('keybindings');
   });
 });

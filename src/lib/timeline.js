@@ -31,6 +31,12 @@ function getText(c) {
   return String(c);
 }
 
+function isRepeatedHistoryChunk(target, payload, content) {
+  if (!target || !content) return false;
+  const mode = payload?._meta?.['codebuddy.ai']?.mode;
+  return mode === 'history' && (target.content === content || target.content.endsWith(content));
+}
+
 export function createTimelineEntry(partial = {}) {
   return {
     id: partial.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -109,11 +115,13 @@ function mergeUserChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'user') {
+    const content = getText(payload?.content);
+    if (isRepeatedHistoryChunk(target, payload, content)) return next;
     if (isDuplicateChunk(messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
-      content: target.content + getText(payload?.content),
+      content: target.content + content,
       meta: { ...(target.meta || {}), ...(payload || {}) },
     };
     return next;
@@ -137,11 +145,13 @@ function mergeAssistantChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
+    const content = getText(payload?.content);
+    if (isRepeatedHistoryChunk(target, payload, content)) return next;
     if (isDuplicateChunk(messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
-      content: target.content + getText(payload?.content),
+      content: target.content + content,
       streaming: true,
       meta: { ...(target.meta || {}), ...(payload || {}) },
     };
@@ -166,11 +176,13 @@ function mergeThinkingChunk(timeline, payload) {
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
+    const content = getText(payload?.content);
+    if (isRepeatedHistoryChunk(target, payload, content)) return next;
     if (isDuplicateChunk(messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
-      content: target.content + getText(payload?.content),
+      content: target.content + content,
       meta: { ...(target.meta || {}), ...(payload || {}) },
     };
     return next;

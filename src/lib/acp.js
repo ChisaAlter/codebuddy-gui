@@ -164,6 +164,20 @@ export function parseEventStreamMessages(text) {
   return messages;
 }
 
+function consumeEventStreamChunk(buffer, chunk, flush = false) {
+  const combined = `${buffer}${chunk}`;
+  const parts = combined.split(/\r?\n\r?\n/);
+  let remainder = parts.pop() || '';
+  if (flush && remainder.trim()) {
+    parts.push(remainder);
+    remainder = '';
+  }
+  return {
+    buffer: remainder,
+    messages: parts.flatMap((part) => parseEventStreamMessages(part)),
+  };
+}
+
 export class AcpClient {
   constructor(options = {}) {
     this.apiBase = options.apiBase || getApiBase();
@@ -719,6 +733,73 @@ export class AcpClient {
     }).catch(() => null);
   }
 
+  requestStreamingIpc(payload, id, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let stream = null;
+      let timeoutId = null;
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        stream?.close?.();
+      };
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback(value);
+      };
+      const armTimeout = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+          finish(reject, new Error(`ACP request idle timeout: ${payload.method}`));
+        }, timeoutMs);
+      };
+      armTimeout();
+
+      try {
+        stream = window.electronAPI.openCodeBuddyStream({
+          url: `${this.apiBase}/api/v1/acp`,
+          method: 'POST',
+          headers: makeHeaders({
+            Accept: 'application/json, text/event-stream',
+            'Content-Type': 'application/json',
+            'acp-connection-id': this.connectionId,
+            ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+          }),
+          body: JSON.stringify(payload),
+          timeoutMs,
+          rpcId: id,
+        }, {
+          onMessage: (message) => {
+            if (settled) return;
+            armTimeout();
+            if (!message?.method && message?.id !== undefined && message?.id !== null && String(message.id) === id) {
+              if (message.error) {
+                finish(reject, new Error(message.error.message || `ACP rpc error: ${payload.method}`));
+              } else {
+                finish(resolve, message.result ?? null);
+              }
+              return;
+            }
+            this.handleIncomingRpc(message);
+          },
+          onError: (error) => {
+            finish(reject, new Error(typeof error === 'string' ? error : error?.message || `ACP stream failed: ${payload.method}`));
+          },
+          onEnd: (result) => {
+            if (result?.ok === false) {
+              finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
+            } else {
+              finish(resolve, null);
+            }
+          },
+        });
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  }
+
   async request(method, params = {}) {
     if (!this.connected || !this.connectionId) {
       throw new Error('ACP client is not connected');
@@ -727,6 +808,9 @@ export class AcpClient {
     const id = String(++this.requestCounter);
     const payload = { jsonrpc: '2.0', method, params, id };
     const isLongRunning = LONG_RUNNING_ACP_METHODS.has(method);
+    if (isLongRunning && typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
+      return this.requestStreamingIpc(payload, id, LONG_REQUEST_IDLE_TIMEOUT_MS);
+    }
 
     const controller = new AbortController();
     let timeoutId = null;
@@ -758,32 +842,41 @@ export class AcpClient {
       const reader = response.body?.getReader?.();
       const decoder = new TextDecoder();
       let text = '';
+      let eventBuffer = '';
+      let matchedResult = null;
+      let matchedResponse = false;
+      const processMessages = (messages) => {
+        for (const message of messages) {
+          if (!message.method && message.id !== undefined && message.id !== null && String(message.id) === id) {
+            matchedResponse = true;
+            if (message.error) {
+              throw new Error(message.error.message || `ACP rpc error: ${method}`);
+            }
+            matchedResult = message.result ?? null;
+          } else {
+            this.handleIncomingRpc(message);
+          }
+        }
+      };
+      const consumeChunk = (chunk, flush = false) => {
+        text += chunk;
+        const consumed = consumeEventStreamChunk(eventBuffer, chunk, flush);
+        eventBuffer = consumed.buffer;
+        processMessages(consumed.messages);
+      };
+
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           armTimeout();
-          text += decoder.decode(value, { stream: true });
+          consumeChunk(decoder.decode(value, { stream: true }));
         }
-        text += decoder.decode();
+        consumeChunk(decoder.decode());
+        consumeChunk('', true);
       } else {
         text = await response.text();
-      }
-
-      const messages = parseEventStreamMessages(text);
-
-      let matchedResult = null;
-      let matchedResponse = false;
-      for (const message of messages) {
-        if (!message.method && message.id !== undefined && message.id !== null && String(message.id) === id) {
-          matchedResponse = true;
-          if (message.error) {
-            throw new Error(message.error.message || `ACP rpc error: ${method}`);
-          }
-          matchedResult = message.result ?? null;
-        } else {
-          this.handleIncomingRpc(message);
-        }
+        processMessages(parseEventStreamMessages(text));
       }
 
       if (matchedResponse) return matchedResult;

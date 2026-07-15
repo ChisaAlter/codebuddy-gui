@@ -197,7 +197,7 @@ export default function ReplicaPluginsView() {
     try {
       let ok = true;
       if (action.type === 'uninstall') {
-        ok = await uninstallPluginByName(action.id);
+        ok = await uninstallPluginByName(action.id, action.marketplace);
       } else if (action.type === 'remove-marketplace') {
         ok = await removeMarketplaceById(action.id);
       } else if (action.type === 'update') {
@@ -520,7 +520,7 @@ export default function ReplicaPluginsView() {
                         const generation = projectGenerationRef.current;
                         setActionError(null);
                         try {
-                          const ok = await togglePluginByName(p.name, !enabled);
+                          const ok = await togglePluginByName(p.name, !enabled, p.marketplace);
                           if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
                           if (!ok) setActionError(useStore.getState().pluginError || '操作失败');
                         } finally {
@@ -571,6 +571,7 @@ export default function ReplicaPluginsView() {
                       onClick={() => openActionDialog({
                         type: 'uninstall',
                         id: p.name,
+                        marketplace: p.marketplace,
                         label: p.name || '未命名插件',
                         detail: p.description || '',
                       })}

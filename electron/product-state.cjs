@@ -19,11 +19,56 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function normalizeTimelineEntry(entry) {
+  if (!isPlainObject(entry)) return entry;
+  const historyMode = entry.raw?._meta?.['codebuddy.ai']?.mode === 'history';
+  const rawText = entry.raw?.content?.text;
+  const content = entry.content;
+  if (!historyMode || typeof rawText !== 'string' || !rawText || typeof content !== 'string') return entry;
+  const repeatCount = content.length / rawText.length;
+  const repeatedContent = Number.isInteger(repeatCount)
+    && repeatCount >= 2
+    && rawText.repeat(repeatCount) === content;
+  const metaText = entry.meta?.content?.text;
+  const corruptedMeta = typeof metaText === 'string'
+    && metaText.includes('\uFFFD')
+    && !rawText.includes('\uFFFD');
+  if (!repeatedContent && !corruptedMeta) return entry;
+  return {
+    ...entry,
+    ...(repeatedContent ? { content: rawText } : {}),
+    ...(corruptedMeta ? {
+      meta: {
+        ...entry.meta,
+        content: { ...entry.meta.content, text: rawText },
+      },
+    } : {}),
+  };
+}
+
 function normalizeProductState(value) {
   if (!isPlainObject(value)) return emptyProductState();
 
-  const projectsById = isPlainObject(value.projectsById) ? value.projectsById : {};
-  const threadsById = isPlainObject(value.threadsById) ? value.threadsById : {};
+  const sourceProjects = isPlainObject(value.projectsById) ? value.projectsById : {};
+  const sourceThreads = isPlainObject(value.threadsById) ? value.threadsById : {};
+  const projectsById = Object.fromEntries(Object.entries(sourceProjects).map(([id, project]) => {
+    const preferences = isPlainObject(project?.preferences) ? project.preferences : {};
+    return [id, {
+      ...project,
+      preferences: {
+        ...preferences,
+        sidebarExpanded: preferences.sidebarExpanded !== false,
+      },
+    }];
+  }));
+  const threadsById = Object.fromEntries(Object.entries(sourceThreads).map(([id, thread]) => [id, {
+    ...thread,
+    timeline: Array.isArray(thread?.timeline) ? thread.timeline.map(normalizeTimelineEntry) : [],
+    pinned: Boolean(thread?.pinned),
+    archivedAt: typeof thread?.archivedAt === 'string' && thread.archivedAt
+      ? thread.archivedAt
+      : null,
+  }]));
   const projectOrder = Array.isArray(value.projectOrder)
     ? value.projectOrder.filter((id) => typeof id === 'string' && projectsById[id])
     : [];
@@ -42,10 +87,12 @@ function normalizeProductState(value) {
   const activeProjectId = projectOrder.includes(value.activeProjectId)
     ? value.activeProjectId
     : (projectOrder[0] || null);
-  const activeThreadId = activeProjectId
-    && threadOrderByProject[activeProjectId]?.includes(value.activeThreadId)
+  const visibleThreadOrder = activeProjectId
+    ? (threadOrderByProject[activeProjectId] || []).filter((threadId) => !threadsById[threadId]?.archivedAt)
+    : [];
+  const activeThreadId = visibleThreadOrder.includes(value.activeThreadId)
     ? value.activeThreadId
-    : (threadOrderByProject[activeProjectId]?.[0] || null);
+    : (visibleThreadOrder[0] || null);
 
   return {
     version: PRODUCT_STATE_VERSION,

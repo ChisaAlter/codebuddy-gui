@@ -68,6 +68,7 @@ export async function deleteSession(sessionId) {
   if (!sessionId) return;
   return requestOptionalJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
+    timeoutMs: 10000,
   });
 }
 
@@ -223,11 +224,19 @@ export async function stopWorker(pid) {
 
 // ===== Plugin 管理 =====
 
-/** 安装插件 */
-export async function installPlugin(pluginId, marketplace) {
+function qualifyPluginId(pluginId, marketplace) {
   const id = String(pluginId || '').trim();
   if (!id) throw new Error('plugin name 不能为空');
-  const plugin = marketplace && !id.includes('@') ? `${id}@${marketplace}` : id;
+  const marketplaceId = String(marketplace || '').trim();
+  if (!marketplaceId) return id;
+  const marketplaceSeparator = id.lastIndexOf('@');
+  const packageSlash = id.lastIndexOf('/');
+  return marketplaceSeparator > packageSlash ? id : `${id}@${marketplaceId}`;
+}
+
+/** 安装插件 */
+export async function installPlugin(pluginId, marketplace) {
+  const plugin = qualifyPluginId(pluginId, marketplace);
   const payload = await fetchJson('/api/v1/plugins', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -240,13 +249,12 @@ export async function installPlugin(pluginId, marketplace) {
  *  注意：对照源用 POST /uninstall + body={plugin:<name>}，不是 DELETE /plugins/{id}。
  *  保留旧 uninstallPlugin 名，改走真实路径；调用方传 plugin 名而非 id。
  */
-export async function uninstallPlugin(pluginName) {
-  const name = String(pluginName || '').trim();
-  if (!name) throw new Error('plugin name 不能为空');
+export async function uninstallPlugin(pluginName, marketplace) {
+  const plugin = qualifyPluginId(pluginName, marketplace);
   const payload = await fetchJson('/api/v1/plugins/uninstall', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin: name }),
+    body: JSON.stringify({ plugin }),
   });
   return payload?.data || payload || null;
 }
@@ -263,21 +271,23 @@ export async function uninstallPluginById(pluginId) {
 }
 
 /** 启用插件 */
-export async function enablePlugin(pluginId) {
+export async function enablePlugin(pluginId, marketplace) {
+  const plugin = qualifyPluginId(pluginId, marketplace);
   const payload = await fetchJson('/api/v1/plugins/enable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin: pluginId }),
+    body: JSON.stringify({ plugin }),
   });
   return payload?.data || payload || null;
 }
 
 /** 禁用插件 */
-export async function disablePlugin(pluginId) {
+export async function disablePlugin(pluginId, marketplace) {
+  const plugin = qualifyPluginId(pluginId, marketplace);
   const payload = await fetchJson('/api/v1/plugins/disable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ plugin: pluginId }),
+    body: JSON.stringify({ plugin }),
   });
   return payload?.data || payload || null;
 }

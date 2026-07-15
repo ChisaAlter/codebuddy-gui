@@ -724,14 +724,14 @@ export default function ReplicaChatView() {
       default: '始终询问',
       acceptEdits: '接受编辑',
       plan: '计划模式',
-      bypassPermissions: '跳过权限',
-      dontAsk: '免确认',
-      auto: '自动',
+      bypassPermissions: '跳过权限确认',
+      dontAsk: '不再询问',
+      auto: '自动执行',
     };
     const items = (Array.isArray(modes) ? modes : [])
       .map((mode) => {
         const id = mode.id || mode.modeId;
-        return id ? { id, name: mode.name || labels[id] || id } : null;
+        return id ? { id, name: labels[id] || mode.name || id } : null;
       })
       .filter(Boolean);
     if (currentMode && !items.some((item) => item.id === currentMode)) {
@@ -1385,7 +1385,7 @@ export default function ReplicaChatView() {
                   {showModelPicker && (
                     <>
                       <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
-                      <div className="absolute bottom-full left-0 mb-1 z-20 w-56 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto">
+                      <div data-model-picker className="absolute bottom-full right-0 mb-1 z-20 w-56 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto">
                         {models.length > 0 ? models.map((m) => {
                           const modelId = m.id || m.modelId || m.name;
                           return (
@@ -1421,17 +1421,18 @@ export default function ReplicaChatView() {
                       </svg>
                     )}
                   </button>
-                ) : null}
-                <button
-                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
-                  onClick={onSubmit}
-                  disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
-                  title={!canSend ? '等待会话连接' : isStreaming ? '加入待发送队列' : '发送'}
-                >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
-                  </svg>
-                </button>
+                ) : (
+                  <button
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40" style={{ background: 'var(--color-accent-blue)' }}
+                    onClick={onSubmit}
+                    disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
+                    title={!canSend ? '等待会话连接' : '发送'}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
             {sessionSelectionStatus ? (

@@ -21,7 +21,34 @@ describe('store cancellation', () => {
     mocks.request.mockReset();
     mocks.request.mockResolvedValue({ ok: true });
     useStore.setState({
+      activeProjectId: 'project-1',
+      activeThreadId: 'thread-1',
       sessionId: 'session-123',
+      projectsById: {
+        'project-1': { id: 'project-1', workspacePath: 'C:/Project' },
+      },
+      threadsById: {
+        'thread-1': {
+          id: 'thread-1',
+          projectId: 'project-1',
+          sessionId: 'session-123',
+          timeline: [],
+          metadata: {},
+        },
+      },
+      threadRuntimeById: {
+        'thread-1': {
+          timeline: [{
+            id: 'assistant-1',
+            type: 'message',
+            role: 'assistant',
+            content: 'Working',
+            streaming: true,
+            createdAt: Date.now(),
+          }],
+        },
+      },
+      getThreadClient: () => ({ request: mocks.request }),
       isAwaitingResponse: true,
       error: null,
       timeline: [

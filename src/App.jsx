@@ -3,7 +3,7 @@ import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
-import appIconUrl from '../build/icon.svg';
+import appIconUrl from '../build/icon.png';
 import { guiActionForShortcut, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
@@ -18,6 +18,7 @@ const ReplicaSandboxesView = lazy(() => import('./components/ReplicaSandboxesVie
 const ReplicaStatsView = lazy(() => import('./components/ReplicaStatsView'));
 const ReplicaTracesView = lazy(() => import('./components/ReplicaTracesView'));
 const ReplicaTasksView = lazy(() => import('./components/ReplicaTasksView'));
+const ReplicaArchivedView = lazy(() => import('./components/ReplicaArchivedView'));
 const ReplicaLogsView = lazy(() => import('./components/ReplicaLogsView'));
 const ReplicaRemoteControlView = lazy(() => import('./components/ReplicaRemoteControlView'));
 const ReplicaInstancesView = lazy(() => import('./components/ReplicaInstancesView'));
@@ -369,6 +370,7 @@ const ROUTE_TITLES = {
   instances: '实例',
   'remote-control': '远程控制',
   tasks: '任务',
+  archived: '已归档',
   terminal: '终端',
   editor: '编辑器',
   changes: '变更',
@@ -510,6 +512,7 @@ function MainContent() {
     case 'mcp': content = <ReplicaMcpView />; break;
     case 'sandboxes': content = <ReplicaSandboxesView />; break;
     case 'tasks': content = <ReplicaTasksView />; break;
+    case 'archived': content = <ReplicaArchivedView />; break;
     case 'stats': content = <ReplicaStatsView />; break;
     case 'traces': content = <ReplicaTracesView />; break;
     case 'monitor': content = <ReplicaMonitorView />; break;

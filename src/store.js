@@ -20,6 +20,7 @@ import {
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
 import { isGuiSettingKey, loadGuiSettings, saveGuiSettings, stripGuiSettings } from './lib/gui-settings';
+import { visibleProjectThreads } from './lib/session-sidebar';
 
 const conversations = new ConversationManager();
 let routeListenerBound = false;
@@ -50,6 +51,7 @@ const threadMutationChains = new Map();
 const sessionActionOperations = new Map();
 const promptQueueOperationChains = new Map();
 let dirtyFileConfirmationResolve = null;
+const DELETED_SESSION_HISTORY_LIMIT = 200;
 
 function beginProjectNavigation(set, targetId) {
   const token = { version: ++projectNavigationVersion, targetId };
@@ -124,6 +126,25 @@ function queueThreadMutation(threadId, operation) {
   });
   threadMutationChains.set(threadId, tracked);
   return tracked;
+}
+
+function deletedSessionIdsForProject(project) {
+  const ids = project?.preferences?.deletedSessionIds;
+  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id) : [];
+}
+
+function projectWithDeletedSession(project, sessionId) {
+  if (!project || !sessionId) return project;
+  const deletedSessionIds = deletedSessionIdsForProject(project).filter((id) => id !== sessionId);
+  deletedSessionIds.push(sessionId);
+  return {
+    ...project,
+    preferences: {
+      ...(project.preferences || {}),
+      deletedSessionIds: deletedSessionIds.slice(-DELETED_SESSION_HISTORY_LIMIT),
+    },
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function runUniqueSessionAction(key, operation) {
@@ -1525,7 +1546,7 @@ export const useStore = create((set, get) => ({
     if (isProjectMutationNavigation(get())) return false;
     const thread = get().threadsById[threadId];
     const project = thread ? get().projectsById[thread.projectId] : null;
-    if (!thread || !project) return false;
+    if (!thread || !project || thread.archivedAt) return false;
     if (threadId === get().activeThreadId) return true;
     const navigation = beginProjectNavigation(set, `thread:${threadId}`);
     try {
@@ -1610,39 +1631,229 @@ export const useStore = create((set, get) => ({
     });
   },
 
-  async deleteThread(threadId) {
+  async setProjectSidebarExpanded(projectId, expanded) {
+    const project = get().projectsById[projectId];
+    if (!project) return false;
+    const previous = project.preferences?.sidebarExpanded !== false;
+    const nextExpanded = Boolean(expanded);
+    if (previous === nextExpanded) return true;
+    set((state) => ({
+      projectsById: {
+        ...state.projectsById,
+        [projectId]: {
+          ...state.projectsById[projectId],
+          preferences: {
+            ...(state.projectsById[projectId].preferences || {}),
+            sidebarExpanded: nextExpanded,
+          },
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    const persisted = await get().persistProductState();
+    if (persisted) return true;
+    set((state) => {
+      const current = state.projectsById[projectId];
+      if (!current || current.preferences?.sidebarExpanded !== nextExpanded) return {};
+      return {
+        projectsById: {
+          ...state.projectsById,
+          [projectId]: {
+            ...current,
+            preferences: { ...(current.preferences || {}), sidebarExpanded: previous },
+          },
+        },
+      };
+    });
+    return false;
+  },
+
+  async setThreadPinned(threadId, pinned) {
     return queueThreadMutation(threadId, async () => {
       const thread = get().threadsById[threadId];
-      const projectId = thread?.projectId;
-      if (!thread) return false;
-      if (thread.sessionId) {
-        if (projectId !== get().activeProjectId) return false;
-        try {
-          await apiDeleteSession(thread.sessionId);
-        } catch (error) {
-          if (projectId === get().activeProjectId) set({ error: error.message || '删除会话失败' });
-          return false;
-        }
-      }
-      if (!get().threadsById[threadId]) return false;
-      await conversations.dispose(threadId);
-      const wasActive = get().activeThreadId === threadId;
+      if (!thread || thread.archivedAt) return false;
+      const previous = Boolean(thread.pinned);
+      const nextPinned = Boolean(pinned);
+      if (previous === nextPinned) return true;
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...state.threadsById[threadId],
+            pinned: nextPinned,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }));
+      const persisted = await get().persistProductState();
+      if (persisted) return true;
       set((state) => {
-        const threadsById = { ...state.threadsById };
-        delete threadsById[threadId];
-        const order = (state.threadOrderByProject[thread.projectId] || []).filter((id) => id !== threadId);
+        const current = state.threadsById[threadId];
+        if (!current || Boolean(current.pinned) !== nextPinned) return {};
         return {
-          threadsById,
-          threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
-          sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
-          activeThreadId: wasActive ? (order[0] || null) : state.activeThreadId,
+          threadsById: {
+            ...state.threadsById,
+            [threadId]: { ...current, pinned: previous },
+          },
         };
       });
-      await get().persistProductState();
-      if (wasActive) {
-        const replacementId = get().activeThreadId;
-        if (replacementId) await get().activateThread(replacementId);
+      return false;
+    });
+  },
+
+  async archiveThread(threadId) {
+    return queueThreadMutation(threadId, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread || thread.archivedAt) return false;
+      const archivedAt = new Date().toISOString();
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: { ...state.threadsById[threadId], archivedAt, unread: false, updatedAt: archivedAt },
+        },
+      }));
+      const persisted = await get().persistProductState();
+      if (!persisted) {
+        set((state) => {
+          const current = state.threadsById[threadId];
+          if (!current || current.archivedAt !== archivedAt) return {};
+          return {
+            threadsById: {
+              ...state.threadsById,
+              [threadId]: { ...current, archivedAt: null, unread: thread.unread },
+            },
+          };
+        });
+        return false;
+      }
+      if (get().activeThreadId === threadId) {
+        const replacement = visibleProjectThreads(
+          thread.projectId,
+          get().threadOrderByProject,
+          get().threadsById,
+        )[0];
+        if (replacement) await get().activateThread(replacement.id);
         else await get().newSession();
+      }
+      return true;
+    });
+  },
+
+  async restoreThread(threadId) {
+    return queueThreadMutation(threadId, async () => {
+      const thread = get().threadsById[threadId];
+      if (!thread?.archivedAt) return false;
+      const previousArchivedAt = thread.archivedAt;
+      set((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: {
+            ...state.threadsById[threadId],
+            archivedAt: null,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }));
+      const persisted = await get().persistProductState();
+      if (persisted) return true;
+      set((state) => {
+        const current = state.threadsById[threadId];
+        if (!current || current.archivedAt !== null) return {};
+        return {
+          threadsById: {
+            ...state.threadsById,
+            [threadId]: { ...current, archivedAt: previousArchivedAt },
+          },
+        };
+      });
+      return false;
+    });
+  },
+
+  async deleteThread(threadId) {
+    return queueThreadMutation(threadId, async () => {
+      const previousState = get();
+      const thread = previousState.threadsById[threadId];
+      const projectId = thread?.projectId;
+      if (!thread) return false;
+      const project = previousState.projectsById[projectId];
+      if (!project) return false;
+      const wasActive = previousState.activeThreadId === threadId;
+      const order = (previousState.threadOrderByProject[projectId] || []).filter((id) => id !== threadId);
+      const replacementId = order.find((id) => !previousState.threadsById[id]?.archivedAt) || null;
+      const previousRuntime = previousState.threadRuntimeById[threadId] || null;
+      const previousActiveRuntime = {};
+      if (wasActive) {
+        for (const key of ACTIVE_THREAD_RUNTIME_KEYS) previousActiveRuntime[key] = previousState[key];
+      }
+
+      await conversations.dispose(threadId);
+      set((state) => {
+        const threadsById = { ...state.threadsById };
+        const threadRuntimeById = { ...state.threadRuntimeById };
+        const projectsById = { ...state.projectsById };
+        delete threadsById[threadId];
+        delete threadRuntimeById[threadId];
+        if (thread.sessionId) {
+          projectsById[projectId] = projectWithDeletedSession(state.projectsById[projectId], thread.sessionId);
+        }
+        return {
+          projectsById,
+          threadsById,
+          threadRuntimeById,
+          threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
+          sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
+          activeThreadId: wasActive ? null : state.activeThreadId,
+          ...(wasActive ? {
+            ...emptyThreadRuntime(),
+            sessionId: null,
+            sessionTitle: null,
+            sessionToken: null,
+          } : {}),
+        };
+      });
+      if (wasActive) setAcpSessionToken(null);
+
+      const persisted = await get().persistProductState();
+      if (!persisted) {
+        set((state) => {
+          const threadRuntimeById = { ...state.threadRuntimeById };
+          if (previousRuntime) threadRuntimeById[threadId] = previousRuntime;
+          else delete threadRuntimeById[threadId];
+          return {
+            projectsById: { ...state.projectsById, [projectId]: project },
+            threadsById: { ...state.threadsById, [threadId]: thread },
+            threadRuntimeById,
+            threadOrderByProject: { ...state.threadOrderByProject, [projectId]: previousState.threadOrderByProject[projectId] || [] },
+            sessions: previousState.sessions,
+            activeThreadId: previousState.activeThreadId,
+            ...(wasActive ? {
+              ...previousActiveRuntime,
+              sessionId: previousState.sessionId,
+              sessionTitle: previousState.sessionTitle,
+              sessionToken: previousState.sessionToken,
+            } : {}),
+          };
+        });
+        if (wasActive) setAcpSessionToken(previousState.sessionToken || null);
+        return false;
+      }
+
+      if (thread.sessionId && projectId === get().activeProjectId) {
+        apiDeleteSession(thread.sessionId).catch((error) => {
+          console.warn('Failed to delete CodeBuddy session after local removal:', error);
+        });
+      }
+
+      if (wasActive) {
+        queueMicrotask(async () => {
+          if (get().activeThreadId || get().activeProjectId !== projectId) return;
+          if (replacementId && get().threadsById[replacementId]) {
+            await get().activateThread(replacementId);
+          } else {
+            await get().newSession();
+          }
+        });
       }
       return true;
     });
@@ -1798,7 +2009,7 @@ export const useStore = create((set, get) => ({
         item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
       ));
       let thread = project
-        ? get().threadsById[get().threadOrderByProject[project.id]?.[0]]
+        ? visibleProjectThreads(project.id, get().threadOrderByProject, get().threadsById)[0]
         : null;
       if (!project) project = createProjectRecord(normalizedPath);
       if (!thread) thread = createThreadRecord(project.id);
@@ -1867,14 +2078,17 @@ export const useStore = create((set, get) => ({
       if (!isProjectNavigationCurrent(navigation)) return false;
       await get().persistActiveProjectTerminalState();
       if (!isProjectNavigationCurrent(navigation)) return false;
-      let threadId = get().threadOrderByProject[projectId]?.[0] || null;
-      let thread = threadId ? get().threadsById[threadId] : null;
+      let thread = visibleProjectThreads(projectId, get().threadOrderByProject, get().threadsById)[0] || null;
+      let threadId = thread?.id || null;
       if (!thread) {
         thread = createThreadRecord(projectId);
         threadId = thread.id;
         set((state) => ({
           threadsById: { ...state.threadsById, [thread.id]: thread },
-          threadOrderByProject: { ...state.threadOrderByProject, [projectId]: [thread.id] },
+          threadOrderByProject: {
+            ...state.threadOrderByProject,
+            [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+          },
         }));
       }
       set({
@@ -1976,8 +2190,9 @@ export const useStore = create((set, get) => ({
       let nextThread = null;
       if (wasActive) {
         nextProjectId = previousState.projectOrder.find((id) => id !== projectId && previousState.projectsById[id]) || null;
-        const nextThreadId = nextProjectId ? previousState.threadOrderByProject[nextProjectId]?.[0] : null;
-        nextThread = nextThreadId ? previousState.threadsById[nextThreadId] : null;
+        nextThread = nextProjectId
+          ? visibleProjectThreads(nextProjectId, previousState.threadOrderByProject, previousState.threadsById)[0]
+          : null;
         if (nextProjectId && !nextThread) nextThread = createThreadRecord(nextProjectId);
       }
 
@@ -3248,9 +3463,11 @@ export const useStore = create((set, get) => ({
       return true;
     }
     set((state) => {
+      const deletedSessionIds = new Set(deletedSessionIdsForProject(state.projectsById[projectId]));
+      const visibleSessions = sessions.filter((session) => !deletedSessionIds.has(session.id || session.sessionId));
       const threadsById = { ...state.threadsById };
       const order = [...(state.threadOrderByProject[projectId] || [])];
-      for (const session of sessions) {
+      for (const session of visibleSessions) {
         const sessionId = session.id || session.sessionId;
         if (!sessionId) continue;
         let thread = Object.values(threadsById).find((item) => (
@@ -3272,7 +3489,7 @@ export const useStore = create((set, get) => ({
         }
       }
       return {
-        sessions,
+        sessions: visibleSessions,
         threadsById,
         threadOrderByProject: { ...state.threadOrderByProject, [projectId]: order },
       };
@@ -3340,12 +3557,12 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async uninstallPluginByName(pluginName) {
+  async uninstallPluginByName(pluginName, marketplace) {
     const projectId = get().activeProjectId;
     const busyKey = `uninstall:${pluginName}`;
     set({ pluginBusy: busyKey, pluginError: null });
     try {
-      await apiUninstallPlugin(pluginName);
+      await apiUninstallPlugin(pluginName, marketplace);
       if (projectId === get().activeProjectId) await get().refreshPlugins();
       if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
@@ -3357,13 +3574,13 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  async togglePluginByName(pluginName, enabled) {
+  async togglePluginByName(pluginName, enabled, marketplace) {
     const projectId = get().activeProjectId;
     const busyKey = `toggle:${pluginName}`;
     set({ pluginBusy: busyKey, pluginError: null });
     try {
-      if (enabled) await apiEnablePlugin(pluginName);
-      else await apiDisablePlugin(pluginName);
+      if (enabled) await apiEnablePlugin(pluginName, marketplace);
+      else await apiDisablePlugin(pluginName, marketplace);
       if (projectId === get().activeProjectId) await get().refreshPlugins();
       if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
