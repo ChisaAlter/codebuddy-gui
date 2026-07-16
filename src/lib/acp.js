@@ -6,7 +6,7 @@ let _apiBase = 'http://127.0.0.1:63918';
 
 const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt']);
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
-const LONG_REQUEST_IDLE_TIMEOUT_MS = 120000;
+const LONG_REQUEST_IDLE_TIMEOUT_MS = 0;
 
 export function getApiBase() {
   return _apiBase;
@@ -750,6 +750,7 @@ export class AcpClient {
       };
       const armTimeout = () => {
         if (timeoutId) clearTimeout(timeoutId);
+        if (timeoutMs <= 0) return;
         timeoutId = setTimeout(() => {
           finish(reject, new Error(`ACP request idle timeout: ${payload.method}`));
         }, timeoutMs);
@@ -817,6 +818,7 @@ export class AcpClient {
     const armTimeout = () => {
       if (timeoutId) clearTimeout(timeoutId);
       const timeoutMs = isLongRunning ? LONG_REQUEST_IDLE_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+      if (timeoutMs <= 0) return;
       timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     };
     armTimeout();

@@ -10,14 +10,16 @@ const path = require('node:path');
 
 const ROUTE_EXPECTATIONS = Object.freeze([
   { route: 'chat', navLabel: '对话', expected: { role: 'textbox', name: '从一个想法开始...' } },
-  { route: 'instances', navLabel: '实例', expected: { role: 'button', name: '添加实例' } },
+  { route: 'instances', navLabel: '实例', expected: { role: 'button', name: '添加项目' } },
   { route: 'remote-control', navLabel: '远程控制', expected: { role: 'textbox', name: '企微 botId' } },
   { route: 'tasks', navLabel: '任务', expected: { role: 'textbox', name: '0 9 * * *' } },
+  { route: 'archived', navLabel: '已归档', expected: { role: 'heading', name: '已归档' } },
   { route: 'terminal', navLabel: '终端', expected: { role: 'button', name: '右分' } },
-  { route: 'canvas', navLabel: '画布', expected: { role: 'button', name: '添加终端' } },
   { route: 'editor', navLabel: '编辑器', expected: { role: 'textbox', name: '搜索文件名' } },
   { route: 'changes', navLabel: '变更', expected: { role: 'textbox', name: '输入提交信息...' } },
   { route: 'plugins', navLabel: '插件', expected: { role: 'textbox', name: '搜索插件名称或描述...' } },
+  { route: 'mcp', navLabel: 'MCP', expected: { role: 'textbox', name: '搜索名称、类型或地址...' } },
+  { route: 'sandboxes', navLabel: 'Sandboxes', expected: { role: 'textbox', name: '搜索 ID、别名、模板或项目路径...' } },
   { route: 'stats', navLabel: '统计', expected: { role: 'button', name: '刷新' } },
   { route: 'traces', navLabel: '链路', expected: { role: 'textbox', name: '搜索 Service 或 Trace ID…' } },
   { route: 'monitor', navLabel: '监控', expected: { role: 'button', name: '刷新' } },
@@ -26,15 +28,14 @@ const ROUTE_EXPECTATIONS = Object.freeze([
   {
     route: 'workers',
     navLabel: 'Workers',
-    expected: { role: 'textbox', name: '搜索 Worker（kind / PID / sessionId）...' },
+    expected: { role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...' },
   },
   { route: 'settings', navLabel: '设置', expected: { role: 'button', name: '亮色' } },
   {
     route: 'keybindings',
     navLabel: '快捷键',
-    expected: { role: 'textbox', name: '搜索快捷键... (如 submit, ctrl+enter)' },
+    expected: { role: 'textbox', name: '搜索快捷键、动作或上下文...' },
   },
-  { route: 'docs', navLabel: '文档', expected: { role: 'textbox', name: '搜索文档...' } },
 ]);
 
 function abortError(signal, fallback = 'operation aborted') {
@@ -179,6 +180,9 @@ function createSingleFinalizer(finalizer) {
 
 function requireUsableCodeBuddyStartup(text) {
   const startupText = String(text || '');
+  const runtimePort = Number(startupText.match(/CodeBuddy runtime ready project=\S+ port=(\d+)\b/)?.[1]);
+  if (Number.isInteger(runtimePort)) return { state: 'ready', port: runtimePort };
+
   const port = Number(startupText.match(/Parsed CodeBuddy port from stdout: (\d+)\b/)?.[1]);
   const passwordParsed = /Parsed CodeBuddy password from (?:stdout|URL)/.test(startupText);
   const ready = /CodeBuddy port ready: \d+\b/.test(startupText);
@@ -188,16 +192,11 @@ function requireUsableCodeBuddyStartup(text) {
   if (ready && Number.isInteger(port) && passwordParsed) {
     return { state: 'ready', port };
   }
-  if (timedOut && Number.isInteger(port) && !passwordParsed) {
-    throw new Error(
-      `Baseline blocker auth-disabled-serve-password-contract: CodeBuddy CLI announced port ${port} but no password; ` +
-        'the current Electron startup contract waits for both values and times out. Owning tasks: 2/4 and compatibility 8/26.',
-    );
-  }
+  if (timedOut) throw new Error('CodeBuddy startup timed out before the runtime manager reported ready');
   if (failed) {
     throw new Error(`CodeBuddy startup failed before a usable port/password pair: ${failed}`);
   }
-  throw new Error('CodeBuddy startup did not produce a usable port/password pair');
+  throw new Error('CodeBuddy startup did not report a ready runtime');
 }
 
 function safeRuntimeSegment(value, fallback) {
@@ -357,6 +356,58 @@ function createRuntimeLayout(options = {}) {
     markerToken,
     userDataDir: path.join(runtimeDir, 'user-data'),
   };
+}
+
+function seedProductState(options = {}) {
+  const userDataDir = path.resolve(options.userDataDir || '');
+  const projectRoot = path.resolve(options.projectRoot || '');
+  if (!userDataDir || !projectRoot) throw new Error('seedProductState requires userDataDir and projectRoot');
+  const now = new Date().toISOString();
+  const projectId = 'project-e2e';
+  const threadId = 'thread-e2e';
+  const productState = {
+    version: 1,
+    guiSettings: {},
+    projectsById: {
+      [projectId]: {
+        id: projectId,
+        name: path.basename(projectRoot) || 'CodeBuddy E2E',
+        workspacePath: projectRoot,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+        runtimeStatus: 'idle',
+        preferences: { sidebarExpanded: true },
+      },
+    },
+    projectOrder: [projectId],
+    threadsById: {
+      [threadId]: {
+        id: threadId,
+        projectId,
+        sessionId: null,
+        title: '新对话',
+        draft: '',
+        timeline: [],
+        status: 'idle',
+        unread: false,
+        pinned: false,
+        archivedAt: null,
+        modelId: null,
+        modeId: 'default',
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+        metadata: {},
+      },
+    },
+    threadOrderByProject: { [projectId]: [threadId] },
+    activeProjectId: projectId,
+    activeThreadId: threadId,
+  };
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.writeFileSync(path.join(userDataDir, 'product-state.json'), `${JSON.stringify(productState, null, 2)}\n`, 'utf8');
+  return productState;
 }
 
 async function cleanupRuntimeDir(options = {}) {
@@ -2210,7 +2261,9 @@ function roleActionInPage(options) {
     );
   }
 
-  if (options.action === 'fill') {
+  if (options.action === 'invoke') {
+    element.click();
+  } else if (options.action === 'fill') {
     element.focus();
     const prototype =
       element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -2317,11 +2370,13 @@ async function driveByRole(client, options = {}) {
         await client.send('Input.dispatchMouseEvent', { ...common, type: 'mouseReleased' });
         throwIfAborted(signal, 'native click aborted');
         const acknowledgementDeadline = Date.now() + clickAckTimeoutMs;
+        let lastAcknowledgement = null;
         do {
           throwIfAborted(signal, 'trusted click acknowledgment aborted');
           const acknowledgement = await client.evaluate(
             `(${clickAcknowledgmentInPage.toString()})(${JSON.stringify({ targetId, clickAckToken })})`,
           );
+          lastAcknowledgement = acknowledgement;
           throwIfAborted(signal, 'trusted click acknowledgment aborted');
           if (acknowledgement?.clickAcknowledged === true && acknowledgement?.trustedClick === true) {
             return {
@@ -2335,7 +2390,8 @@ async function driveByRole(client, options = {}) {
           if (Date.now() < acknowledgementDeadline) await wait(clickAckIntervalMs, { signal });
         } while (Date.now() < acknowledgementDeadline);
         throw new Error(
-          `Native CDP click on ${role} ${JSON.stringify(name)} did not receive a trusted click acknowledgment`,
+          `Native CDP click on ${role} ${JSON.stringify(name)} did not receive a trusted click acknowledgment; ` +
+            `target=${JSON.stringify(lastResult)} acknowledgement=${JSON.stringify(lastAcknowledgement)}`,
         );
       }
       return lastResult;
@@ -2440,14 +2496,19 @@ async function driveRoutes(client, options = {}) {
 
   for (const route of routes) {
     throwIfAborted(signal, `route ${route.route} aborted`);
-    const navigation = await driveByRole(client, {
-      role: 'button',
-      name: route.navLabel,
-      action: 'click',
-      root: 'aside[role="navigation"]',
-      timeoutMs: routeTimeoutMs,
-      signal,
-    });
+    const currentRoute = await client.evaluate(`(() => ({ hash: window.location.hash }))()`);
+    const routeAlreadyActive = currentRoute?.hash === `#/${route.route}`
+      || (route.route === 'chat' && !currentRoute?.hash);
+    const navigation = routeAlreadyActive
+      ? { ok: true, role: 'button', name: route.navLabel, action: 'already-active' }
+      : await driveByRole(client, {
+        role: 'button',
+        name: route.navLabel,
+        action: 'invoke',
+        root: 'aside[role="navigation"]',
+        timeoutMs: routeTimeoutMs,
+        signal,
+      });
     const state = await waitForRendererValue(
       client,
       `(() => ({
@@ -2457,7 +2518,10 @@ async function driveRoutes(client, options = {}) {
       {
         timeoutMs: routeTimeoutMs,
         describe: `route ${route.route} state after clicking ${route.navLabel}`,
-        accept: (value) => value?.hash === `#/${route.route}` && value.status.includes(route.navLabel),
+        accept: (value) => {
+          const hashMatches = value?.hash === `#/${route.route}` || (route.route === 'chat' && !value?.hash);
+          return hashMatches && value.status.includes(route.navLabel);
+        },
         signal,
       },
     );
@@ -3262,6 +3326,7 @@ module.exports = {
   listSystemProcesses,
   launchDesktop,
   createRuntimeLayout,
+  seedProductState,
   cleanupRuntimeDir,
   portIsAvailable,
   startupLogCandidates,

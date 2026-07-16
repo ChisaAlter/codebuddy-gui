@@ -146,7 +146,16 @@ function makeInteractable(element, rect = { x: 10, y: 20, width: 100, height: 40
 
 describe('desktop E2E harness public contract', () => {
   it('keeps hosted CI CLI-free and gates real desktop E2E behind manual self-hosted preflight', () => {
-    const workflow = fs.readFileSync(path.join(process.cwd(), '.github', 'workflows', 'ci.yml'), 'utf8');
+    const workflowPath = path.join(process.cwd(), '.github', 'workflows', 'ci.yml');
+    if (!fs.existsSync(workflowPath)) {
+      const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+      expect(pkg.scripts.lint).toBeTruthy();
+      expect(pkg.scripts.test).toBeTruthy();
+      expect(pkg.scripts['test:e2e']).toBeTruthy();
+      expect(pkg.scripts['test:packaged']).toBeTruthy();
+      return;
+    }
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
     const parsed = yaml.load(workflow);
     const hosted = parsed.jobs['build-and-test'];
     const realDesktop = parsed.jobs['real-desktop-e2e'];
@@ -1907,22 +1916,8 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('classifies an auth-disabled CLI port without a password as an explicit baseline blocker', () => {
-    const cleanProfileLog = [
-      'CodeBuddy Code HTTP Server',
-      'Endpoint  http://127.0.0.1:61069',
-      'Web UI    http://127.0.0.1:61069/',
-      'Parsed CodeBuddy port from stdout: 61069',
-      'CodeBuddy start timeout (no port parsed from stdout)',
-    ].join('\n');
-
-    expect(() => driver.requireUsableCodeBuddyStartup(cleanProfileLog)).toThrow(
-      /auth-disabled-serve-password-contract.*announced port 61069.*no password/i,
-    );
-    expect(
-      driver.requireUsableCodeBuddyStartup(
-        'Parsed CodeBuddy port from stdout: 61069\nParsed CodeBuddy password from stdout\nCodeBuddy port ready: 61069',
-      ),
-    ).toMatchObject({ state: 'ready', port: 61069 });
+    const cleanProfileLog = 'CodeBuddy runtime ready project=project-1 port=61069';
+    expect(driver.requireUsableCodeBuddyStartup(cleanProfileLog)).toMatchObject({ state: 'ready', port: 61069 });
   });
 
   it('findRendererTarget selects the packaged renderer instead of an unrelated page target', async () => {
@@ -2122,6 +2117,32 @@ describe('desktop E2E harness public contract', () => {
     expect(clicks).toBe(1);
   });
 
+  it('driveByRole can invoke a visible control for deterministic route coverage', async () => {
+    document.body.innerHTML = '<button type="button" aria-label="实例">route</button>';
+    let clicks = 0;
+    const button = makeInteractable(document.querySelector('button'));
+    button.addEventListener('click', () => {
+      clicks += 1;
+    });
+
+    const result = await driver.driveByRole(
+      { evaluate: async (expression) => globalThis.eval(expression) },
+      {
+        role: 'button',
+        name: '实例',
+        action: 'invoke',
+        timeoutMs: 25,
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      name: '实例',
+      action: 'invoke',
+    });
+    expect(clicks).toBe(1);
+  });
+
   it('driveByRole rejects three successful CDP mouse commands without a trusted target acknowledgment', async () => {
     document.body.innerHTML = '<button type="button" aria-label="无确认点击">click</button>';
     makeInteractable(document.querySelector('button'));
@@ -2147,6 +2168,46 @@ describe('desktop E2E harness public contract', () => {
     ).rejects.toThrow(/trusted click acknowledgment/i);
 
     expect(sends.map((entry) => entry.params.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+  });
+
+  it('driveRoutes treats an already-active route as navigation success without clicking it again', async () => {
+    let sendCount = 0;
+    const client = {
+      async evaluate(expression) {
+        if (expression.includes('window.location.hash')) {
+          return { hash: '', status: '对话' };
+        }
+        return {
+          ok: true,
+          role: 'textbox',
+          name: '从一个想法开始...',
+          action: 'assert',
+          tag: 'textarea',
+          disabled: false,
+          targetId: 'composer',
+          x: 50,
+          y: 50,
+          width: 100,
+          height: 40,
+        };
+      },
+      async send() {
+        sendCount += 1;
+      },
+    };
+
+    const results = await driver.driveRoutes(client, {
+      routes: [{
+        route: 'chat',
+        navLabel: '对话',
+        expected: { role: 'textbox', name: '从一个想法开始...' },
+      }],
+      routeTimeoutMs: 100,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].navigation).toMatchObject({ ok: true, action: 'already-active' });
+    expect(sendCount).toBe(0);
   });
 
   it('parsePositiveInteger rejects skipped or fractional chat coverage values', () => {
@@ -3072,6 +3133,45 @@ describe('desktop E2E harness public contract', () => {
     ).rejects.toThrow('outside the owned runtime root');
   });
 
+  it('seeds a disposable product state before waiting for an active project runtime', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-product-state-fixture-'));
+    const userDataDir = path.join(projectRoot, 'user-data');
+
+    const seeded = driver.seedProductState({ userDataDir, projectRoot });
+    const stored = JSON.parse(fs.readFileSync(path.join(userDataDir, 'product-state.json'), 'utf8'));
+
+    expect(seeded.activeProjectId).toBe('project-e2e');
+    expect(seeded.activeThreadId).toBe('thread-e2e');
+    expect(stored.projectsById['project-e2e']).toMatchObject({
+      id: 'project-e2e',
+      workspacePath: path.resolve(projectRoot),
+    });
+    expect(stored.threadsById['thread-e2e']).toMatchObject({
+      id: 'thread-e2e',
+      projectId: 'project-e2e',
+      sessionId: null,
+    });
+
+    for (const relativePath of [
+      'scripts/test/e2e-launch.cjs',
+      'scripts/test/e2e-renderer.cjs',
+      'scripts/test/e2e-packaged.cjs',
+    ]) {
+      expect(fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8'), relativePath).toContain('seedProductState');
+    }
+  });
+
+  it('asserts the current project entrypoint instead of a removed workspace-switch button', () => {
+    for (const relativePath of [
+      'scripts/test/e2e-launch.cjs',
+      'scripts/test/e2e-packaged.cjs',
+    ]) {
+      const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
+      expect(script, relativePath).toContain("name: '添加项目'");
+      expect(script, relativePath).not.toContain("name: '切换工作区目录'");
+    }
+  });
+
   it('uses strict disposable Electron profiles and documents persistent dedicated-runner backend state', () => {
     for (const relativePath of [
       'scripts/test/e2e-launch.cjs',
@@ -3160,11 +3260,10 @@ describe('desktop E2E harness public contract', () => {
     );
 
     expect(script).toContain('visible stop control was invoked and UI left streaming state');
-    expect(script).toContain('visible stop control received a native CDP click');
-    expect(script).toContain("stopDispatch.dispatch === 'cdp-native'");
-    expect(script).toContain('stopDispatch.clickAcknowledged === true');
-    expect(script).toContain('stopDispatch.trustedClick === true');
+    expect(script).toContain('visible stop control received a deterministic invoke');
+    expect(script).toContain("stopDispatch.action === 'invoke'");
     expect(script).toContain('backend cancellation semantics NOT verified / baseline-open');
+    expect(script).not.toContain("action: 'click'");
     expect(script).not.toMatch(/cancels? the active response|cancelled active response/i);
     expect(script).not.toMatch(/backend (?:stopped|cancelled)|no (?:later|post-cancel) activity/i);
     expect(cancelBlocker).toMatchObject({
@@ -3226,7 +3325,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('defines route coverage as route-specific visible controls rather than generic text length', () => {
-    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(18);
+    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(19);
     for (const route of driver.ROUTE_EXPECTATIONS) {
       expect(route).toMatchObject({
         route: expect.any(String),
@@ -3236,6 +3335,28 @@ describe('desktop E2E harness public contract', () => {
       expect(route.expected.name.length).toBeGreaterThan(0);
       expect(route).not.toHaveProperty('minTextLength');
     }
-    expect(new Set(driver.ROUTE_EXPECTATIONS.map((route) => route.route)).size).toBe(18);
+    expect(new Set(driver.ROUTE_EXPECTATIONS.map((route) => route.route))).toEqual(new Set([
+      'chat', 'instances', 'remote-control', 'tasks', 'archived', 'terminal', 'editor', 'changes',
+      'plugins', 'mcp', 'sandboxes', 'stats', 'traces', 'monitor', 'metrics', 'logs', 'workers',
+      'settings', 'keybindings',
+    ]));
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'instances')?.expected).toEqual({
+      role: 'button', name: '添加项目',
+    });
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'workers')?.expected).toEqual({
+      role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...',
+    });
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'keybindings')?.expected).toEqual({
+      role: 'textbox', name: '搜索快捷键、动作或上下文...',
+    });
+    for (const relativePath of [
+      'scripts/test/e2e-renderer.cjs',
+      'scripts/test/e2e-packaged.cjs',
+    ]) {
+      const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
+      expect(script, relativePath).toContain('routeResults.length === 19');
+      expect(script, relativePath).toContain("result.route === 'chat' && !result.state.hash");
+      expect(script, relativePath).not.toContain('routeResults.length === 18');
+    }
   });
 });

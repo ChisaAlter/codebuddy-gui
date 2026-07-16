@@ -22,6 +22,7 @@ const {
   inspectProcesses,
   launchDesktop,
   requireUsableCodeBuddyStartup,
+  seedProductState,
   throwIfAborted,
   waitForRendererValue,
   waitForVisibleSettingValue,
@@ -185,6 +186,7 @@ async function main(signal) {
 
   throwIfAborted(signal, 'unpackaged launch profile creation aborted');
   fs.mkdirSync(userDataDir, { recursive: true });
+  seedProductState({ userDataDir, projectRoot });
   launched = await launchDesktop({
     executable: electronExe,
     appArgs: ['.'],
@@ -205,25 +207,17 @@ async function main(signal) {
   );
   console.log(`[context] rootPid=${launched.rootPid} debugPort=${launched.debugPort}`);
 
-  startup = await waitForStartup(/Parsed CodeBuddy port from stdout: \d+\b/, 45000, 'CodeBuddy random port', signal);
-  const portMatch = startup.text.match(/Parsed CodeBuddy port from stdout: (\d+)\b/);
-  const codebuddyPort = Number(portMatch?.[1]);
+  startup = await waitForStartup(/CodeBuddy runtime ready project=\S+ port=\d+\b/, 45000, 'CodeBuddy runtime ready', signal);
+  const startupContract = requireUsableCodeBuddyStartup(startup.text);
+  const codebuddyPort = startupContract.port;
   check(
     'fresh startup log resolved from app.getPath(userData)',
     startup.source === 'userData',
     startup.path ? 'isolated userData/electron-startup.log' : 'not found',
   );
-  check('CodeBuddy announced a dynamic port', Number.isInteger(codebuddyPort), `port=${codebuddyPort || '<missing>'}`);
-  startup = await waitForStartup(
-    /CodeBuddy port ready: \d+\b|CodeBuddy start timeout \(no port parsed from stdout\)|CodeBuddy start failed:/,
-    35000,
-    'usable CodeBuddy startup outcome',
-    signal,
-  );
-  const startupContract = requireUsableCodeBuddyStartup(startup.text);
   check(
-    'CodeBuddy startup produced a usable port/password pair',
-    startupContract.state === 'ready' && startupContract.port === codebuddyPort,
+    'CodeBuddy runtime manager reported a ready dynamic port',
+    startupContract.state === 'ready' && Number.isInteger(codebuddyPort),
     `port=${startupContract.port}`,
   );
   check('CodeBuddy HTTP endpoint responds', await probeHttp(codebuddyPort, 3000, signal), `GET 127.0.0.1:${codebuddyPort}`);
@@ -268,22 +262,22 @@ async function main(signal) {
   check('connected target is an Electron renderer with React content', identity.rootChildren > 0, identity.href);
 
   await driveByRole(client, { role: 'navigation', name: 'Main navigation', timeoutMs: 15000, signal });
-  await driveByRole(client, { role: 'button', name: '切换工作区目录', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '添加项目', timeoutMs: 15000, signal });
   await driveByRole(client, {
     role: 'button',
     name: '设置',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
   });
   const initialSessionId = await waitForVisibleSettingValue(client, '会话 ID', { timeoutMs: 60000, signal });
   check('initial session readiness is visible before New chat', Boolean(initialSessionId), initialSessionId);
-  await driveByRole(client, { role: 'button', name: '新对话', action: 'click', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '新对话', action: 'invoke', timeoutMs: 15000, signal });
   await driveByRole(client, {
     role: 'button',
     name: '设置',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
@@ -301,7 +295,7 @@ async function main(signal) {
   await driveByRole(client, {
     role: 'button',
     name: '对话',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,

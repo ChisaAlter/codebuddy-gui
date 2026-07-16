@@ -7,6 +7,7 @@ function emptyProductState() {
   return {
     version: PRODUCT_STATE_VERSION,
     projectsById: {},
+    guiSettings: {},
     projectOrder: [],
     threadsById: {},
     threadOrderByProject: {},
@@ -102,6 +103,7 @@ function normalizeProductState(value) {
     threadOrderByProject,
     activeProjectId,
     activeThreadId,
+    guiSettings: isPlainObject(value.guiSettings) ? { ...value.guiSettings } : {},
   };
 }
 

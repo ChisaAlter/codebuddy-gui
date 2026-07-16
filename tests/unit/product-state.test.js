@@ -3,6 +3,7 @@ import {
   createProjectRecord,
   createThreadRecord,
   normalizeProductState,
+  productStateSnapshot,
 } from '../../src/lib/product-state';
 
 describe('product state sidebar fields', () => {
@@ -137,5 +138,28 @@ describe('product state sidebar fields', () => {
     });
 
     expect(normalized.threadsById.t1.timeline[0].meta.content.text).toBe('完整历史');
+  });
+
+  it('persists global GUI preferences outside the renderer localStorage origin', () => {
+    const snapshot = productStateSnapshot({
+      projectsById: {},
+      projectOrder: [],
+      threadsById: {},
+      threadOrderByProject: {},
+      activeProjectId: null,
+      activeThreadId: null,
+      guiSettings: {
+        theme: 'light',
+        promptSuggestionEnabled: true,
+        desktopNotificationsEnabled: false,
+      },
+    });
+
+    expect(snapshot.guiSettings).toMatchObject({
+      theme: 'light',
+      promptSuggestionEnabled: true,
+      desktopNotificationsEnabled: false,
+    });
+    expect(normalizeProductState(snapshot).guiSettings.theme).toBe('light');
   });
 });

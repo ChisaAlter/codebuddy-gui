@@ -4,7 +4,7 @@ import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon.png';
-import { guiActionForShortcut, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
+import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
@@ -672,8 +672,10 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.repeat || event.defaultPrevented || isShortcutInputTarget(event.target)) return;
-      const action = guiActionForShortcut(shortcutFromKeyboardEvent(event));
+      if (event.repeat || event.defaultPrevented) return;
+      const shortcut = shortcutFromKeyboardEvent(event);
+      if (isShortcutInputTarget(event.target) && !guiShortcutAllowedInInput(shortcut)) return;
+      const action = guiActionForShortcut(shortcut);
       if (!action) return;
       const state = useStore.getState();
       if (state.authViewState !== 'authenticated') return;

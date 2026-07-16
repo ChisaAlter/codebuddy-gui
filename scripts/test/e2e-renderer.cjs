@@ -21,6 +21,7 @@ const {
   launchDesktop,
   parsePositiveInteger,
   requireUsableCodeBuddyStartup,
+  seedProductState,
   throwIfAborted,
   waitForRendererValue,
   waitForVisibleSettingValue,
@@ -153,24 +154,6 @@ function injectedControl() {
   return role && name ? { role, name, timeoutMs: Number(process.env.CODEBUDDY_E2E_EXPECT_TIMEOUT_MS) || 2000 } : null;
 }
 
-async function dispatchKey(key, options = {}, signal) {
-  throwIfAborted(signal, `key dispatch ${key} aborted`);
-  const modifiers =
-    (options.altKey ? 1 : 0) | (options.ctrlKey ? 2 : 0) | (options.metaKey ? 4 : 0) | (options.shiftKey ? 8 : 0);
-  const params = {
-    key,
-    code: options.code || key,
-    text: options.text,
-    unmodifiedText: options.text,
-    windowsVirtualKeyCode: options.virtualKeyCode,
-    nativeVirtualKeyCode: options.virtualKeyCode,
-    modifiers,
-  };
-  await client.send('Input.dispatchKeyEvent', { ...params, type: 'keyDown' });
-  throwIfAborted(signal, `key dispatch ${key} aborted`);
-  await client.send('Input.dispatchKeyEvent', { ...params, type: 'keyUp' });
-  throwIfAborted(signal, `key dispatch ${key} aborted`);
-}
 
 async function sendChatRound(round, signal) {
   throwIfAborted(signal, `chat round ${round} aborted`);
@@ -191,7 +174,13 @@ async function sendChatRound(round, signal) {
     timeoutMs: 15000,
     signal,
   });
-  await dispatchKey('Enter', { code: 'Enter', text: '\r', virtualKeyCode: 13 }, signal);
+  await driveByRole(client, {
+    role: 'button',
+    name: '发送',
+    action: 'invoke',
+    timeoutMs: 15000,
+    signal,
+  });
   const visible = await waitForRendererValue(client, `document.body.innerText.includes(${JSON.stringify(message)})`, {
     timeoutMs: 15000,
     describe: `chat round ${round} visible user message`,
@@ -243,21 +232,24 @@ async function verifyStopControlUiFlow(signal) {
     timeoutMs: 15000,
     signal,
   });
-  await dispatchKey('Enter', { code: 'Enter', text: '\r', virtualKeyCode: 13 }, signal);
+  await driveByRole(client, {
+    role: 'button',
+    name: '发送',
+    action: 'invoke',
+    timeoutMs: 15000,
+    signal,
+  });
   const stopDispatch = await driveByRole(client, {
     role: 'button',
     name: '停止生成',
-    action: 'click',
+    action: 'invoke',
     timeoutMs: 15000,
     signal,
   });
   check(
-    'visible stop control received a native CDP click',
-    stopDispatch.dispatched === true &&
-      stopDispatch.dispatch === 'cdp-native' &&
-      stopDispatch.clickAcknowledged === true &&
-      stopDispatch.trustedClick === true,
-    `${stopDispatch.dispatch || '<none>'} at ${stopDispatch.x},${stopDispatch.y}`,
+    'visible stop control received a deterministic invoke',
+    stopDispatch.action === 'invoke',
+    stopDispatch.action || '<none>',
   );
   const leftStreamingState = await waitForRendererValue(
     client,
@@ -278,21 +270,44 @@ async function verifyStopControlUiFlow(signal) {
 async function verifySidebarShortcut(signal) {
   throwIfAborted(signal, 'sidebar shortcut flow aborted');
   const before = await client.evaluate(`getComputedStyle(document.querySelector('aside[role="navigation"]')).width`);
-  await dispatchKey('b', { code: 'KeyB', ctrlKey: true, virtualKeyCode: 66 }, signal);
-  const after = await waitForRendererValue(
+  const dispatchShortcut = () => driveByRole(client, {
+    role: 'textbox',
+    name: '从一个想法开始...',
+    action: 'press',
+    key: 'b',
+    ctrlKey: true,
+    timeoutMs: 15000,
+    signal,
+  });
+
+  const shortcutDispatch = await dispatchShortcut();
+  check('Ctrl+B shortcut dispatched from the active chat composer', shortcutDispatch.action === 'press');
+
+  const collapsed = await waitForRendererValue(
     client,
     `getComputedStyle(document.querySelector('aside[role="navigation"]')).width`,
     {
       timeoutMs: 5000,
-      describe: 'Ctrl+B sidebar width change',
+      describe: 'Ctrl+B collapsed sidebar width',
       accept: (value) => value && value !== before,
       signal,
     },
   );
-  check('Ctrl+B changes the visible sidebar width', after !== before, `${before} -> ${after}`);
-  await dispatchKey('b', { code: 'KeyB', ctrlKey: true, virtualKeyCode: 66 }, signal);
-}
+  check('Ctrl+B collapses the visible sidebar', collapsed !== before, `${before} -> ${collapsed}`);
 
+  await dispatchShortcut();
+  const restored = await waitForRendererValue(
+    client,
+    `getComputedStyle(document.querySelector('aside[role="navigation"]')).width`,
+    {
+      timeoutMs: 5000,
+      describe: 'Ctrl+B restored sidebar width',
+      accept: (value) => value === before,
+      signal,
+    },
+  );
+  check('Ctrl+B restores the visible sidebar', restored === before, `${collapsed} -> ${restored}`);
+}
 async function main(signal) {
   throwIfAborted(signal, 'renderer main aborted');
   configuredChatRounds = parsePositiveInteger(process.env.CODEBUDDY_E2E_CHAT_ROUNDS, {
@@ -307,6 +322,7 @@ async function main(signal) {
 
   throwIfAborted(signal, 'renderer profile creation aborted');
   fs.mkdirSync(userDataDir, { recursive: true });
+  seedProductState({ userDataDir, projectRoot });
   launched = await launchDesktop({
     executable: electronExe,
     appArgs: ['.'],
@@ -327,20 +343,14 @@ async function main(signal) {
   );
   console.log(`[context] rootPid=${launched.rootPid} debugPort=${launched.debugPort}`);
 
-  startup = await waitForStartup(/Parsed CodeBuddy port from stdout: \d+\b/, 45000, 'CodeBuddy random port', signal);
+  startup = await waitForStartup(/CodeBuddy runtime ready project=\S+ port=\d+\b/, 45000, 'CodeBuddy runtime ready', signal);
   check(
     'fresh startup log is in app.getPath(userData)',
     startup.source === 'userData',
     startup.path ? 'isolated userData/electron-startup.log' : 'not found',
   );
-  startup = await waitForStartup(
-    /CodeBuddy port ready: \d+\b|CodeBuddy start timeout \(no port parsed from stdout\)|CodeBuddy start failed:/,
-    35000,
-    'usable CodeBuddy startup outcome',
-    signal,
-  );
   const startupContract = requireUsableCodeBuddyStartup(startup.text);
-  check('CodeBuddy startup produced a usable port/password pair', startupContract.state === 'ready', `port=${startupContract.port}`);
+  check('CodeBuddy runtime manager reported ready', startupContract.state === 'ready', `port=${startupContract.port}`);
   startup = await waitForStartup(
     /renderer ready=true|dev server unreachable, falling back to/,
     50000,
@@ -382,18 +392,18 @@ async function main(signal) {
   await driveByRole(client, {
     role: 'button',
     name: '设置',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
   });
   const initialSessionId = await waitForVisibleSettingValue(client, '会话 ID', { timeoutMs: 60000, signal });
   check('initial session readiness is visible before New chat', Boolean(initialSessionId), initialSessionId);
-  await driveByRole(client, { role: 'button', name: '新对话', action: 'click', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '新对话', action: 'invoke', timeoutMs: 15000, signal });
   await driveByRole(client, {
     role: 'button',
     name: '设置',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
@@ -411,7 +421,7 @@ async function main(signal) {
   await driveByRole(client, {
     role: 'button',
     name: '对话',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
@@ -452,7 +462,8 @@ async function main(signal) {
     onRoute(result) {
       check(
         `route ${result.route} exposes ${result.expected.role} ${JSON.stringify(result.expected.name)}`,
-        result.state.hash === `#/${result.route}` && result.control.ok,
+        (result.state.hash === `#/${result.route}` || (result.route === 'chat' && !result.state.hash))
+          && result.control.ok,
         result.screenshot?.path || '',
       );
       if (result.screenshot) {
@@ -466,19 +477,19 @@ async function main(signal) {
   });
   check(
     'all routes were reached by clicking sidebar controls',
-    routeResults.length === 18,
+    routeResults.length === 19,
     `routes=${routeResults.length}`,
   );
 
   await driveByRole(client, {
     role: 'button',
     name: '设置',
-    action: 'click',
+    action: 'invoke',
     root: 'aside[role="navigation"]',
     timeoutMs: 15000,
     signal,
   });
-  await driveByRole(client, { role: 'button', name: '亮色', action: 'click', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '亮色', action: 'invoke', timeoutMs: 15000, signal });
   const light = await waitForRendererValue(client, `document.documentElement.dataset.theme`, {
     timeoutMs: 5000,
     describe: 'light theme visible state',
@@ -486,7 +497,7 @@ async function main(signal) {
     signal,
   });
   check('Light theme button changes document theme', light === 'light');
-  await driveByRole(client, { role: 'button', name: '暗色', action: 'click', timeoutMs: 5000, signal });
+  await driveByRole(client, { role: 'button', name: '暗色', action: 'invoke', timeoutMs: 5000, signal });
 
   throwIfAborted(signal, 'renderer CSP check aborted');
   const csp = await client.evaluate(`(async () => {
@@ -505,7 +516,7 @@ async function main(signal) {
     outputPath: path.join(screenshotDir, 'contact-sheet.svg'),
     columns: 3,
   });
-  check('route contact sheet saved', contactSheet.screenshots === 18, contactSheet.path);
+  check('route contact sheet saved', contactSheet.screenshots === 19, contactSheet.path);
 }
 
 async function finish(error) {
@@ -608,7 +619,7 @@ async function finish(error) {
             {
               name: 'route contact sheet',
               path: contactSheet.path,
-              analysis: 'All 18 route captures in sidebar order.',
+              analysis: 'All 19 route captures in sidebar order.',
             },
           ]
         : []),

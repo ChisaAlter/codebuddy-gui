@@ -1,8 +1,20 @@
-# CodeBuddy GUI 1.0.0
+# CodeBuddy GUI 1.0.1
 
-1.0.0 首个稳定版本，完成编辑器资源精简、静态质量收口和 Windows 本地发布链路整理。
+1.0.1 是面向 CodeBuddy CLI 2.122.0 的桌面稳定性修复版本，重点收口新会话发送、长任务、权限卡、偏好持久化和侧栏快捷键。
 
 ## 本版本重点
+
+- 修复新会话刚连接时线程记录尚未写入 sessionId，首条消息可能以 `null` 调用 `session/prompt` 并返回 `Invalid params` 的竞态。
+- 长时间运行的 `session/prompt` 不再受 120 秒空闲超时限制；普通 ACP 请求仍保留 30 秒超时边界。
+- 权限请求同时按 `interruptionId` 和 `toolCallId` 去重，旧会话的迟到事件不会再写入当前线程。
+- GUI 主题、提示建议、桌面通知等偏好写入 `product-state.json`，切换项目或重启后会恢复，不再依赖动态本地端口对应的 localStorage。
+- `Ctrl/Alt/Meta` 组合快捷键在聊天输入框、Monaco 和终端聚焦时仍可执行；无修饰键和仅 Shift 的绑定继续让位于正常文本输入。
+- 侧栏折叠宽度固定为真实 60px，展开宽度保持 220px 到 252px；移除会被后台窗口节流的布局过渡，快捷键切换立即生效。
+- 桌面验收夹具同步当前 19 个路由和运行时就绪日志，使用隔离产品状态与确定性控件触发，避免后台窗口、高 DPI 和旧选择器造成误报。
+
+## 1.0.0
+
+1.0.0 首个稳定版本，完成编辑器资源精简、静态质量收口和 Windows 本地发布链路整理。
 
 - Monaco 改为核心编辑器、单一 editor worker 和实际使用语言的按需高亮，不再打包 TypeScript、CSS、HTML 和 JSON 语言服务 worker。
 - 前端 assets 从约 14.85 MB 降至约 5.18 MB，文件数量从 113 个降至 32 个；工作区仍支持 JavaScript、TypeScript、JSON、Markdown、Python、CSS、HTML、YAML、Shell 和纯文本。

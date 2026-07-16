@@ -184,6 +184,7 @@ describe('AcpClient GET SSE notification stream', () => {
       url: 'http://127.0.0.1:45678/api/v1/acp',
       method: 'POST',
       rpcId: '1',
+      timeoutMs: 0,
       headers: expect.objectContaining({
         'acp-connection-id': 'conn-ipc-stream',
         'acp-session-token': 'token-ipc-stream',

@@ -21,6 +21,7 @@ const {
   inspectProcesses,
   launchDesktop,
   requireUsableCodeBuddyStartup,
+  seedProductState,
   throwIfAborted,
   waitForRendererValue,
 } = require('./e2e-driver.cjs');
@@ -161,6 +162,7 @@ async function main(signal) {
 
   throwIfAborted(signal, 'packaged profile creation aborted');
   fs.mkdirSync(userDataDir, { recursive: true });
+  seedProductState({ userDataDir, projectRoot });
   const npmGlobalDir = path.join(process.env.APPDATA || '', 'npm');
   launched = await launchDesktop({
     executable: unpackedExe,
@@ -194,23 +196,12 @@ async function main(signal) {
     'packaged renderer loads without the Vite fallback path',
     /renderer ready=true/.test(startup.text) && !/dev server unreachable/.test(startup.text.slice(-4000)),
   );
-  startup = await waitForStartup(/Parsed CodeBuddy port from stdout: \d+\b/, 45000, 'packaged CodeBuddy dynamic port', signal);
-  const codebuddyPort = Number(startup.text.match(/Parsed CodeBuddy port from stdout: (\d+)\b/)?.[1]);
-  check(
-    'packaged app starts CodeBuddy on a dynamic port',
-    Number.isInteger(codebuddyPort),
-    `port=${codebuddyPort || '<missing>'}`,
-  );
-  startup = await waitForStartup(
-    /CodeBuddy port ready: \d+\b|CodeBuddy start timeout \(no port parsed from stdout\)|CodeBuddy start failed:/,
-    35000,
-    'usable packaged CodeBuddy startup outcome',
-    signal,
-  );
+  startup = await waitForStartup(/CodeBuddy runtime ready project=\S+ port=\d+\b/, 45000, 'packaged CodeBuddy runtime ready', signal);
   const startupContract = requireUsableCodeBuddyStartup(startup.text);
+  const codebuddyPort = startupContract.port;
   check(
-    'packaged CodeBuddy startup produced a usable port/password pair',
-    startupContract.state === 'ready' && startupContract.port === codebuddyPort,
+    'packaged CodeBuddy runtime manager reported a ready dynamic port',
+    startupContract.state === 'ready' && Number.isInteger(codebuddyPort),
     `port=${startupContract.port}`,
   );
 
@@ -259,7 +250,7 @@ async function main(signal) {
   }
 
   await driveByRole(client, { role: 'navigation', name: 'Main navigation', timeoutMs: 15000, signal });
-  await driveByRole(client, { role: 'button', name: '切换工作区目录', timeoutMs: 15000, signal });
+  await driveByRole(client, { role: 'button', name: '添加项目', timeoutMs: 15000, signal });
   const routeResults = await driveRoutes(client, {
     screenshotDir,
     expectedControl,
@@ -267,7 +258,8 @@ async function main(signal) {
     onRoute(result) {
       check(
         `packaged route ${result.route} exposes ${result.expected.role} ${JSON.stringify(result.expected.name)}`,
-        result.state.hash === `#/${result.route}` && result.control.ok,
+        (result.state.hash === `#/${result.route}` || (result.route === 'chat' && !result.state.hash))
+          && result.control.ok,
         result.screenshot?.path || '',
       );
       if (result.screenshot) {
@@ -281,7 +273,7 @@ async function main(signal) {
   });
   check(
     'packaged renderer reached all routes through sidebar clicks',
-    routeResults.length === 18,
+    routeResults.length === 19,
     `routes=${routeResults.length}`,
   );
 
@@ -308,7 +300,7 @@ async function main(signal) {
     outputPath: path.join(screenshotDir, 'contact-sheet.svg'),
     columns: 3,
   });
-  check('packaged route contact sheet saved', contactSheet.screenshots === 18, contactSheet.path);
+  check('packaged route contact sheet saved', contactSheet.screenshots === 19, contactSheet.path);
 }
 
 async function finish(error) {
@@ -413,7 +405,7 @@ async function finish(error) {
             {
               name: 'packaged route contact sheet',
               path: contactSheet.path,
-              analysis: 'All 18 packaged route captures in sidebar order.',
+              analysis: 'All 19 packaged route captures in sidebar order.',
             },
           ]
         : []),

@@ -51,6 +51,11 @@ export function shortcutFromKeyboardEvent(event) {
   return normalizeShortcut(parts.join('+'));
 }
 
+export function guiShortcutAllowedInInput(shortcut) {
+  const parts = normalizeShortcut(shortcut).split('+');
+  return parts.includes('ctrl') || parts.includes('alt') || parts.includes('meta');
+}
+
 export function defaultGuiKeybindings() {
   return Object.fromEntries(GUI_KEYBINDING_ACTIONS.map((action) => [action.id, action.defaultShortcut]));
 }

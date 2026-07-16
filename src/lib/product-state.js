@@ -3,6 +3,7 @@ export const PRODUCT_STATE_VERSION = 1;
 export function emptyProductState() {
   return {
     version: PRODUCT_STATE_VERSION,
+    guiSettings: {},
     projectsById: {},
     projectOrder: [],
     threadsById: {},
@@ -151,6 +152,9 @@ export function normalizeProductState(value) {
   return {
     version: PRODUCT_STATE_VERSION,
     projectsById,
+    guiSettings: value.guiSettings && typeof value.guiSettings === 'object' && !Array.isArray(value.guiSettings)
+      ? { ...value.guiSettings }
+      : {},
     projectOrder,
     threadsById,
     threadOrderByProject,
@@ -162,6 +166,7 @@ export function normalizeProductState(value) {
 export function productStateSnapshot(state) {
   return normalizeProductState({
     version: PRODUCT_STATE_VERSION,
+    guiSettings: state.guiSettings,
     projectsById: state.projectsById,
     projectOrder: state.projectOrder,
     threadsById: state.threadsById,

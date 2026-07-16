@@ -19,7 +19,7 @@ import {
   productStateSnapshot,
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
-import { isGuiSettingKey, loadGuiSettings, saveGuiSettings, stripGuiSettings } from './lib/gui-settings';
+import { isGuiSettingKey, loadGuiSettings, normalizeGuiSettings, saveGuiSettings, stripGuiSettings } from './lib/gui-settings';
 import { visibleProjectThreads } from './lib/session-sidebar';
 
 const conversations = new ConversationManager();
@@ -882,6 +882,7 @@ export const useStore = create((set, get) => ({
       fileCwd: project?.workspacePath || '.',
       sessionId: thread?.sessionId || null,
       sessionTitle: thread?.title || null,
+      guiSettings: normalizeGuiSettings(loaded.guiSettings || get().guiSettings),
       currentModel: thread?.modelId || null,
       currentMode: thread?.modeId || 'default',
       productStateLoaded: true,
@@ -1226,8 +1227,10 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (su === 'interruption_request') {
-      const requestId = update.interruptionId || update.toolCallId;
-      if (requestId && runtime.permissionRequests.some((item) => sessionActionItemMatches(item, requestId))) return;
+      const requestIds = [update.interruptionId, update.toolCallId].filter(Boolean);
+      if (requestIds.some((requestId) => (
+        runtime.permissionRequests.some((item) => sessionActionItemMatches(item, requestId))
+      ))) return;
       get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
       get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
@@ -1262,6 +1265,10 @@ export const useStore = create((set, get) => ({
   },
 
   handleConversationEvent({ threadId, type, detail }) {
+    const thread = get().threadsById[threadId];
+    const eventSessionId = detail?.sessionId || null;
+    if (eventSessionId && thread?.sessionId && eventSessionId !== thread.sessionId) return;
+
     const client = conversations.peek(threadId);
     if (type === 'connected') {
       get().patchThreadRuntime(threadId, {
@@ -3378,11 +3385,15 @@ export const useStore = create((set, get) => ({
     } catch (_) {}
   },
 
-  updateGuiSetting(key, value) {
+  async updateGuiSetting(key, value) {
     if (!isGuiSettingKey(key)) return false;
     try {
       const next = saveGuiSettings({ ...get().guiSettings, [key]: value });
       set({ guiSettings: next });
+      if (window.electronAPI?.saveProductState) {
+        const persisted = await get().persistProductState();
+        if (!persisted) throw new Error(get().error || '产品状态保存失败');
+      }
       return true;
     } catch (error) {
       set({ error: `GUI 设置保存失败: ${error.message}` });
@@ -4146,6 +4157,13 @@ export const useStore = create((set, get) => ({
       return false;
     }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    const requestSessionId = thread.sessionId
+      || runtime.sessionId
+      || (get().activeThreadId === threadId ? get().sessionId : null);
+    if (!requestSessionId) {
+      set({ error: '当前会话尚未完成连接' });
+      return false;
+    }
     const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
     const timeline = pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`);
     get().patchThreadRuntime(threadId, {
@@ -4165,7 +4183,7 @@ export const useStore = create((set, get) => ({
         }
       }
       await client.request('session/prompt', {
-        sessionId: thread.sessionId,
+        sessionId: requestSessionId,
         prompt,
       });
       const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
