@@ -78,6 +78,17 @@ describe('ProjectSessionTree', () => {
     expect(props.onActivateThread).not.toHaveBeenCalled();
   });
 
+  it('does not highlight the project row when its active conversation already carries selection', () => {
+    const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');
+    expect(projectButton.getAttribute('data-active-highlight')).toBe('false');
+  });
+
+  it('can highlight the active project when no conversation is selected', async () => {
+    await act(async () => root.render(<ProjectSessionTree {...props} activeThreadId={null} />));
+    const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');
+    expect(projectButton.getAttribute('data-active-highlight')).toBe('true');
+  });
+
   it('opens rename and delete actions on right click', async () => {
     const row = container.querySelector('[data-session-id="unread"]');
     await act(async () => row.dispatchEvent(new MouseEvent('contextmenu', {

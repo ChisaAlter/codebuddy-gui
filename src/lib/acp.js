@@ -581,6 +581,7 @@ export class AcpClient {
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
       this._sseIpcStream = window.electronAPI.openCodeBuddyStream({
         url: `${this.apiBase}/api/v1/acp`,
+        timeoutMs: 0,
         headers: makeHeaders({
           Accept: 'text/event-stream',
           'acp-connection-id': this.connectionId,

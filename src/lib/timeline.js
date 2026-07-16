@@ -110,6 +110,64 @@ export function pushSystemEvent(timeline, type, payload) {
   ];
 }
 
+const EXECUTION_EVENT_TYPES = new Set([
+  'tool_call',
+  'checkpoint',
+  'taskCreated',
+  'taskStatus',
+  'goal-progress',
+  'goal-status',
+  'question_answered',
+]);
+
+export function groupTimelineForDisplay(timeline) {
+  const grouped = [];
+  let executionItems = [];
+
+  const flushExecutionItems = () => {
+    if (!executionItems.length) return;
+    const first = executionItems[0];
+    grouped.push({
+      id: `execution-${first.id || grouped.length}`,
+      type: 'execution_group',
+      role: 'system',
+      createdAt: first.createdAt,
+      items: executionItems,
+    });
+    executionItems = [];
+  };
+
+  for (const item of Array.isArray(timeline) ? timeline : []) {
+    if (EXECUTION_EVENT_TYPES.has(item?.type)) {
+      executionItems.push(item);
+      continue;
+    }
+    flushExecutionItems();
+    grouped.push(item);
+  }
+  flushExecutionItems();
+  return grouped;
+}
+
+export function executionGroupSummary(items) {
+  const entries = Array.isArray(items) ? items : [];
+  const toolCount = entries.filter((item) => item?.type === 'tool_call').length;
+  const checkpointCount = entries.filter((item) => item?.type === 'checkpoint').length;
+  const activityCount = Math.max(0, entries.length - toolCount - checkpointCount);
+  const details = [];
+  if (toolCount) details.push(`${toolCount} 个工具`);
+  if (checkpointCount) details.push(`${checkpointCount} 个检查点`);
+  if (activityCount) details.push(`${activityCount} 条动态`);
+
+  const failed = entries.some((item) => ['failed', 'error'].includes(item?.status));
+  const running = entries.some((item) => !['completed', 'done', 'failed', 'error'].includes(item?.status) && item?.type === 'tool_call');
+  return {
+    detail: details.join(' · ') || `${entries.length} 条记录`,
+    status: failed ? '有失败项' : running ? '执行中' : '已完成',
+    tone: failed ? 'error' : running ? 'running' : 'success',
+  };
+}
+
 function mergeUserChunk(timeline, payload) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;

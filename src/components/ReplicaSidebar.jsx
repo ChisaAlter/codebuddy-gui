@@ -118,6 +118,18 @@ export function replicaSidebarWidthStyle(collapsed) {
   return { width, minWidth: width, maxWidth: width };
 }
 
+export function replicaSidebarGroupInitiallyExpanded(groupId) {
+  return groupId === 'primary';
+}
+
+export function replicaSidebarMainGroups() {
+  return NAV_GROUPS.filter((group) => group.id !== 'preferences');
+}
+
+export function replicaSidebarFooterItems() {
+  return NAV_GROUPS.find((group) => group.id === 'preferences')?.items || [];
+}
+
 export default function ReplicaSidebar() {
   const {
     route, setRoute, sidebarCollapsed,
@@ -164,6 +176,9 @@ export default function ReplicaSidebar() {
   const [projectName, setProjectName] = React.useState('');
   const [projectActionBusy, setProjectActionBusy] = React.useState(false);
   const [projectActionError, setProjectActionError] = React.useState('');
+  const [expandedNavGroups, setExpandedNavGroups] = React.useState(() => Object.fromEntries(
+    replicaSidebarMainGroups().map((group) => [group.id, replicaSidebarGroupInitiallyExpanded(group.id)]),
+  ));
   const scopeGenerationRef = React.useRef(0);
   const projectActionInFlightRef = React.useRef(null);
 
@@ -261,6 +276,29 @@ export default function ReplicaSidebar() {
     return deleteThread(threadId);
   };
 
+  const renderNavItem = (item) => {
+    const isActive = route === item.id;
+    return (
+      <button
+        key={item.id}
+        onClick={() => setRoute(item.id)}
+        className={`sidebar-nav-link group w-full ${isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+        style={isActive ? { background: 'rgba(59,130,246,0.12)' } : undefined}
+        title={sidebarCollapsed ? item.label : undefined}
+      >
+        <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center ${!isActive ? 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]' : ''}`} style={isActive ? { color: 'var(--color-accent-blue)' } : undefined}>
+          {ITEM_ICONS[item.id] || (
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="2" /></svg>
+          )}
+        </span>
+        {!sidebarCollapsed ? <span className="truncate text-left">{item.label}</span> : null}
+        {!sidebarCollapsed && item.id === 'changes' && changesCount > 0 ? (
+          <span className="ml-auto rounded-full px-1.5 py-0 text-[10px] font-medium text-white" style={{ background: 'var(--color-accent-blue)' }}>{changesCount}</span>
+        ) : null}
+      </button>
+    );
+  };
+
   return (
     <aside
       role="navigation" aria-label="Main navigation"
@@ -279,7 +317,7 @@ export default function ReplicaSidebar() {
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
-              className="flex w-full items-center gap-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
               disabled={newSessionBusy || projectNavigationBusy}
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
@@ -353,41 +391,26 @@ export default function ReplicaSidebar() {
           </div>
         )}
 
-        {NAV_GROUPS.map((group) => (
+        {replicaSidebarMainGroups().map((group) => {
+          const groupExpanded = sidebarCollapsed || expandedNavGroups[group.id];
+          return (
           <div key={group.id} className="mb-1">
             {!sidebarCollapsed && (
-              <div className="sidebar-section-title text-[var(--color-text-muted)]">
-                {group.title}
-              </div>
+              <button
+                type="button"
+                className="sidebar-section-title flex w-full items-center justify-between text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                aria-expanded={Boolean(groupExpanded)}
+                aria-label={`${groupExpanded ? '折叠' : '展开'}${group.title}`}
+                onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}
+              >
+                <span>{group.title}</span>
+                <svg className={`h-3 w-3 transition-transform ${groupExpanded ? 'rotate-90' : ''}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 3l5 5-5 5" /></svg>
+              </button>
             )}
-            <div className="px-1.5 space-y-0.5">
-              {group.items.map((item) => {
-                const isActive = route === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => setRoute(item.id)}
-                    className={`sidebar-nav-link group w-full ${isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
-                    style={isActive ? {background:'rgba(59,130,246,0.12)'} : undefined}
-                    title={sidebarCollapsed ? item.label : undefined}
-                  >
-                    <span className={`flex-shrink-0 w-4 h-4 flex items-center justify-center ${!isActive ? 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]' : ''}`} style={isActive ? {color:'var(--color-accent-blue)'} : undefined}>
-                      {ITEM_ICONS[item.id] || (
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="2" /></svg>
-                      )}
-                    </span>
-                    {!sidebarCollapsed && (
-                      <span className="truncate text-left">{item.label}</span>
-                    )}
-                    {!sidebarCollapsed && item.id === 'changes' && changesCount > 0 && (
-                      <span className="ml-auto rounded-full px-1.5 py-0 text-[10px] text-white font-medium" style={{background:'var(--color-accent-blue)'}}>{changesCount}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+            {groupExpanded ? <div className="space-y-0.5 px-1.5">{group.items.map(renderNavItem)}</div> : null}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* 项目管理弹窗 */}
@@ -452,28 +475,18 @@ export default function ReplicaSidebar() {
         </div>
       )}
 
-      {/* User section at bottom */}
-      <div className="shrink-0 border-t border-[var(--color-border-default)] p-2">
-        <div className="sidebar-user-section" style={sidebarCollapsed ? { justifyContent: 'center', padding: '0.5rem' } : {}}>
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white" style={{background:'var(--color-accent-blue)'}}>
-            {(info?.userName || 'U')[0].toUpperCase()}
+      <div className="shrink-0 border-t border-[var(--color-border-default)] p-1.5">
+        <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
+        {!sidebarCollapsed ? (
+          <div className="mt-1 flex items-center gap-2 border-t border-[var(--color-border-muted)] px-2.5 pt-2 text-[10px] text-[var(--color-text-muted)]">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`} />
+            <span className="truncate">CodeBuddy CLI {info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}</span>
           </div>
-          {!sidebarCollapsed && (
-            <>
-              <div className="flex-1 min-w-0">
-                <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{info?.userName || '用户'}</div>
-                <div className="text-[10px] text-[var(--color-text-muted)]">{info?.version || 'v?'}</div>
-              </div>
-              {connectionState === 'connected' ? (
-                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-green)'}} title="已连接" />
-              ) : connectionState === 'error' ? (
-                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-red)'}} title="连接错误" />
-              ) : (
-                <div className="h-2 w-2 rounded-full" style={{background:'var(--color-accent-yellow)'}} title="连接中..." />
-              )}
-            </>
-          )}
-        </div>
+        ) : (
+          <div className="flex h-7 items-center justify-center" title={`CodeBuddy CLI ${info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}`}>
+            <span className={`h-2 w-2 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`} />
+          </div>
+        )}
       </div>
     </aside>
   );

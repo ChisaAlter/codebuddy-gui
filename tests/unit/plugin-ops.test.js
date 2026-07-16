@@ -22,19 +22,19 @@ describe('plugin write operations', () => {
     ['disablePlugin', disablePlugin, '/api/v1/plugins/disable'],
     ['uninstallPlugin', uninstallPlugin, '/api/v1/plugins/uninstall'],
   ])('%s sends the marketplace-qualified plugin id', async (_name, operation, endpoint) => {
-    await operation('superpowers', 'superpowers-dev');
+    await operation('workflow', 'workflow-dev');
 
     expect(mocks.fetchJson).toHaveBeenCalledWith(endpoint, expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ plugin: 'superpowers@superpowers-dev' }),
+      body: JSON.stringify({ plugin: 'workflow@workflow-dev' }),
     }));
   });
 
   it('does not duplicate an existing marketplace suffix', async () => {
-    await disablePlugin('superpowers@superpowers-dev', 'superpowers-dev');
+    await disablePlugin('workflow@workflow-dev', 'workflow-dev');
 
     expect(mocks.fetchJson).toHaveBeenCalledWith('/api/v1/plugins/disable', expect.objectContaining({
-      body: JSON.stringify({ plugin: 'superpowers@superpowers-dev' }),
+      body: JSON.stringify({ plugin: 'workflow@workflow-dev' }),
     }));
   });
 });

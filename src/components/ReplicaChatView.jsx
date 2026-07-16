@@ -2,6 +2,12 @@ import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
+import {
+  getSlashCommandSuggestions,
+  slashCommandKeyboardAction,
+  slashCommandSelectionText,
+} from '../lib/chat-commands';
+import { executionGroupSummary, groupTimelineForDisplay } from '../lib/timeline';
 
 function getDayLabel(ts) {
   const d = new Date(typeof ts === 'number' ? ts : Date.now());
@@ -136,7 +142,7 @@ function ToolCallBlock({ item }) {
           background: isCompleted ? 'var(--color-success-bg)' : isFailed ? 'var(--color-error-bg)' : 'rgba(59,130,246,0.15)',
           color: isCompleted ? 'var(--color-accent-green)' : isFailed ? 'var(--color-accent-red)' : 'var(--color-accent-blue)'
         }}>
-          {isCompleted ? 'Completed' : isFailed ? 'Failed' : 'Running'}
+          {isCompleted ? '已完成' : isFailed ? '失败' : '执行中'}
         </span>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
           className={`text-[var(--color-text-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`}>
@@ -168,6 +174,43 @@ function ToolCallBlock({ item }) {
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+function ExecutionGroup({ items }) {
+  const summary = executionGroupSummary(items);
+  const [expanded, setExpanded] = useState(summary.tone !== 'success');
+
+  useEffect(() => {
+    if (summary.tone !== 'success') setExpanded(true);
+  }, [summary.tone]);
+
+  const statusClass = summary.tone === 'error'
+    ? 'text-[var(--color-accent-red)] bg-[var(--color-error-bg)]'
+    : summary.tone === 'running'
+      ? 'text-[var(--color-accent-blue)] bg-[rgba(59,130,246,0.1)]'
+      : 'text-[var(--color-accent-green)] bg-[var(--color-success-bg)]';
+
+  return (
+    <div className="my-3 border-y border-[var(--color-border-muted)]">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <svg className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-muted)]" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 4h12M2 8h8M2 12h10" /></svg>
+        <span className="font-medium text-[var(--color-text-primary)]">执行记录</span>
+        <span className="truncate text-[var(--color-text-muted)]">{summary.detail}</span>
+        <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusClass}`}>{summary.status}</span>
+        <svg className={`h-3 w-3 shrink-0 text-[var(--color-text-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 3l5 5-5 5" /></svg>
+      </button>
+      {expanded ? (
+        <div className="border-t border-[var(--color-border-muted)] pb-1 pt-1">
+          {items.map((item, index) => <TimelineItem key={item.id || index} item={item} />)}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -558,6 +601,10 @@ function DateSeparator({ label }) {
 }
 
 function TimelineItem({ item }) {
+  if (item.type === 'execution_group') {
+    return <ExecutionGroup items={item.items || []} />;
+  }
+
   if (item.type === 'error') {
     return <ErrorTimelineCard item={item} />;
   }
@@ -601,7 +648,7 @@ function TimelineItem({ item }) {
 
   if (item.role === 'user') {
     return (
-      <div className="flex justify-end my-3">
+      <div className="my-3 flex justify-end" data-chat-role="user">
         <div className="max-w-[75%] rounded-2xl rounded-br-md bg-[var(--color-bg-user)] px-4 py-2.5 text-sm leading-relaxed text-white">
           {item.content}
         </div>
@@ -678,6 +725,7 @@ export default function ReplicaChatView() {
   const [recovering, setRecovering] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
+  const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
   const sessionSelectionRequestRef = useRef(0);
   const sessionSelectionInFlightRef = useRef(null);
@@ -856,13 +904,21 @@ export default function ReplicaChatView() {
   };
 
   const isStreaming = useMemo(() => timeline.some(item => item.streaming === true) || isAwaitingResponse, [timeline, isAwaitingResponse]);
-  const slashSuggestions = useMemo(() => {
-    if (!input.startsWith('/') || input.includes(' ')) return [];
-    const query = input.slice(1).toLowerCase();
-    return availableCommands
-      .filter((command) => !query || String(command.name || '').toLowerCase().includes(query))
-      .slice(0, 8);
-  }, [availableCommands, input]);
+  const slashSuggestions = useMemo(
+    () => getSlashCommandSuggestions(input, availableCommands),
+    [availableCommands, input],
+  );
+
+  useEffect(() => {
+    setSelectedSlashCommandIndex(0);
+  }, [input, slashSuggestions.length]);
+
+  const selectSlashCommand = useCallback((command) => {
+    const nextInput = slashCommandSelectionText(command);
+    if (!nextInput) return;
+    setInput(nextInput);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [setInput]);
 
   // Auto-scroll to bottom when timeline changes (new messages arrive)
   useEffect(() => {
@@ -1084,7 +1140,29 @@ export default function ReplicaChatView() {
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.nativeEvent?.isComposing || e.isComposing) return;
+    const commandAction = slashCommandKeyboardAction(e.key, slashSuggestions.length > 0);
+    if (commandAction === 'next') {
+      e.preventDefault();
+      setSelectedSlashCommandIndex((index) => (index + 1) % slashSuggestions.length);
+      return;
+    }
+    if (commandAction === 'previous') {
+      e.preventDefault();
+      setSelectedSlashCommandIndex((index) => (index - 1 + slashSuggestions.length) % slashSuggestions.length);
+      return;
+    }
+    if (commandAction === 'select') {
+      e.preventDefault();
+      selectSlashCommand(slashSuggestions[selectedSlashCommandIndex]);
+      return;
+    }
+    if (commandAction === 'dismiss') {
+      e.preventDefault();
+      setInput('');
+      return;
+    }
+    if (commandAction === 'submit' && !e.shiftKey) {
       e.preventDefault();
       onSubmit();
     }
@@ -1093,9 +1171,9 @@ export default function ReplicaChatView() {
   // Group by date
   const timelineWithDates = useMemo(() => {
     let lastDay = '';
-    return timeline.map((item) => {
+    return groupTimelineForDisplay(timeline).map((item, index) => {
       const day = getDayLabel(item.createdAt);
-      const showDate = day !== lastDay && timeline.indexOf(item) > 0;
+      const showDate = day !== lastDay && index > 0;
       lastDay = day;
       return { ...item, showDate };
     });
@@ -1296,15 +1374,23 @@ export default function ReplicaChatView() {
               </div>
             ) : null}
             {slashSuggestions.length > 0 ? (
-              <div className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl">
-                {slashSuggestions.map((command) => (
+              <div data-slash-command-menu className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl">
+                {slashSuggestions.map((command, index) => (
                   <button
                     key={command.name}
-                    className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-[var(--color-bg-hover)]"
-                    onClick={() => setInput(`/${command.name} `)}
+                    data-slash-command-name={command.name}
+                    className={`flex w-full items-start gap-3 px-3 py-2 text-left ${index === selectedSlashCommandIndex ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
+                    onMouseEnter={() => setSelectedSlashCommandIndex(index)}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      selectSlashCommand(command);
+                    }}
                   >
                     <span className="shrink-0 font-mono text-xs text-[var(--color-accent-blue)]">/{command.name}</span>
-                    <span className="line-clamp-2 text-xs text-[var(--color-text-secondary)]">{command.description || ''}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-2 block text-xs text-[var(--color-text-secondary)]">{command.description || ''}</span>
+                      {command.input?.hint ? <span className="mt-0.5 block font-mono text-[10px] text-[var(--color-text-muted)]">{command.input.hint}</span> : null}
+                    </span>
                   </button>
                 ))}
               </div>

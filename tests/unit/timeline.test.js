@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { reduceAcpEvent, closeAssistantStream, pushUserMessage } from '../../src/lib/timeline';
+import {
+  reduceAcpEvent,
+  closeAssistantStream,
+  executionGroupSummary,
+  groupTimelineForDisplay,
+  pushUserMessage,
+} from '../../src/lib/timeline';
 
 describe('reduceAcpEvent - timeline 归并', () => {
   it('agent_message_chunk 追加到同 messageId 的 assistant 消息', () => {
@@ -99,5 +105,32 @@ describe('pushUserMessage', () => {
     expect(orig).toHaveLength(1);
     expect(next).toHaveLength(2);
     expect(orig[0].content).toBe('a');
+  });
+});
+
+describe('execution timeline grouping', () => {
+  it('groups consecutive tool and activity events into one execution record', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'answer', type: 'message', role: 'assistant', content: '完成' },
+      { id: 'write', type: 'tool_call', status: 'completed', title: 'Write file' },
+      { id: 'checkpoint', type: 'checkpoint', meta: { event: 'created' } },
+      { id: 'run', type: 'tool_call', status: 'completed', title: 'Run tests' },
+      { id: 'next', type: 'message', role: 'user', content: '继续' },
+    ]);
+
+    expect(grouped).toHaveLength(3);
+    expect(grouped[1]).toMatchObject({ type: 'execution_group' });
+    expect(grouped[1].items.map((item) => item.id)).toEqual(['write', 'checkpoint', 'run']);
+  });
+
+  it('summarizes completed and failed execution records in user-facing language', () => {
+    expect(executionGroupSummary([
+      { type: 'tool_call', status: 'completed' },
+      { type: 'checkpoint' },
+    ])).toEqual({ detail: '1 个工具 · 1 个检查点', status: '已完成', tone: 'success' });
+
+    expect(executionGroupSummary([
+      { type: 'tool_call', status: 'failed' },
+    ])).toMatchObject({ status: '有失败项', tone: 'error' });
   });
 });

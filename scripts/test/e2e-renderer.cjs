@@ -308,6 +308,88 @@ async function verifySidebarShortcut(signal) {
   );
   check('Ctrl+B restores the visible sidebar', restored === before, `${collapsed} -> ${restored}`);
 }
+
+async function verifySidebarPolish(signal) {
+  throwIfAborted(signal, 'sidebar polish flow aborted');
+  const state = await client.evaluate(`(() => {
+    const sidebar = document.querySelector('aside[role="navigation"]');
+    const newChat = Array.from(sidebar?.querySelectorAll('button') || []).find((button) => button.textContent?.includes('新对话'));
+    const workspace = sidebar?.querySelector('button[aria-label$="工作区"]');
+    const observability = sidebar?.querySelector('button[aria-label$="可观测"]');
+    const activeProject = sidebar?.querySelector('button[data-active-highlight]');
+    const buttons = Array.from(sidebar?.querySelectorAll('button') || []);
+    const settingsIndex = buttons.findIndex((button) => button.textContent?.trim() === '设置');
+    const keybindingsIndex = buttons.findIndex((button) => button.textContent?.trim() === '快捷键');
+    return {
+      newChatBackground: newChat ? getComputedStyle(newChat).backgroundColor : '',
+      newChatShadow: newChat ? getComputedStyle(newChat).boxShadow : '',
+      workspaceExpanded: workspace?.getAttribute('aria-expanded'),
+      observabilityExpanded: observability?.getAttribute('aria-expanded'),
+      activeProjectHighlight: activeProject?.getAttribute('data-active-highlight'),
+      footerOrder: settingsIndex >= 0 && keybindingsIndex === settingsIndex + 1,
+      versionText: Array.from(sidebar?.querySelectorAll('div, span') || []).map((node) => node.textContent?.trim()).find((text) => /^CodeBuddy CLI v/.test(text || '')) || '',
+    };
+  })()`);
+  check('New chat is visually neutral until hover', state.newChatBackground === 'rgba(0, 0, 0, 0)', state.newChatBackground);
+  check('New chat has no persistent selected shadow', state.newChatShadow === 'none', state.newChatShadow);
+  check('Workspace navigation starts folded', state.workspaceExpanded === 'false');
+  check('Observability navigation starts folded', state.observabilityExpanded === 'false');
+  check('Active conversation avoids duplicate project highlight', state.activeProjectHighlight === 'false');
+  check('Settings and keybindings are adjacent footer actions', state.footerOrder === true);
+  check('Sidebar footer shows an explicit CodeBuddy CLI version', /^CodeBuddy CLI v\d/.test(state.versionText), state.versionText);
+}
+
+async function verifySlashCommandCompletion(signal) {
+  throwIfAborted(signal, 'slash command completion flow aborted');
+  await client.evaluate(`(() => {
+    const textarea = document.querySelector('textarea[placeholder="从一个想法开始..."]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, '/');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.focus();
+  })()`);
+  const command = await waitForRendererValue(
+    client,
+    `(() => {
+      const button = document.querySelector('[data-slash-command-menu] button[data-slash-command-name]');
+      return button ? { name: button.getAttribute('data-slash-command-name') } : null;
+    })()`,
+    {
+      timeoutMs: 30000,
+      describe: 'available ACP slash command menu',
+      accept: (value) => Boolean(value?.name),
+      signal,
+    },
+  );
+  await driveByRole(client, {
+    role: 'textbox',
+    name: '从一个想法开始...',
+    action: 'press',
+    key: 'Enter',
+    timeoutMs: 15000,
+    signal,
+  });
+  const selected = await waitForRendererValue(
+    client,
+    `(() => ({
+      value: document.querySelector('textarea[placeholder="从一个想法开始..."]')?.value || '',
+    }))()`,
+    {
+      timeoutMs: 5000,
+      describe: 'slash command keyboard selection',
+      accept: (value) => value?.value === `/${command.name} `,
+      signal,
+    },
+  );
+  check('Enter completes the highlighted slash command before sending', selected.value === `/${command.name} `, selected.value);
+  check('Slash command completion keeps the command in the composer instead of sending it', selected.value.length > 1, selected.value);
+  await client.evaluate(`(() => {
+    const textarea = document.querySelector('textarea[placeholder="从一个想法开始..."]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(textarea, '');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+}
 async function main(signal) {
   throwIfAborted(signal, 'renderer main aborted');
   configuredChatRounds = parsePositiveInteger(process.env.CODEBUDDY_E2E_CHAT_ROUNDS, {
@@ -448,6 +530,9 @@ async function main(signal) {
     throw new Error(`${error.message}; renderer diagnostic=${JSON.stringify(diagnostic)}`);
   }
   check('status bar reports a visible connected state before chat send', connected === true);
+
+  await verifySidebarPolish(signal);
+  await verifySlashCommandCompletion(signal);
 
   for (let round = 1; round <= configuredChatRounds; round += 1) {
     await sendChatRound(round, signal);

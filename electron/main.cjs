@@ -1719,28 +1719,12 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const tMax = Date.now() + timeoutMs;
-      let rpcId = null;
-      let inspectionBuffer = '';
-      try {
-        if (method === 'POST' && /\/api\/v1\/acp$/.test(url) && request.body) {
-          rpcId = JSON.parse(request.body)?.id ?? null;
-        }
-      } catch (_) {}
       while (true) {
         if (Date.now() > tMax) { truncated = true; try { reader.cancel(); } catch(_) {} break; }
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         body += chunk;
-        if (rpcId != null) {
-          inspectionBuffer += chunk;
-          const parsed = parseSseMessagesFromBuffer(inspectionBuffer);
-          inspectionBuffer = parsed.rest;
-          if (parsed.messages.some((message) => String(message?.id) === String(rpcId))) {
-            try { await reader.cancel(); } catch (_) {}
-            break;
-          }
-        }
       }
       body += decoder.decode();
     } else if (contentType.startsWith('image/')) {

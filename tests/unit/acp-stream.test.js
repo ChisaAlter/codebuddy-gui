@@ -84,6 +84,7 @@ describe('AcpClient GET SSE notification stream', () => {
     });
     expect(openedRequest).toMatchObject({
       url: 'http://127.0.0.1:23456/api/v1/acp',
+      timeoutMs: 0,
       headers: expect.objectContaining({
         Accept: 'text/event-stream',
         'acp-connection-id': 'conn-ipc',
@@ -94,6 +95,43 @@ describe('AcpClient GET SSE notification stream', () => {
 
     await client.disconnect();
     expect(closeCalled).toBe(true);
+  });
+
+  it('session/new 返回后仍处理同一 POST 流里的延迟指令列表', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream' },
+        body: [
+          'event: message',
+          'data: {"jsonrpc":"2.0","id":"1","result":{"sessionId":"session-delayed"}}',
+          '',
+          'event: message',
+          'data: {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-delayed","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help","description":"Show help"}]}}}',
+          '',
+          '',
+        ].join('\n'),
+      })),
+    };
+
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45679' });
+    client.connected = true;
+    client.connectionId = 'conn-delayed';
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+
+    await expect(client.request('session/new', { cwd: '.', mcpServers: [] })).resolves.toEqual({
+      sessionId: 'session-delayed',
+    });
+    expect(updates).toEqual([{
+      sessionId: 'session-delayed',
+      update: {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [{ name: 'help', description: 'Show help' }],
+      },
+    }]);
   });
 
   it('request 在最终结果返回前逐条派发 POST SSE 更新', async () => {
