@@ -15,6 +15,12 @@ const {
 const { createQuitRequestController } = require('./quit-request-controller.cjs');
 const { createFinalExitController } = require('./final-exit-controller.cjs');
 const { deleteModelConfig, ensureModelConfigFile, listModelConfig, saveModelConfig } = require('./model-config.cjs');
+const { normalizeGitRequest, validateGitArgs } = require('./git-validate.cjs');
+const {
+  isTrustedRendererNavigation,
+  normalizeExternalHttpUrl,
+  rendererOriginForEntry,
+} = require('./navigation-policy.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -23,6 +29,7 @@ let prodServerPort = null;
 let staticServer = null; // express 静态服务器引用：before-quit 时显式 close 避免端口残留
 
 let mainWindow = null;
+let trustedRendererOrigin = null;
 let tray = null;
 let windowCreationPromise = null;
 let closeToTrayHintShown = false;
@@ -1452,6 +1459,7 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       webSecurity: true,
       devTools: true,
     },
@@ -1461,6 +1469,35 @@ async function createWindow() {
     winOpts.y = savedBounds.y;
   }
   mainWindow = new BrowserWindow(winOpts);
+  const loadTrustedRendererUrl = (url) => {
+    trustedRendererOrigin = rendererOriginForEntry(url);
+    return mainWindow.loadURL(url);
+  };
+  const guardRendererNavigation = (event, url) => {
+    if (isTrustedRendererNavigation(url, trustedRendererOrigin)) return;
+    event.preventDefault();
+    const externalUrl = normalizeExternalHttpUrl(url);
+    if (externalUrl) {
+      shell.openExternal(externalUrl).catch((error) => {
+        logStartup(`Unable to open external navigation target: ${error?.message || error}`);
+      });
+    } else {
+      logStartup(`Blocked renderer navigation to unsupported target: ${redactDiagnosticText(url)}`);
+    }
+  };
+  mainWindow.webContents.on('will-navigate', guardRendererNavigation);
+  mainWindow.webContents.on('will-redirect', guardRendererNavigation);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const externalUrl = normalizeExternalHttpUrl(url);
+    if (externalUrl) {
+      shell.openExternal(externalUrl).catch((error) => {
+        logStartup(`Unable to open external window target: ${error?.message || error}`);
+      });
+    } else {
+      logStartup(`Blocked external window target: ${redactDiagnosticText(url)}`);
+    }
+    return { action: 'deny' };
+  });
   mainWindow.webContents.on('render-process-gone', async (_event, details = {}) => {
     const reason = details.reason || 'unknown';
     writeCrashLog('renderProcessGone', new Error('reason=' + reason + ' exitCode=' + (details.exitCode ?? 'unknown')));
@@ -1541,7 +1578,7 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  mainWindow.loadURL(entry).catch((error) => {
+  loadTrustedRendererUrl(entry).catch((error) => {
     logStartup(`loadURL failed: ${error?.message || error}`);
     // 生产模式无 did-fail-load 兜底，失败时给用户可见提示而非黑屏静默
     if (!isDev && mainWindow && !mainWindow.isDestroyed()) {
@@ -1552,11 +1589,6 @@ async function createWindow() {
         );
       } catch (_) {}
     }
-  });
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: 'deny' };
   });
 
   // 捕获渲染进程控制台全级别输出（dev 模式详记，生产只记 WARN+）
@@ -1581,11 +1613,11 @@ async function createWindow() {
             if (fs.existsSync(prodIndex)) {
               const prodUrl = `http://127.0.0.1:${prodServerPort}/index.html`;
               logStartup(`fallback to prod: ${prodUrl}`);
-              mainWindow.loadURL(prodUrl).catch(() => {});
+              loadTrustedRendererUrl(prodUrl).catch(() => {});
               return;
             }
           }
-          mainWindow.loadURL(entry).catch(() => {});
+          loadTrustedRendererUrl(entry).catch(() => {});
         }
       }, 1200);
     });
@@ -1674,99 +1706,6 @@ ipcMain.on('app:cancelQuit', (_event, payload = {}) => {
   );
 });
 
-const GIT_ALLOWED_COMMANDS = new Set([
-  'add',
-  'branch',
-  'checkout',
-  'clean',
-  'commit',
-  'diff',
-  'fetch',
-  'init',
-  'log',
-  'pull',
-  'push',
-  'remote',
-  'reset',
-  'restore',
-  'rev-parse',
-  'stash',
-  'status',
-]);
-
-// 二级子命令白名单：只校验出现在主命令后第一位置的子动词（非选项，即不以 - 开头）
-// 缺省为 ['*'] 表示不约束（如 add/status/diff 等本身不再细分）
-// checkout 特殊：既能切分支又能 checkout 文件，分支名是任意字符串无法白名单，故只约束选项
-const GIT_ALLOWED_SUBCOMMANDS = {
-  branch: new Set(['--show-current', '--format=%(refname:short)']), // 只放 UI 在用的两条
-  checkout: new Set(['-b']), // -b 新建切换；其余选项拦截，裸 checkout 切分支名不约束
-  stash: new Set(['pop', 'list']), // 显式放 pop/list；不带子动词 = stash push（UI 不用但安全）
-  remote: new Set(['get-url']),
-  reset: new Set(['HEAD']), // reset HEAD -- path / reset HEAD -- . 是 UI 唯一形态
-};
-
-// git 选项黑名单：拦截可执行外部命令 / 改变传输行为的危险选项
-// 参考 git-receive-pack / git-upload-pack 可被恶意 server 触发执行任意 hook
-const GIT_BLOCKED_OPTIONS = new Set([
-  '--upload-pack', // fetch/pull 可指定 upload-pack，传 shell 命令被远端执行
-  '--receive-pack', // push 同理
-  '--config',
-  '-c', // 任意 config override，可覆盖 core.hooksPath / user 等
-  '--exec', // git exec-path
-  '--shallow-exclude', // 改 shallow 边界，虽不直接 exec 但可放大攻击面
-  '--local-config', // alias 链
-]);
-
-const GIT_PATH_OPTIONS = new Set(['--']); // '之后' 一律当 path，不再当选项解析
-
-function normalizeGitRequest(payload) {
-  const request = Array.isArray(payload) ? { args: payload } : payload || {};
-  const args = Array.isArray(request.args) ? request.args.map(String) : [];
-  const cwd = typeof request.cwd === 'string' && request.cwd.trim() ? request.cwd.trim() : process.cwd();
-  return { args, cwd };
-}
-
-function validateGitArgs(args) {
-  if (!args.length) return 'empty git command';
-  const command = args[0] === '-C' ? args[2] : args[0];
-  if (!command || command.startsWith('-') || !GIT_ALLOWED_COMMANDS.has(command)) {
-    return `git subcommand is not allowed: ${command || '<empty>'}`;
-  }
-  const cmdIndex = args[0] === '-C' ? 2 : 0;
-
-  // 二级子命令约束：主命令后第一项若是子动词或受限选项必须在白名单
-  // '--' 是路径段分隔符，遇之跳入路径豁免（如 checkout -- file 不算二级子命令）
-  // checkout 特例：只校验选项式（-b 等），非选项分支名/文件名不约束（任意字符串无法白名单）
-  const allowedSubs = GIT_ALLOWED_SUBCOMMANDS[command];
-  const next = args[cmdIndex + 1];
-  if (allowedSubs && next && next !== '--') {
-    const isOption = next.startsWith('-');
-    const skipSubverb = command === 'checkout' && !isOption; // checkout 分支名/文件名豁免
-    if (!isOption && !skipSubverb) {
-      if (!allowedSubs.has(next)) return `git ${command} subcommand is not allowed: ${next}`;
-    } else if (isOption && next.startsWith('--')) {
-      const branchFmtOk = command === 'branch' && next.startsWith('--format=');
-      if (!branchFmtOk && !allowedSubs.has(next)) return `git ${command} option is not allowed: ${next}`;
-    }
-  }
-
-  // 选项黑名单 + '--' 后路径段豁免
-  let inPath = false;
-  for (let i = cmdIndex + 1; i < args.length; i++) {
-    const a = args[i];
-    if (inPath) continue;
-    if (GIT_PATH_OPTIONS.has(a)) {
-      inPath = true;
-      continue;
-    }
-    const key = a.split('=')[0];
-    if (GIT_BLOCKED_OPTIONS.has(key)) {
-      return `git option is blocked for security: ${key}`;
-    }
-  }
-  return null;
-}
-
 const CODEBUDDY_REQUEST_TIMEOUT_MS = 30000;
 const codebuddyStreams = new Map();
 
@@ -1785,23 +1724,29 @@ ipcMain.handle('git:run', async (_event, payload = {}) => {
   const { args, cwd } = normalizeGitRequest(payload);
   const validationError = validateGitArgs(args);
   if (validationError) return { ok: false, error: validationError };
+  if (!cwd || !path.isAbsolute(cwd)) return { ok: false, error: 'git cwd must be an absolute project path' };
+  const resolvedCwd = path.resolve(cwd);
+  try {
+    if (!fs.statSync(resolvedCwd).isDirectory()) throw new Error('not a directory');
+  } catch (_) {
+    return { ok: false, error: `git cwd does not exist or is not accessible: ${resolvedCwd}` };
+  }
 
-  return await new Promise((resolve) => {
-    const proc = spawn('git', args, { cwd, shell: false });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => {
-      stdout += d.toString();
+  const isNetworkCommand = ['fetch', 'pull', 'push'].includes(args[0]);
+  try {
+    const result = await runCapturedProcess('git', args, {
+      cwd: resolvedCwd,
+      timeoutMs: isNetworkCommand ? 5 * 60 * 1000 : 60 * 1000,
+      maxOutputBytes: 16 * 1024 * 1024,
+      timeoutMessage: `Git ${args[0]} 执行超时，已停止命令`,
     });
-    proc.stderr.on('data', (d) => {
-      stderr += d.toString();
-    });
-    proc.on('error', (error) => resolve({ ok: false, error: error.message }));
-    proc.on('close', (code) => {
-      if (code === 0) resolve({ ok: true, output: stdout });
-      else resolve({ ok: false, error: stderr.trim() || stdout.trim() || `git exited ${code}` });
-    });
-  });
+    if (result.stdoutTruncated || result.stderrTruncated) {
+      return { ok: false, error: 'Git 输出超过 16MB，已停止在界面中加载；请在终端中执行该操作' };
+    }
+    return { ok: true, output: result.stdout || result.stderr || '' };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
 });
 
 function parseSseMessagesFromBuffer(buffer) {

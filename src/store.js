@@ -746,7 +746,7 @@ export const useStore = create((set, get) => ({
   appendThreadTimelineEvent(threadId, eventType, payload) {
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(runtime.timeline, eventType, payload),
+      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId),
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false
@@ -1544,7 +1544,7 @@ export const useStore = create((set, get) => ({
       return false;
     }
 
-    resetSeenContent();
+    resetSeenContent(thread.id);
     const requestedSessionId = sessionIdOverride === undefined ? thread.sessionId : sessionIdOverride;
     set({
       sessionId: requestedSessionId || null,
@@ -4365,7 +4365,7 @@ export const useStore = create((set, get) => ({
         const timeline = reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', {
           status: 'cancelled',
           role: 'system',
-        });
+        }, threadId);
         get().patchThreadRuntime(threadId, { isAwaitingResponse: false, timeline });
         await get().updateThreadRecord(threadId, { status: 'cancelled', timeline: timeline.slice(-300) });
         return true;
@@ -4545,7 +4545,7 @@ export const useStore = create((set, get) => ({
 
       get().patchThreadRuntime(threadId, {
         timeline: closeAssistantStream(
-          reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }),
+          reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
         ),
         isAwaitingResponse: false,
         pendingAttachments: restoredAttachments,

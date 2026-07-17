@@ -271,7 +271,8 @@ export class PtySocket {
       if (this._closedExplicitly) return;
 
       const token = getAuthToken();
-      this._sseStream = window.electronAPI.openCodeBuddyStream({
+      let stream = null;
+      stream = window.electronAPI.openCodeBuddyStream({
         url: `${getApiBase()}/api/v1/pty/${encodeURIComponent(this.sessionId)}/output`,
         headers: {
           Accept: 'text/event-stream',
@@ -280,7 +281,7 @@ export class PtySocket {
         },
       }, {
         onMessage: (message) => {
-          if (this._closedExplicitly) return;
+          if (this._closedExplicitly || this._sseStream !== stream) return;
           const payload = message?.type || !message?.data
             ? message
             : { ...message, type: 'output' };
@@ -288,12 +289,14 @@ export class PtySocket {
           if (payload?.type) this.emit(payload.type, payload);
         },
         onError: (error) => {
-          if (this._closedExplicitly) return;
+          if (this._closedExplicitly || this._sseStream !== stream) return;
+          try { stream?.close?.(); } catch (_) {}
           this._sseStream = null;
           this.emit('error', error);
           this.emit('close', error);
         },
       });
+      this._sseStream = stream;
       this.emit('open', { sessionId: this.sessionId, transport: 'sse' });
     } catch (error) {
       if (this._closedExplicitly) return;

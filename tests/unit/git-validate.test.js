@@ -1,27 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import { validateGitArgs, normalizeGitRequest } from '../../src/lib/git-validate';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { validateGitArgs, normalizeGitRequest } = require('../../electron/git-validate.cjs');
 
 describe('normalizeGitRequest - 形态归一', () => {
   it('数组形态转 {args, cwd}', () => {
     const { args, cwd } = normalizeGitRequest(['status', '--short']);
     expect(args).toEqual(['status', '--short']);
-    expect(cwd).toBe('.');
+    expect(cwd).toBe('');
   });
 
-  it('对象形态保留 args，cwd 兜底到 "."', () => {
+  it('对象形态保留 args，cwd 缺失时保持为空以便主进程拒绝', () => {
     const { args, cwd } = normalizeGitRequest({ args: ['log'] });
     expect(args).toEqual(['log']);
-    expect(cwd).toBe('.');
+    expect(cwd).toBe('');
   });
 
-  it('空入参兜底为空 args + "." cwd', () => {
+  it('空入参兜底为空 args + 空 cwd', () => {
     const { args, cwd } = normalizeGitRequest(null);
     expect(args).toEqual([]);
-    expect(cwd).toBe('.');
+    expect(cwd).toBe('');
   });
 
-  it('cwd 空白串兜底到 "."，非空白 trim', () => {
-    expect(normalizeGitRequest({ args: [], cwd: '   ' }).cwd).toBe('.');
+  it('cwd 空白串归一为空，非空白 trim', () => {
+    expect(normalizeGitRequest({ args: [], cwd: '   ' }).cwd).toBe('');
     expect(normalizeGitRequest({ args: [], cwd: '  /tmp/x  ' }).cwd).toBe('/tmp/x');
   });
 
@@ -40,9 +43,9 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
     expect(validateGitArgs(['clone', '.'])).toMatch(/not allowed/);
   });
 
-  it('合法 UI 在用的 19 种形态全放行', () => {
+  it('合法 UI 命令形态全放行', () => {
     const okCases = [
-      ['status', '--short'],
+      ['status', '--short', '-z'],
       ['branch', '--show-current'],
       ['branch', '--format=%(refname:short)'],
       ['stash', 'pop'],
@@ -56,6 +59,10 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
       ['checkout', '--', '.'],
       ['checkout', 'main'],
       ['checkout', '-b', 'feat'],
+      ['clean', '-fd'],
+      ['clean', '-fd', '--', 'new.txt'],
+      ['restore', '--source=HEAD', '--staged', '--worktree', '--', 'x.txt'],
+      ['rev-parse', '--verify', 'HEAD'],
       ['diff', '--', 'x.txt'],
       ['diff', '--cached'],
       ['commit', '-m', 'msg'],
@@ -63,6 +70,7 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
       ['log', '-20', '--format=%H|%h|%an|%ai|%s'],
       ['stash'],
       ['push'],
+      ['push', '-u', 'origin', 'feat/review'],
       ['fetch'],
       ['pull'],
     ];
@@ -71,29 +79,25 @@ describe('validateGitArgs - 白名单与安全拦截', () => {
     }
   });
 
-  it('二级子命令不在白名单拒', () => {
+  it('非 UI 命令形态与短选项绕过均拒绝', () => {
     expect(validateGitArgs(['branch', '--delete', 'x'])).toMatch(/branch.*not allowed/);
+    expect(validateGitArgs(['branch', '-d', 'x'])).toMatch(/branch.*not allowed/);
     expect(validateGitArgs(['stash', 'drop'])).toMatch(/stash.*not allowed/);
     expect(validateGitArgs(['remote', 'add', 'x', 'y'])).toMatch(/remote.*not allowed/);
     expect(validateGitArgs(['reset', '--hard'])).toMatch(/reset.*not allowed/);
     expect(validateGitArgs(['checkout', '--orphan', 'x'])).toMatch(/checkout.*not allowed/);
-  });
-
-  it('危险选项黑名单拦截（= 与裸值两形态）', () => {
-    expect(validateGitArgs(['fetch', '--upload-pack=/bin/sh'])).toMatch(/blocked.*--upload-pack/);
-    expect(validateGitArgs(['commit', '-c', 'x'])).toMatch(/blocked.*-c/);
-    expect(validateGitArgs(['push', '--config', 'core.hooksPath=/tmp'])).toMatch(/blocked.*--config/);
-    expect(validateGitArgs(['push', '--receive-pack=/bin/sh'])).toMatch(/blocked.*--receive-pack/);
-    expect(validateGitArgs(['fetch', '--exec=/tmp/x'])).toMatch(/blocked.*--exec/);
-  });
-
-  it('-C <path> 主命令从 args[2] 解析', () => {
-    expect(validateGitArgs(['-C', '/repo', 'status'])).toBeNull();
-    expect(validateGitArgs(['-C', '/repo', 'rm', '-rf', '/'])).toMatch(/not allowed/);
+    expect(validateGitArgs(['checkout', '-f'])).toMatch(/checkout.*not allowed/);
+    expect(validateGitArgs(['diff', '--ext-diff'])).toMatch(/diff.*not allowed/);
+    expect(validateGitArgs(['fetch', '--upload-pack=/bin/sh'])).toMatch(/fetch.*not allowed/);
+    expect(validateGitArgs(['commit', '-c', 'x'])).toMatch(/commit.*not allowed/);
+    expect(validateGitArgs(['-C', '/repo', 'status'])).toMatch(/-C.*not allowed/);
   });
 
   it('-- 后路径段豁免黑名单（不解析为选项）', () => {
-    // '--' 后即使有 --config 字面量也当 path 不拦
-    expect(validateGitArgs(['add', '--', '--config', 'x.txt'])).toBeNull();
+    expect(validateGitArgs(['add', '--', '--config'])).toBeNull();
+  });
+
+  it('commit -m 后的文本按提交信息处理，不误判为选项', () => {
+    expect(validateGitArgs(['commit', '-m', '--config'])).toBeNull();
   });
 });

@@ -1,11 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   reduceAcpEvent,
   closeAssistantStream,
   executionGroupSummary,
   groupTimelineForDisplay,
   pushUserMessage,
+  resetSeenContent,
 } from '../../src/lib/timeline';
+
+beforeEach(() => resetSeenContent());
 
 describe('reduceAcpEvent - timeline 归并', () => {
   it('agent_message_chunk 追加到同 messageId 的 assistant 消息', () => {
@@ -84,6 +87,31 @@ describe('reduceAcpEvent - timeline 归并', () => {
     next = reduceAcpEvent(next, 'user_message_chunk', payload);
 
     expect(next[0].content).toBe('历史问题');
+  });
+
+  it('相同 messageId 的去重状态按线程隔离', () => {
+    let threadA = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'A' }, 'thread-a');
+    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
+
+    let threadB = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'B' }, 'thread-b');
+    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
+
+    expect(threadA[0].content).toBe('A!');
+    expect(threadB[0].content).toBe('B!');
+  });
+
+  it('重置一个线程不会清空其他线程的去重状态', () => {
+    let threadA = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'A' }, 'thread-a');
+    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
+    let threadB = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'B' }, 'thread-b');
+    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
+
+    resetSeenContent('thread-a');
+    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
+    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
+
+    expect(threadA[0].content).toBe('A!!');
+    expect(threadB[0].content).toBe('B!');
   });
 });
 

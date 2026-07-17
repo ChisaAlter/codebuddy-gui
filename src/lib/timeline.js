@@ -1,13 +1,38 @@
 // 消息级 content-hash 去重：SSE 通知流和 POST 内联 SSE 可能推送同一 chunk。
-const _seenContent = new Map();
-export function resetSeenContent() { _seenContent.clear(); }
+const MAX_DEDUPE_SCOPES = 100;
+const MAX_MESSAGES_PER_SCOPE = 1000;
+const _seenContentByScope = new Map();
 
-function isDuplicateChunk(messageId, content) {
+export function resetSeenContent(scope) {
+  if (scope === undefined || scope === null) {
+    _seenContentByScope.clear();
+    return;
+  }
+  _seenContentByScope.delete(String(scope));
+}
+
+function seenContentForScope(scope) {
+  const key = String(scope || 'global');
+  let seen = _seenContentByScope.get(key);
+  if (seen) return seen;
+  if (_seenContentByScope.size >= MAX_DEDUPE_SCOPES) {
+    _seenContentByScope.delete(_seenContentByScope.keys().next().value);
+  }
+  seen = new Map();
+  _seenContentByScope.set(key, seen);
+  return seen;
+}
+
+function isDuplicateChunk(scope, messageId, content) {
   if (!messageId) return false;
   const hash = JSON.stringify(content);
-  const last = _seenContent.get(messageId);
+  const seen = seenContentForScope(scope);
+  const last = seen.get(messageId);
   if (last === hash) return true;
-  _seenContent.set(messageId, hash);
+  if (!seen.has(messageId) && seen.size >= MAX_MESSAGES_PER_SCOPE) {
+    seen.delete(seen.keys().next().value);
+  }
+  seen.set(messageId, hash);
   return false;
 }
 
@@ -178,14 +203,14 @@ export function executionGroupSummary(items) {
   };
 }
 
-function mergeUserChunk(timeline, payload) {
+function mergeUserChunk(timeline, payload, dedupeScope) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'user') {
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(messageId, payload?.content)) return next;
+    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
@@ -208,14 +233,14 @@ function mergeUserChunk(timeline, payload) {
   return next;
 }
 
-function mergeAssistantChunk(timeline, payload) {
+function mergeAssistantChunk(timeline, payload, dedupeScope) {
   const next = closeThinkingStream(timeline);
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(messageId, payload?.content)) return next;
+    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
@@ -239,14 +264,14 @@ function mergeAssistantChunk(timeline, payload) {
   return next;
 }
 
-function mergeThinkingChunk(timeline, payload) {
+function mergeThinkingChunk(timeline, payload, dedupeScope) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(messageId, payload?.content)) return next;
+    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
@@ -311,24 +336,24 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
   return next;
 }
 
-export function reduceAcpEvent(timeline, eventType, payload) {
+export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'global') {
   if (eventType === 'message') {
     if (payload?.messageId && payload?.content) {
-      return mergeAssistantChunk(timeline, payload);
+      return mergeAssistantChunk(timeline, payload, dedupeScope);
     }
     return pushSystemEvent(timeline, 'message', payload);
   }
 
   if (eventType === 'agent_thought_chunk' || payload?.sessionUpdate === 'agent_thought_chunk') {
-    return mergeThinkingChunk(timeline, payload);
+    return mergeThinkingChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'agent_message_chunk' || payload?.sessionUpdate === 'agent_message_chunk') {
-    return mergeAssistantChunk(timeline, payload);
+    return mergeAssistantChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'user_message_chunk' || payload?.sessionUpdate === 'user_message_chunk') {
-    return mergeUserChunk(timeline, payload);
+    return mergeUserChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'tool_call' || payload?.sessionUpdate === 'tool_call') {
@@ -340,7 +365,7 @@ export function reduceAcpEvent(timeline, eventType, payload) {
   }
 
   if (eventType === 'thinking' || payload?.type === 'thinking' || payload?.sessionUpdate === 'thinking') {
-    return mergeThinkingChunk(timeline, payload);
+    return mergeThinkingChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'interruption_request' || payload?.sessionUpdate === 'interruption_request' || payload?.type === 'interruption') {
