@@ -14,9 +14,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),
   windowClose: () => ipcRenderer.send('window:close'),
-  confirmQuit: () => ipcRenderer.send('app:confirmQuit'),
+  acknowledgeQuit: (requestId) => ipcRenderer.send('app:acknowledgeQuit', requestId),
+  confirmQuit: (requestId) => ipcRenderer.send('app:confirmQuit', requestId),
+  cancelQuit: (requestId, reason) => ipcRenderer.send('app:cancelQuit', { requestId, reason }),
   onQuitRequested: (handler) => {
-    const listener = () => handler();
+    const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('app:quitRequested', listener);
     return () => ipcRenderer.removeListener('app:quitRequested', listener);
   },
@@ -47,6 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateInstalledPlugin: (payload) => ipcRenderer.invoke('pluginMaintenance:update', payload),
   previewPluginDependencyPrune: (payload) => ipcRenderer.invoke('pluginMaintenance:previewPrune', payload),
   prunePluginDependencies: (payload) => ipcRenderer.invoke('pluginMaintenance:prune', payload),
+  listModelConfigs: () => ipcRenderer.invoke('modelConfig:list'),
+  saveModelConfig: (payload) => ipcRenderer.invoke('modelConfig:save', payload),
+  deleteModelConfig: (modelId) => ipcRenderer.invoke('modelConfig:delete', modelId),
+  openModelConfig: () => ipcRenderer.invoke('modelConfig:open'),
   exportDiagnostics: () => ipcRenderer.invoke('app:exportDiagnostics'),
   showTaskNotification: (payload) => ipcRenderer.invoke('notification:showTaskResult', payload),
   consumeTaskNotificationTarget: () => ipcRenderer.invoke('notification:consumeOpenThread'),

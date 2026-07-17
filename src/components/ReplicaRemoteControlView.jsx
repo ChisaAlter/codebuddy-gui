@@ -3,6 +3,26 @@ import { fetchJson } from '../lib/acp';
 import { createWechatChannel, fetchWechatQr, createWecomChannel, channelAction, deleteChannelInstance } from '../lib/ops';
 import { useStore } from '../store';
 
+function normalizeRemoteControlPayload(payload) {
+  const data = payload?.data ?? payload ?? {};
+  const clients = data.clients || data.channels || [];
+  return Array.isArray(clients) ? clients : [];
+}
+
+function channelTypeLabel(type) {
+  if (type === 'wechat') return '微信';
+  if (type === 'wecom') return '企业微信';
+  return type || '未知渠道';
+}
+
+function channelStatusLabel(status) {
+  if (status === 'connected') return '已连接';
+  if (status === 'connecting') return '连接中';
+  if (status === 'stopped' || status === 'disconnected') return '未连接';
+  if (status === 'error') return '异常';
+  return status || '未知';
+}
+
 function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh, onWechatQrRequested, onDeleted }) {
   const type = channel.clientType || 'unknown';
   const instanceId = channel.instanceId;
@@ -122,19 +142,19 @@ function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh
     }
   };
   return (
-    <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
+    <div className="surface-panel p-4">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-white">{displayName}</div>
-          <div className="mt-1 text-xs text-[var(--color-text-secondary)]">{type}</div>
+          <div className="text-sm font-semibold text-[var(--color-text-primary)]">{displayName}</div>
+          <div className="mt-1 text-xs text-[var(--color-text-muted)]">{channelTypeLabel(type)}</div>
         </div>
         <span className="rounded px-2 py-1 text-[10px]" style={{ background: `${color}1a`, color }}>
-          {status}
+          {channelStatusLabel(status)}
         </span>
       </div>
-      <div className="space-y-1 text-xs text-[var(--color-text-secondary)]">
-        <div>instanceId: {instanceId || '-'}</div>
-        <div>hidden: {String(!!channel.hidden)}</div>
+      <div className="text-xs text-[var(--color-text-secondary)]">
+        <span className="text-[var(--color-text-muted)]">实例 ID </span>
+        <span className="font-mono">{instanceId || '-'}</span>
       </div>
       <div className="mt-3 flex gap-2 flex-wrap">
         <button className="btn-ghost" disabled={!!busy} onClick={handleToggle}>{busy === 'toggle' ? '处理中...' : (status === 'connected' ? '断开' : '连接')}</button>
@@ -146,7 +166,7 @@ function ChannelCard({ channel, projectId, generation, isScopeCurrent, onRefresh
         >
           {busy === 'unbind' ? '处理中...' : '解绑'}
         </button>
-        <button className="btn-ghost" disabled={!!busy} onClick={() => openConfirm('delete')}>{busy === 'delete' ? '处理中...' : '删除'}</button>
+        <button className="btn-ghost text-[var(--color-accent-red)]" disabled={!!busy} onClick={() => openConfirm('delete')}>{busy === 'delete' ? '处理中...' : '删除'}</button>
       </div>
       {message ? <div className="mt-2 text-xs text-[var(--color-text-secondary)]">{message}</div> : null}
 
@@ -240,9 +260,9 @@ export default function ReplicaRemoteControlView() {
     }
     try {
       const payload = await fetchJson('/api/v1/channels');
-      const clients = payload?.data?.clients || payload?.clients || payload?.data?.channels || payload?.channels || [];
+      const clients = normalizeRemoteControlPayload(payload);
       if (isScopeCurrent(projectId, generation)) {
-        setChannels((Array.isArray(clients) ? clients : []).filter((item) => !item.hidden && !String(item.instanceId || '').startsWith('_pending')));
+        setChannels(clients.filter((item) => !item.hidden && !String(item.instanceId || '').startsWith('_pending')));
         setChannelsProjectId(projectId);
         setError('');
       }
@@ -320,12 +340,26 @@ export default function ReplicaRemoteControlView() {
       try {
         const r = await fetchWechatQr(instanceId);
         if (!isCurrentPoll()) return;
+        if (r.type === 'confirmed') {
+          stopQrPoll();
+          setWechatQr(null);
+          setWechatQrInstanceId('');
+          setWechatQrLoading(false);
+          setWechatQrError(null);
+          setInfo(r.message || '微信已连接');
+          await load({ silent: true });
+          return;
+        }
+        if (r.type === 'error') {
+          stopQrPoll();
+          setWechatQrError(r.error || r.message || '二维码登录失败');
+          setWechatQrLoading(false);
+          return;
+        }
         if (r.ok && r.qrImage) {
           setWechatQr({ qrImage: r.qrImage });
           setWechatQrLoading(false);
           setWechatQrError(null);
-          stopQrPoll();
-          return;
         }
       } catch (_) { /* 忽略瞬时网络错，继续轮询 */ }
       if (isCurrentPoll()) qrPollRef.current = setTimeout(poll, 1000);
@@ -421,102 +455,115 @@ export default function ReplicaRemoteControlView() {
   const renderGeneration = viewGenerationRef.current;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
-      <div className="flex h-12 items-center border-b border-[var(--color-border-default)] px-6">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">远程控制</h2>
-      </div>
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+    <div className="page-shell">
+      <div className="page-header">
         <div>
-          <div className="text-lg font-semibold text-white">远程控制</div>
-          <div className="mt-1 text-sm text-[var(--color-text-secondary)]">管理渠道连接</div>
+          <h2 className="page-header-title">远程控制</h2>
+          <div className="page-header-desc">连接微信与企业微信，在移动端继续处理任务</div>
         </div>
+        <button className="btn-ghost" onClick={() => load()} disabled={loading}>{loading ? '刷新中...' : '刷新连接'}</button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        <div className="page-content-wide space-y-5">
+          <div className="responsive-tool-grid">
+            {/* 微信创建 + 二维码展示 */}
+            <section className="surface-panel p-5">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">添加微信机器人</div>
+              <div className="mt-1 text-xs text-[var(--color-text-muted)]">创建实例后使用微信扫码登录</div>
+              <div className="mt-4 flex flex-wrap items-start gap-4">
+                <div className="min-w-[180px] flex-1">
+                  <button className="btn-primary" disabled={wechatBusy || wechatQrLoading} onClick={handleCreateWechat}>
+                    {wechatBusy ? '创建中...' : '创建并显示二维码'}
+                  </button>
+                  {wechatQrLoading && <div className="mt-3 flex items-center gap-2 text-xs text-[var(--color-text-muted)]"><div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-muted)] border-t-[var(--color-accent-primary)]" />等待二维码就绪...</div>}
+                  {wechatQrError && <div className="mt-3 text-xs text-[var(--color-accent-red)]">{wechatQrError}</div>}
+                </div>
+                {wechatQr?.qrImage && (
+                  <div className="flex shrink-0 flex-col items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-white p-3 shadow-sm">
+                    <img src={wechatQr.qrImage} alt="微信登录二维码" className="h-40 w-40" style={{ imageRendering: 'pixelated' }} />
+                    <div className="text-xs text-slate-500">用微信扫码登录</div>
+                  </div>
+                )}
+              </div>
+            </section>
 
-        {/* 微信创建 + 二维码展示 */}
-        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
-          <div className="text-sm font-medium text-white">添加微信机器人</div>
-          <div className="mt-1 text-xs text-[var(--color-text-muted)]">创建实例后用微信扫码登录</div>
-          <div className="mt-3 flex items-center gap-3">
-            <button className="btn-primary" disabled={wechatBusy || wechatQrLoading} onClick={handleCreateWechat}>
-              {wechatBusy ? '创建中...' : '创建并显示二维码'}
-            </button>
-            {wechatQrLoading && <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]"><div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--color-border-muted)] border-t-[var(--color-accent-brand)]" />等待二维码就绪...</div>}
+            {/* 企微创建表单 */}
+            <section className="surface-panel p-5">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">添加企业微信机器人</div>
+              <div className="mt-1 text-xs text-[var(--color-text-muted)]">填写机器人凭据后创建连接实例</div>
+              <div className="mt-4 grid grid-cols-1 gap-3">
+                <label>
+                  <span className="mb-1.5 block text-xs text-[var(--color-text-secondary)]">Bot ID</span>
+                  <input
+                    value={wecomBotId}
+                    onChange={(e) => setWecomBotId(e.target.value)}
+                    placeholder="输入 Bot ID"
+                    className="input-field"
+                    aria-label="企微 botId"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-xs text-[var(--color-text-secondary)]">Secret</span>
+                  <input
+                    type="password"
+                    value={wecomSecret}
+                    onChange={(e) => setWecomSecret(e.target.value)}
+                    placeholder="输入 Secret"
+                    className="input-field"
+                    aria-label="企微 secret"
+                  />
+                </label>
+              </div>
+              {wecomError && <div className="mt-3 text-xs text-[var(--color-accent-red)]">{wecomError}</div>}
+              <button className="btn-primary mt-4" disabled={wecomBusy || !wecomBotId.trim() || !wecomSecret.trim()} onClick={handleCreateWecom}>
+                {wecomBusy ? '创建中...' : '创建企微机器人'}
+              </button>
+            </section>
           </div>
-          {wechatQrError && <div className="mt-2 text-xs text-[var(--color-accent-red)]">{wechatQrError}</div>}
-          {wechatQr?.qrImage && (
-            <div className="mt-3 flex flex-col items-center gap-2 rounded-lg border border-[var(--color-border-muted)] bg-white p-3" style={{ width: 'fit-content' }}>
-              <img src={wechatQr.qrImage} alt="微信登录二维码" className="h-44 w-44" style={{ imageRendering: 'pixelated' }} />
-              <div className="text-xs text-[var(--color-text-muted)]">用微信扫码登录</div>
+
+          {loading ? <div className="text-sm text-[var(--color-text-muted)]">正在加载连接...</div> : null}
+          {info ? <div className="flex items-center justify-between gap-3 rounded-lg border border-[rgba(34,197,94,0.25)] bg-[rgba(34,197,94,0.08)] px-4 py-3 text-sm text-[var(--color-accent-green)]"><span>{info}</span><button className="btn-ghost text-xs" onClick={() => setInfo('')}>关闭</button></div> : null}
+          {error ? <div className="flex items-center justify-between gap-3 rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-[var(--color-accent-red)]"><span>{error}</span><button className="btn-ghost text-xs" onClick={load}>重试</button></div> : null}
+
+          <div className="responsive-card-grid">
+            <section className="space-y-3">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">微信机器人</div>
+              {wechat.length ? wechat.map((item) => (
+                <ChannelCard
+                  key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`}
+                  channel={item}
+                  projectId={renderProjectId}
+                  generation={renderGeneration}
+                  isScopeCurrent={isScopeCurrent}
+                  onRefresh={load}
+                  onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`, renderProjectId, renderGeneration)}
+                  onDeleted={(instanceId) => handleChannelDeleted(instanceId, renderProjectId, renderGeneration)}
+                />
+              )) : <div className="empty-state text-sm">暂无微信连接</div>}
+            </section>
+
+            <section className="space-y-3">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">企业微信机器人</div>
+              {wecom.length ? wecom.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />) : <div className="empty-state text-sm">暂无企业微信连接</div>}
+            </section>
+          </div>
+
+          {others.length ? (
+            <section className="space-y-3">
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">更多渠道</div>
+              <div className="responsive-card-grid">
+                {others.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />)}
+              </div>
+            </section>
+          ) : null}
+
+          <div className="surface-panel flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+            <div>
+              <div className="text-sm font-semibold text-[var(--color-text-primary)]">安装更多渠道</div>
+              <div className="mt-1 text-xs text-[var(--color-text-muted)]">从插件市场添加第三方渠道连接</div>
             </div>
-          )}
-        </div>
-
-        {/* 企微创建表单 */}
-        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
-          <div className="text-sm font-medium text-white">添加企业微信机器人</div>
-          <div className="mt-1 text-xs text-[var(--color-text-muted)]">填写 botId 与 secret 后创建实例</div>
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <input
-              value={wecomBotId}
-              onChange={(e) => setWecomBotId(e.target.value)}
-              placeholder="botId"
-              className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-brand)]"
-              aria-label="企微 botId"
-            />
-            <input
-              type="password"
-              value={wecomSecret}
-              onChange={(e) => setWecomSecret(e.target.value)}
-              placeholder="secret"
-              className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-brand)]"
-              aria-label="企微 secret"
-            />
+            <button className="btn-ghost" onClick={() => setRoute('plugins')}>打开插件市场</button>
           </div>
-          {wecomError && <div className="mt-2 text-xs text-[var(--color-accent-red)]">{wecomError}</div>}
-          <button className="btn-primary mt-2" disabled={wecomBusy || !wecomBotId.trim() || !wecomSecret.trim()} onClick={handleCreateWecom}>
-            {wecomBusy ? '创建中...' : '创建企微机器人'}
-          </button>
-        </div>
-
-        <div className="flex gap-3">
-          <button className="btn-ghost" onClick={() => load()} disabled={loading}>{loading ? '刷新中...' : '刷新'}</button>
-        </div>
-
-        {loading ? <div className="text-sm text-[var(--color-text-muted)]">加载中...</div> : null}
-        {info ? <div className="rounded-lg border border-[rgba(34,197,94,0.25)] bg-[rgba(34,197,94,0.08)] px-4 py-3 text-sm text-green-300 flex items-center justify-between gap-3"><span>{info}</span><button className="btn-ghost text-xs" onClick={() => setInfo('')}>关闭</button></div> : null}
-        {error ? <div className="rounded-lg border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-red-300 flex items-center gap-2"><span>{error}</span><button className="btn-ghost text-sm underline" onClick={load}>重试</button></div> : null}
-
-        <section className="space-y-3">
-          <div className="text-sm font-medium text-[var(--color-text-secondary)]">微信机器人</div>
-          {wechat.length ? wechat.map((item) => (
-            <ChannelCard
-              key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`}
-              channel={item}
-              projectId={renderProjectId}
-              generation={renderGeneration}
-              isScopeCurrent={isScopeCurrent}
-              onRefresh={load}
-              onWechatQrRequested={(instanceId, name) => showWechatQr(instanceId, `${name} 已解绑，请重新扫码`, renderProjectId, renderGeneration)}
-              onDeleted={(instanceId) => handleChannelDeleted(instanceId, renderProjectId, renderGeneration)}
-            />
-          )) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
-        </section>
-
-        <section className="space-y-3">
-          <div className="text-sm font-medium text-[var(--color-text-secondary)]">企业微信机器人</div>
-          {wecom.length ? wecom.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />) : <div className="text-sm text-[var(--color-text-muted)]">暂无已连接渠道</div>}
-        </section>
-
-        {others.length ? (
-          <section className="space-y-3">
-            <div className="text-sm font-medium text-[var(--color-text-secondary)]">更多渠道</div>
-            {others.map((item) => <ChannelCard key={`${renderProjectId}-${renderGeneration}-${item.clientType}-${item.instanceId}`} channel={item} projectId={renderProjectId} generation={renderGeneration} isScopeCurrent={isScopeCurrent} onRefresh={load} />)}
-          </section>
-        ) : null}
-
-        <div className="rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
-          <div className="text-sm font-medium text-white">安装更多渠道</div>
-          <div className="mt-2 text-sm text-[var(--color-text-secondary)]">浏览插件市场，安装第三方渠道插件</div>
-          <button className="btn-ghost mt-3 text-xs" onClick={() => setRoute('plugins')}>打开插件</button>
         </div>
       </div>
     </div>

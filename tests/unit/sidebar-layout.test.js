@@ -24,6 +24,11 @@ describe('ReplicaSidebar layout', () => {
 
   it('moves settings and keybindings out of the scrolling navigation into the footer', () => {
     expect(replicaSidebarMainGroups().map((group) => group.id)).not.toContain('preferences');
-    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['settings', 'keybindings']);
+    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['models', 'settings', 'keybindings']);
+  });
+
+  it('omits the redundant chat button from primary navigation', () => {
+    const primary = replicaSidebarMainGroups().find((group) => group.id === 'primary');
+    expect(primary.items.map((item) => item.id)).toEqual(['instances', 'remote-control']);
   });
 });

@@ -3,9 +3,17 @@ const fs = require('fs');
 
 const CLI_UNAVAILABLE_MESSAGE = '未找到 CodeBuddy CLI。请先安装 CodeBuddy，并确认在命令行中可以直接运行 codebuddy。';
 
+function buildCodeBuddyRuntimeEnvironment(source = process.env) {
+  return {
+    ...source,
+    CODEBUDDY_INTERNET_ENVIRONMENT: source.CODEBUDDY_INTERNET_ENVIRONMENT || 'ioa',
+  };
+}
+
 function isCliUnavailable(value) {
-  return /(?:codebuddy.*(?:not recognized|not found)|不是内部或外部命令|找不到.*codebuddy|ENOENT)/i
-    .test(String(value || ''));
+  return /(?:codebuddy.*(?:not recognized|not found)|不是内部或外部命令|找不到.*codebuddy|ENOENT)/i.test(
+    String(value || ''),
+  );
 }
 
 function decodeProcessOutput(data) {
@@ -16,6 +24,10 @@ function decodeProcessOutput(data) {
   } catch (_) {
     return utf8;
   }
+}
+
+function codeBuddyFetchOptions(options = {}) {
+  return { ...options, credentials: 'include' };
 }
 
 function publicRuntime(entry) {
@@ -46,7 +58,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
 
   async function authenticate(entry) {
     const url = `http://127.0.0.1:${entry.port}/?password=${encodeURIComponent(entry.password)}`;
-    const response = await net.fetch(url, { headers: { 'X-CodeBuddy-Request': '1' } });
+    const response = await net.fetch(url, codeBuddyFetchOptions({ headers: { 'X-CodeBuddy-Request': '1' } }));
     if (!response.ok) throw new Error(`CodeBuddy authentication failed: ${response.status}`);
   }
 
@@ -59,7 +71,9 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         entry.proc.kill('SIGTERM');
       }
     } catch (_) {
-      try { entry.proc.kill('SIGKILL'); } catch (_) {}
+      try {
+        entry.proc.kill('SIGKILL');
+      } catch (_) {}
     }
   }
 
@@ -73,10 +87,11 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
 
     const promise = new Promise((resolve, reject) => {
       const isWindows = process.platform === 'win32';
-      const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
+      const command = isWindows ? process.env.ComSpec || 'cmd.exe' : 'codebuddy';
       const commandArgs = isWindows ? ['/d', '/s', '/c', 'codebuddy --serve'] : ['--serve'];
       const proc = spawn(command, commandArgs, {
         cwd: entry.cwd,
+        env: buildCodeBuddyRuntimeEnvironment(),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
         windowsHide: true,
@@ -110,6 +125,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         clearTimeout(timeoutId);
         try {
           await authenticate(entry);
+          logger(`CodeBuddy runtime authenticated project=${entry.projectId} port=${entry.port}`);
           entry.status = 'running';
           entry.error = null;
           logger(`CodeBuddy runtime ready project=${entry.projectId} port=${entry.port}`);
@@ -137,8 +153,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
           if (match) entry.port = Number(match[1]);
         }
         if (!entry.password) {
-          const passwordMatch = stdoutBuffer.match(/Password\s+([\w-]+)/)
-            || stdoutBuffer.match(/\?password=([\w-]+)/);
+          const passwordMatch = stdoutBuffer.match(/Password\s+([\w-]+)/) || stdoutBuffer.match(/\?password=([\w-]+)/);
           if (passwordMatch) entry.password = passwordMatch[1];
         }
         finish();
@@ -151,8 +166,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       });
 
       proc.on('error', (error) => {
-        finish(isCliUnavailable(error?.code || error?.message)
-          ? new Error(CLI_UNAVAILABLE_MESSAGE) : error);
+        finish(isCliUnavailable(error?.code || error?.message) ? new Error(CLI_UNAVAILABLE_MESSAGE) : error);
       });
       proc.on('exit', (code, signal) => {
         clearTimeout(timeoutId);
@@ -161,9 +175,13 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         entry.port = null;
         entry.password = null;
         if (!settled) {
-          finish(new Error(isCliUnavailable(stderrBuffer)
-            ? CLI_UNAVAILABLE_MESSAGE
-            : `CodeBuddy exited before ready (code=${code}, signal=${signal})`));
+          finish(
+            new Error(
+              isCliUnavailable(stderrBuffer)
+                ? CLI_UNAVAILABLE_MESSAGE
+                : `CodeBuddy exited before ready (code=${code}, signal=${signal})`,
+            ),
+          );
           return;
         }
         if (entry.status !== 'stopping' && entry.status !== 'error') {
@@ -252,4 +270,9 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
   return { ensure, list, restart, stop, stopAll };
 }
 
-module.exports = { createCodeBuddyRuntimeManager, decodeProcessOutput };
+module.exports = {
+  buildCodeBuddyRuntimeEnvironment,
+  codeBuddyFetchOptions,
+  createCodeBuddyRuntimeManager,
+  decodeProcessOutput,
+};

@@ -1,14 +1,54 @@
 import { create } from 'zustand';
-import { getApiBase, setApiBase, fetchJson, requestCodeBuddy, getAcpSessionToken, getAuthToken, setAcpSessionToken, checkAuth as apiCheckAuth, authLogin as apiAuthLogin, authLogout as apiAuthLogout, setAuthToken } from './lib/acp';
-import { parseHashRoute, setHashRoute } from './lib/routes';
-import { fsList, fsSearchContent, fsSearchFiles, createWatcher, pollWatcher, removeWatcher, downloadFile, fsMkdir, fsMove, fsRemove, fsWrite } from './lib/fs';
-import { fetchSessionStats, fetchStats as fetchStatsApi, fetchScheduledTasks, createScheduledTask, deleteScheduledTask, fetchTraceList, fetchWorkerLogs as fetchWorkerLogsApi, updateSettingByKey as updateSettingByKeyApi, deleteSession as apiDeleteSession, renameSession as apiRenameSession, fetchTaskTemplates as apiFetchTaskTemplates, refreshTaskTemplates as apiRefreshTaskTemplates, uninstallPlugin as apiUninstallPlugin, enablePlugin as apiEnablePlugin, disablePlugin as apiDisablePlugin, installPlugin as apiInstallPlugin, addMarketplace as apiAddMarketplace, removeMarketplace as apiRemoveMarketplace, fetchMarketplaces as apiFetchMarketplaces } from './lib/ops';
 import {
-  closeAssistantStream,
-  pushUserMessage,
-  reduceAcpEvent,
-  resetSeenContent,
-} from './lib/timeline';
+  getApiBase,
+  setApiBase,
+  fetchJson,
+  requestCodeBuddy,
+  getAcpSessionToken,
+  getAuthToken,
+  setAcpSessionToken,
+  checkAuth as apiCheckAuth,
+  authLogin as apiAuthLogin,
+  authLogout as apiAuthLogout,
+  setAuthToken,
+  isAcpAuthenticationError,
+} from './lib/acp';
+import { parseHashRoute, setHashRoute } from './lib/routes';
+import {
+  fsList,
+  fsSearchContent,
+  fsSearchFiles,
+  createWatcher,
+  pollWatcher,
+  removeWatcher,
+  downloadFile,
+  fsMkdir,
+  fsMove,
+  fsRemove,
+  fsWrite,
+} from './lib/fs';
+import {
+  fetchSessionStats,
+  fetchStats as fetchStatsApi,
+  fetchScheduledTasks,
+  createScheduledTask,
+  deleteScheduledTask,
+  fetchTraceList,
+  fetchWorkerLogs as fetchWorkerLogsApi,
+  updateSettingByKey as updateSettingByKeyApi,
+  deleteSession as apiDeleteSession,
+  renameSession as apiRenameSession,
+  fetchTaskTemplates as apiFetchTaskTemplates,
+  refreshTaskTemplates as apiRefreshTaskTemplates,
+  uninstallPlugin as apiUninstallPlugin,
+  enablePlugin as apiEnablePlugin,
+  disablePlugin as apiDisablePlugin,
+  installPlugin as apiInstallPlugin,
+  addMarketplace as apiAddMarketplace,
+  removeMarketplace as apiRemoveMarketplace,
+  fetchMarketplaces as apiFetchMarketplaces,
+} from './lib/ops';
+import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent } from './lib/timeline';
 import {
   activeProject,
   activeThread,
@@ -19,10 +59,17 @@ import {
   productStateSnapshot,
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
-import { isGuiSettingKey, loadGuiSettings, normalizeGuiSettings, saveGuiSettings, stripGuiSettings } from './lib/gui-settings';
+import {
+  isGuiSettingKey,
+  loadGuiSettings,
+  normalizeGuiSettings,
+  saveGuiSettings,
+  stripGuiSettings,
+} from './lib/gui-settings';
 import { visibleProjectThreads } from './lib/session-sidebar';
 
 const conversations = new ConversationManager();
+let bootstrapOperation = null;
 let routeListenerBound = false;
 let conversationEventsBound = false;
 let runtimeListenerBound = false;
@@ -70,8 +117,7 @@ function finishProjectNavigation(set, token, error = null) {
 
 function isProjectMutationNavigation(state) {
   return Boolean(
-    state.projectNavigationBusy
-    && String(state.projectNavigationTargetId || '').startsWith('project-action:'),
+    state.projectNavigationBusy && String(state.projectNavigationTargetId || '').startsWith('project-action:'),
   );
 }
 
@@ -150,9 +196,11 @@ function projectWithDeletedSession(project, sessionId) {
 function runUniqueSessionAction(key, operation) {
   const existing = sessionActionOperations.get(key);
   if (existing) return existing;
-  const tracked = Promise.resolve().then(operation).finally(() => {
-    if (sessionActionOperations.get(key) === tracked) sessionActionOperations.delete(key);
-  });
+  const tracked = Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      if (sessionActionOperations.get(key) === tracked) sessionActionOperations.delete(key);
+    });
   sessionActionOperations.set(key, tracked);
   return tracked;
 }
@@ -182,9 +230,13 @@ function sessionActionItemMatches(item, id) {
 async function connectActiveProjectRuntime(set, get, projectId, runtime) {
   if (projectId !== get().activeProjectId) return false;
   const nextBase = `http://127.0.0.1:${runtime.port}`;
+  const previousBase = get().apiBase;
   setApiBase(nextBase);
   set({ apiBase: nextBase });
-  setAuthToken(null);
+  if (runtimeAuthScopeChanged(previousBase, nextBase)) {
+    setAcpSessionToken(null);
+    setAuthToken(null);
+  }
   if (!runtime.password) return true;
 
   try {
@@ -199,6 +251,7 @@ async function connectActiveProjectRuntime(set, get, projectId, runtime) {
     if (projectId !== get().activeProjectId) return false;
     if (!loginResult?.success) throw new Error(loginResult?.error || '运行时登录失败');
     setAuthToken(loginResult.token || null);
+    set({ authViewState: 'authenticated', authError: null });
     return true;
   } catch (error) {
     if (projectId !== get().activeProjectId) return false;
@@ -228,22 +281,20 @@ function serializePromptQueue(queue) {
 
 function mergeAttachmentSelection(runtime, selection) {
   const imageSupported = Boolean(
-    runtime.capabilities?.promptCapabilities?.image
-    || runtime.capabilities?.prompt_capabilities?.image,
+    runtime.capabilities?.promptCapabilities?.image || runtime.capabilities?.prompt_capabilities?.image,
   );
   const accepted = [];
   const rejected = [];
   for (const attachment of selection || []) {
     if (attachment.kind === 'unsupported') rejected.push(`${attachment.name}: ${attachment.error}`);
-    else if (attachment.kind === 'image' && !imageSupported) rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
+    else if (attachment.kind === 'image' && !imageSupported)
+      rejected.push(`${attachment.name}: 当前运行时未声明图片输入能力`);
     else accepted.push(attachment);
   }
   const pendingAttachments = [...runtime.pendingAttachments];
   const added = [];
   for (const attachment of accepted) {
-    const duplicate = pendingAttachments.some((item) => (
-      item.path === attachment.path && item.kind === attachment.kind
-    ));
+    const duplicate = pendingAttachments.some((item) => item.path === attachment.path && item.kind === attachment.kind);
     if (duplicate) continue;
     pendingAttachments.push(attachment);
     added.push(attachment);
@@ -257,7 +308,7 @@ function mergeTeamState(current, update) {
   return {
     ...(current || {}),
     ...update,
-    members: Array.isArray(update.members) ? update.members : (current?.members || []),
+    members: Array.isArray(update.members) ? update.members : current?.members || [],
   };
 }
 
@@ -330,21 +381,40 @@ function normalizePlugins(payload) {
 }
 
 function normalizeModels(models = []) {
-  return models.map((m) => ({
-    id: m.modelId || m.id || m.value,
-    name: m.name || m.modelId || m.id || m.value,
-  }));
+  return (Array.isArray(models) ? models : [])
+    .map((model) => {
+      if (typeof model === 'string') return { id: model, name: model };
+      const id = model?.modelId || model?.id || model?.value;
+      return id ? { id, name: model?.name || model?.label || id } : null;
+    })
+    .filter(Boolean);
 }
 
 function normalizeModes(modes = []) {
-  return modes.map((m) => ({
-    id: m.modeId || m.id || m.value,
-    name: m.name || m.modeId || m.id || m.value,
-  }));
+  return (Array.isArray(modes) ? modes : [])
+    .map((mode) => {
+      if (typeof mode === 'string') return { id: mode, name: mode };
+      const id = mode?.modeId || mode?.id || mode?.value;
+      return id ? { id, name: mode?.name || mode?.label || id } : null;
+    })
+    .filter(Boolean);
+}
+
+function configOptionChoices(option) {
+  for (const value of [option?.options, option?.values, option?.availableValues, option?.choices, option?.enum]) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+export function runtimeAuthScopeChanged(previousBase, nextBase) {
+  return Boolean(previousBase && nextBase && previousBase !== nextBase);
 }
 
 function readSettingPath(settings, path) {
-  return String(path || '').split('.').reduce((value, key) => value?.[key], settings);
+  return String(path || '')
+    .split('.')
+    .reduce((value, key) => value?.[key], settings);
 }
 
 function settingsCacheSnapshot(settings) {
@@ -359,11 +429,15 @@ function settingsCacheSnapshot(settings) {
 }
 
 function persistSettingsCache(settings) {
-  try { localStorage.setItem('codebuddy-gui-settings', JSON.stringify(settingsCacheSnapshot(settings))); } catch (_) {}
+  try {
+    localStorage.setItem('codebuddy-gui-settings', JSON.stringify(settingsCacheSnapshot(settings)));
+  } catch (_) {}
 }
 
 function writeSettingPath(settings, path, value, remove = false) {
-  const keys = String(path || '').split('.').filter(Boolean);
+  const keys = String(path || '')
+    .split('.')
+    .filter(Boolean);
   const next = { ...(settings || {}) };
   if (!keys.length) return next;
   let cursor = next;
@@ -374,7 +448,6 @@ function writeSettingPath(settings, path, value, remove = false) {
   }
   const leaf = keys[keys.length - 1];
   if (remove) delete cursor[leaf];
-
   else cursor[leaf] = value;
   return next;
 }
@@ -391,18 +464,17 @@ function makePane(title = 'Terminal') {
 
 function terminalStateFromProject(project, resetSessions = false) {
   const saved = project?.preferences?.terminalState;
-  const panes = Array.isArray(saved?.panes) && saved.panes.length
-    ? saved.panes.map((pane) => ({
-        ...makePane(pane.title || 'Terminal'),
-        ...pane,
-        output: String(pane.output || '').slice(-200000),
-        sessionId: resetSessions ? null : (pane.sessionId || null),
-        status: resetSessions ? 'idle' : (pane.status || 'idle'),
-      }))
-    : [makePane()];
-  const activePaneId = panes.some((pane) => pane.id === saved?.activePaneId)
-    ? saved.activePaneId
-    : panes[0].id;
+  const panes =
+    Array.isArray(saved?.panes) && saved.panes.length
+      ? saved.panes.map((pane) => ({
+          ...makePane(pane.title || 'Terminal'),
+          ...pane,
+          output: String(pane.output || '').slice(-200000),
+          sessionId: resetSessions ? null : pane.sessionId || null,
+          status: resetSessions ? 'idle' : pane.status || 'idle',
+        }))
+      : [makePane()];
+  const activePaneId = panes.some((pane) => pane.id === saved?.activePaneId) ? saved.activePaneId : panes[0].id;
   return { panes, activePaneId };
 }
 
@@ -411,7 +483,7 @@ function workspaceStateFromProject(project) {
   const selectedFile = typeof saved.selectedFile === 'string' && saved.selectedFile ? saved.selectedFile : null;
   const fileDirty = Boolean(selectedFile && saved.fileDirty && typeof saved.filePreview === 'string');
   return {
-    fileCwd: typeof saved.fileCwd === 'string' && saved.fileCwd ? saved.fileCwd : (project?.workspacePath || '.'),
+    fileCwd: typeof saved.fileCwd === 'string' && saved.fileCwd ? saved.fileCwd : project?.workspacePath || '.',
     selectedFile,
     filePreview: fileDirty ? saved.filePreview : '',
     fileSavedContent: fileDirty && typeof saved.fileSavedContent === 'string' ? saved.fileSavedContent : '',
@@ -425,7 +497,10 @@ function workspaceStateSnapshot(state, projectId, discardDirty = false) {
   const selectedFile = state.activeProjectId === projectId ? state.selectedFile : null;
   const fileDirty = !discardDirty && Boolean(selectedFile && state.fileDirty);
   return {
-    fileCwd: state.activeProjectId === projectId ? (state.fileCwd || project?.workspacePath || '.') : (project?.workspacePath || '.'),
+    fileCwd:
+      state.activeProjectId === projectId
+        ? state.fileCwd || project?.workspacePath || '.'
+        : project?.workspacePath || '.',
     selectedFile: selectedFile || null,
     fileDirty,
     filePreview: fileDirty ? String(state.filePreview || '') : '',
@@ -515,6 +590,11 @@ export const useStore = create((set, get) => ({
   authViewState: 'loading',
   authError: null,
   authSubmitting: false,
+  codeBuddyAccountAuthState: 'unknown',
+  codeBuddyAccountAuthUrl: null,
+  codeBuddyAccountAuthError: null,
+  codeBuddyAccountUser: null,
+  codeBuddyAccountAuthMethods: [],
   sessionId: null,
   sessionToken: null,
   currentModel: null,
@@ -557,7 +637,7 @@ export const useStore = create((set, get) => ({
   traces: [],
   metrics: null,
   metricsError: null,
-  stats: null,        // 全局 stats（对照源 GET /api/v1/stats）
+  stats: null, // 全局 stats（对照源 GET /api/v1/stats）
   sessionStats: null, // 当前会话 stats（对照源 GET /api/v1/stats/session?sessionId=）
   statsError: null,
   statsLoading: false,
@@ -667,11 +747,10 @@ export const useStore = create((set, get) => ({
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     get().patchThreadRuntime(threadId, {
       timeline: reduceAcpEvent(runtime.timeline, eventType, payload),
-      isAwaitingResponse: eventType === 'agent_message_chunk'
-        || eventType === 'agent_thought_chunk'
-        || eventType === 'tool_call'
-        ? false
-        : runtime.isAwaitingResponse,
+      isAwaitingResponse:
+        eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
+          ? false
+          : runtime.isAwaitingResponse,
     });
     get().scheduleThreadTimelinePersist(threadId);
   },
@@ -715,15 +794,17 @@ export const useStore = create((set, get) => ({
   async persistProductState() {
     const saveProductState = window.electronAPI?.saveProductState;
     if (!saveProductState) return false;
-    const operation = productStateSaveChain.catch(() => false).then(async () => {
-      try {
-        await saveProductState(productStateSnapshot(get()));
-        return true;
-      } catch (error) {
-        set({ error: `保存项目状态失败: ${error.message}` });
-        return false;
-      }
-    });
+    const operation = productStateSaveChain
+      .catch(() => false)
+      .then(async () => {
+        try {
+          await saveProductState(productStateSnapshot(get()));
+          return true;
+        } catch (error) {
+          set({ error: `保存项目状态失败: ${error.message}` });
+          return false;
+        }
+      });
     productStateSaveChain = operation;
     return operation;
   },
@@ -824,7 +905,9 @@ export const useStore = create((set, get) => ({
 
     let legacyWorkspace = null;
     if (loaded.projectOrder.length === 0) {
-      try { legacyWorkspace = localStorage.getItem('codebuddy-gui-workspace'); } catch (_) {}
+      try {
+        legacyWorkspace = localStorage.getItem('codebuddy-gui-workspace');
+      } catch (_) {}
       if (legacyWorkspace) {
         const project = createProjectRecord(legacyWorkspace);
         const thread = createThreadRecord(project.id);
@@ -842,31 +925,38 @@ export const useStore = create((set, get) => ({
 
     const project = activeProject(loaded);
     const thread = activeThread(loaded);
-    const restoredProjects = Object.fromEntries(Object.entries(loaded.projectsById).map(([id, item]) => {
-      const terminalState = terminalStateFromProject(item, true);
-      return [id, {
-        ...item,
-        preferences: {
-          ...(item.preferences || {}),
-          terminalState,
+    const restoredProjects = Object.fromEntries(
+      Object.entries(loaded.projectsById).map(([id, item]) => {
+        const terminalState = terminalStateFromProject(item, true);
+        return [
+          id,
+          {
+            ...item,
+            preferences: {
+              ...(item.preferences || {}),
+              terminalState,
+            },
+            runtimeStatus: 'idle',
+            runtimePort: null,
+            runtimePid: null,
+            runtimeError: null,
+            runtimeStartedAt: null,
+          },
+        ];
+      }),
+    );
+    const restoredThreadRuntime = Object.fromEntries(
+      Object.entries(loaded.threadsById).map(([id, item]) => [
+        id,
+        {
+          ...emptyThreadRuntime(),
+          timeline: Array.isArray(item.timeline) ? item.timeline : [],
+          promptQueue: serializePromptQueue(item.metadata?.promptQueue),
+          currentModel: item.modelId || null,
+          currentMode: item.modeId || 'default',
         },
-        runtimeStatus: 'idle',
-        runtimePort: null,
-        runtimePid: null,
-        runtimeError: null,
-        runtimeStartedAt: null,
-      }];
-    }));
-    const restoredThreadRuntime = Object.fromEntries(Object.entries(loaded.threadsById).map(([id, item]) => [
-      id,
-      {
-        ...emptyThreadRuntime(),
-        timeline: Array.isArray(item.timeline) ? item.timeline : [],
-        promptQueue: serializePromptQueue(item.metadata?.promptQueue),
-        currentModel: item.modelId || null,
-        currentMode: item.modeId || 'default',
-      },
-    ]));
+      ]),
+    );
     const restoredTerminal = terminalStateFromProject(restoredProjects[project?.id], true);
     set({
       projectsById: restoredProjects,
@@ -1003,8 +1093,7 @@ export const useStore = create((set, get) => ({
     }
     const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
     const imageSupported = Boolean(
-      runtime.capabilities?.promptCapabilities?.image
-      || runtime.capabilities?.prompt_capabilities?.image,
+      runtime.capabilities?.promptCapabilities?.image || runtime.capabilities?.prompt_capabilities?.image,
     );
     if (!imageSupported) {
       set({ error: '当前运行时未声明图片输入能力' });
@@ -1061,19 +1150,21 @@ export const useStore = create((set, get) => ({
     const failed = outcome === 'error';
     const context = [project?.name, thread.title || '新对话'].filter(Boolean).join(' · ');
     const body = `${context}\n${failed ? '后台任务失败，点击进入应用查看详情。' : '后台任务已完成，点击进入应用查看结果。'}`;
-    window.electronAPI.showTaskNotification({
-      projectId: thread.projectId,
-      threadId,
-      title: failed ? 'CodeBuddy 任务失败' : 'CodeBuddy 任务已完成',
-      body,
-      outcome,
-    }).catch(() => null);
+    window.electronAPI
+      .showTaskNotification({
+        projectId: thread.projectId,
+        threadId,
+        title: failed ? 'CodeBuddy 任务失败' : 'CodeBuddy 任务已完成',
+        body,
+        outcome,
+      })
+      .catch(() => null);
     return true;
   },
 
   getModelDisplayName() {
     const { currentModel, models } = get();
-    return models.find(m => m.id === currentModel || m.modelId === currentModel)?.name || currentModel || '';
+    return models.find((m) => m.id === currentModel || m.modelId === currentModel)?.name || currentModel || '';
   },
 
   setSidebarCollapsed(value) {
@@ -1100,8 +1191,16 @@ export const useStore = create((set, get) => ({
   applySessionConfigUpdate(configOptions = []) {
     const next = {};
     for (const option of configOptions) {
-      if (option.id === 'model') next.currentModel = option.currentValue;
-      if (option.id === 'mode') next.currentMode = option.currentValue;
+      if (option.id === 'model') {
+        next.currentModel = option.currentValue;
+        const models = normalizeModels(configOptionChoices(option));
+        if (models.length) next.models = models;
+      }
+      if (option.id === 'mode') {
+        next.currentMode = option.currentValue;
+        const modes = normalizeModes(configOptionChoices(option));
+        if (modes.length) next.modes = modes;
+      }
       if (option.id === 'thought_level') next.thoughtLevel = option.currentValue;
     }
     return next;
@@ -1177,9 +1276,11 @@ export const useStore = create((set, get) => ({
     if (Object.keys(runtimePatch).length) get().patchThreadRuntime(threadId, runtimePatch);
 
     if (metadata['codebuddy.ai/sessionReset'] && metadata['codebuddy.ai/newSessionId']) {
-      get().handleThreadSessionReset(threadId, metadata['codebuddy.ai/newSessionId']).catch((error) => {
-        console.warn('Failed to synchronize reset CodeBuddy session:', error);
-      });
+      get()
+        .handleThreadSessionReset(threadId, metadata['codebuddy.ai/newSessionId'])
+        .catch((error) => {
+          console.warn('Failed to synchronize reset CodeBuddy session:', error);
+        });
       return;
     }
 
@@ -1198,9 +1299,11 @@ export const useStore = create((set, get) => ({
       const goalEvent = metadata[metadataKey];
       if (!goalEvent || typeof goalEvent !== 'object') continue;
       const currentTimeline = get().threadRuntimeById[threadId]?.timeline || runtime.timeline;
-      const duplicate = goalEvent.id && currentTimeline.some((item) => (
-        item.type === eventType && (item.meta?.id === goalEvent.id || item.raw?.id === goalEvent.id)
-      ));
+      const duplicate =
+        goalEvent.id &&
+        currentTimeline.some(
+          (item) => item.type === eventType && (item.meta?.id === goalEvent.id || item.raw?.id === goalEvent.id),
+        );
       if (!duplicate) get().appendThreadTimelineEvent(threadId, eventType, { ...goalEvent, type: eventType });
     }
 
@@ -1219,7 +1322,9 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (su === 'usage_update') {
-      get().patchThreadRuntime(threadId, { usage: { used: update.used, size: update.size, meta: update._meta || null } });
+      get().patchThreadRuntime(threadId, {
+        usage: { used: update.used, size: update.size, meta: update._meta || null },
+      });
       return;
     }
     if (su === 'available_commands_update') {
@@ -1228,9 +1333,12 @@ export const useStore = create((set, get) => ({
     }
     if (su === 'interruption_request') {
       const requestIds = [update.interruptionId, update.toolCallId].filter(Boolean);
-      if (requestIds.some((requestId) => (
-        runtime.permissionRequests.some((item) => sessionActionItemMatches(item, requestId))
-      ))) return;
+      if (
+        requestIds.some((requestId) =>
+          runtime.permissionRequests.some((item) => sessionActionItemMatches(item, requestId)),
+        )
+      )
+        return;
       get().patchThreadRuntime(threadId, { permissionRequests: [...runtime.permissionRequests, update] });
       get().appendThreadTimelineEvent(threadId, su, update);
       get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
@@ -1292,8 +1400,11 @@ export const useStore = create((set, get) => ({
       return;
     }
     if (type === 'reconnect_failed') {
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       get().patchThreadRuntime(threadId, {
         connectionState: 'error',
+        timeline: closeAssistantStream(runtime.timeline),
+        isAwaitingResponse: false,
         agentPhase: null,
         progress: null,
         historyReplayActive: false,
@@ -1318,28 +1429,33 @@ export const useStore = create((set, get) => ({
       const questionToolCallIds = new Set(detail?.questionToolCallIds || []);
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const invalidatedAt = Date.now();
-      const invalidates = (item) => (
-        (item.type === 'interruption' && Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id)))
-        || (item.type === 'question' && Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)))
-      );
-      const timeline = runtime.timeline.map((item) => (
+      const invalidates = (item) =>
+        (item.type === 'interruption' &&
+          Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id))) ||
+        (item.type === 'question' && Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)));
+      const timeline = runtime.timeline.map((item) =>
         invalidates(item) && !['resolved', 'answered', 'cancelled', 'expired'].includes(item.status)
           ? {
               ...item,
               status: 'expired',
-              meta: { ...(item.meta || {}), invalidatedAt, invalidationReason: detail?.reason || 'connection-replaced' },
+              meta: {
+                ...(item.meta || {}),
+                invalidatedAt,
+                invalidationReason: detail?.reason || 'connection-replaced',
+              },
             }
-          : item
-      ));
-      const permissionRequests = runtime.permissionRequests.filter((item) => (
-        !Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id))
-      ));
-      const questions = runtime.questions.filter((item) => (
-        !Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id))
-      ));
-      const changed = permissionRequests.length !== runtime.permissionRequests.length
-        || questions.length !== runtime.questions.length
-        || timeline.some((item, index) => item !== runtime.timeline[index]);
+          : item,
+      );
+      const permissionRequests = runtime.permissionRequests.filter(
+        (item) => !Array.from(interruptionIds).some((id) => sessionActionItemMatches(item, id)),
+      );
+      const questions = runtime.questions.filter(
+        (item) => !Array.from(questionToolCallIds).some((id) => sessionActionItemMatches(item, id)),
+      );
+      const changed =
+        permissionRequests.length !== runtime.permissionRequests.length ||
+        questions.length !== runtime.questions.length ||
+        timeline.some((item, index) => item !== runtime.timeline[index]);
       if (!changed) return;
       get().patchThreadRuntime(threadId, { permissionRequests, questions, timeline });
       const message = '连接已更换，之前待处理的权限或问题请求已失效。';
@@ -1403,7 +1519,7 @@ export const useStore = create((set, get) => ({
     const request = beginScopedRequest('initializeActiveThread', get(), 'threadId');
 
     const existingClient = conversations.peek(thread.id);
-    if (existingClient?.connected && thread.sessionId) {
+    if (existingClient?.connected && existingClient?.initialized && thread.sessionId) {
       get().activateThreadRuntime(thread.id);
       set({
         sessionId: thread.sessionId,
@@ -1425,7 +1541,7 @@ export const useStore = create((set, get) => ({
     const requestedSessionId = sessionIdOverride === undefined ? thread.sessionId : sessionIdOverride;
     set({
       sessionId: requestedSessionId || null,
-      timeline: Array.isArray(thread.timeline) ? thread.timeline : [],
+      timeline: closeAssistantStream(Array.isArray(thread.timeline) ? thread.timeline : []),
       permissionRequests: [],
       questions: [],
       sessionTitle: thread.title || null,
@@ -1440,7 +1556,7 @@ export const useStore = create((set, get) => ({
       : serializePromptQueue(thread.metadata?.promptQueue);
     get().patchThreadRuntime(thread.id, {
       ...emptyThreadRuntime(),
-      timeline: (preservedRuntime.timeline || thread.timeline || []).slice(-300),
+      timeline: closeAssistantStream((preservedRuntime.timeline || thread.timeline || []).slice(-300)),
       promptQueue: preservedPromptQueue,
       pendingAttachments: preservedRuntime.pendingAttachments || [],
       promptSuggestion: preservedRuntime.promptSuggestion || null,
@@ -1452,21 +1568,29 @@ export const useStore = create((set, get) => ({
 
     const applyInitializedSession = async (init, loaded, recoveryError = null) => {
       const threadRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
-      const availableModels = loaded?.models?.availableModels
-        || init?.models?.availableModels
-        || init?.agentCapabilities?.availableModels
-        || threadRuntime.models;
-      const currentModel = loaded?.models?.currentModelId
-        || init?.models?.currentModelId
-        || thread.modelId
-        || threadRuntime.currentModel;
-      const availableModes = loaded?.modes?.availableModes
-        || init?.modes?.availableModes
-        || threadRuntime.modes;
-      const currentMode = loaded?.modes?.currentModeId
-        || init?.modes?.currentModeId
-        || thread.modeId
-        || threadRuntime.currentMode;
+      const configPatch = get().applySessionConfigUpdate(
+        loaded?.configOptions || init?.configOptions || init?.agentCapabilities?.configOptions || [],
+      );
+      const availableModels =
+        loaded?.models?.availableModels ||
+        init?.models?.availableModels ||
+        init?.agentCapabilities?.availableModels ||
+        configPatch.models ||
+        threadRuntime.models;
+      const currentModel =
+        loaded?.models?.currentModelId ||
+        init?.models?.currentModelId ||
+        configPatch.currentModel ||
+        thread.modelId ||
+        threadRuntime.currentModel;
+      const availableModes =
+        loaded?.modes?.availableModes || init?.modes?.availableModes || configPatch.modes || threadRuntime.modes;
+      const currentMode =
+        loaded?.modes?.currentModeId ||
+        init?.modes?.currentModeId ||
+        configPatch.currentMode ||
+        thread.modeId ||
+        threadRuntime.currentMode;
       const resolvedSessionId = loaded?.sessionId || (recoveryError ? null : requestedSessionId) || null;
       const resolvedTitle = loaded?.title || loaded?.name || thread.title || '新对话';
       const stillActive = isScopedRequestCurrent(request, get());
@@ -1481,6 +1605,9 @@ export const useStore = create((set, get) => ({
           currentMode,
           connectionState: 'connected',
           error: null,
+          codeBuddyAccountAuthState: 'authenticated',
+          codeBuddyAccountAuthUrl: null,
+          codeBuddyAccountAuthError: null,
         });
       }
       get().patchThreadRuntime(thread.id, {
@@ -1499,13 +1626,15 @@ export const useStore = create((set, get) => ({
         modeId: currentMode || 'default',
         status: 'idle',
         unread: false,
-        metadata: recoveryError ? {
-          ...(thread.metadata || {}),
-          previousSessionId: requestedSessionId,
-          recoveryError,
-          recoveredAt: new Date().toISOString(),
-          lastError: null,
-        } : { ...(thread.metadata || {}), lastError: null },
+        metadata: recoveryError
+          ? {
+              ...(thread.metadata || {}),
+              previousSessionId: requestedSessionId,
+              recoveryError,
+              recoveredAt: new Date().toISOString(),
+              lastError: null,
+            }
+          : { ...(thread.metadata || {}), lastError: null },
       });
       if ((get().threadRuntimeById[thread.id]?.promptQueue || []).length > 0) {
         setTimeout(() => get().drainThreadPromptQueue(thread.id), 0);
@@ -1513,10 +1642,11 @@ export const useStore = create((set, get) => ({
       if (recoveryError) {
         const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
         const warning = `原会话恢复失败，已创建新会话继续工作。${recoveryError}`;
-        if (!currentTimeline.some((item) => item.content === warning)) get().appendThreadTimelineEvent(thread.id, 'error', {
-          type: 'error',
-          message: warning,
-        });
+        if (!currentTimeline.some((item) => item.content === warning))
+          get().appendThreadTimelineEvent(thread.id, 'error', {
+            type: 'error',
+            message: warning,
+          });
       }
       return isScopedRequestCurrent(request, get());
     };
@@ -1532,6 +1662,27 @@ export const useStore = create((set, get) => ({
       const { init, loaded } = await client.initializeSession(requestedSessionId || null, project.workspacePath || '.');
       return await applyInitializedSession(init, loaded);
     } catch (error) {
+      if (isAcpAuthenticationError(error)) {
+        const stillActive = isScopedRequestCurrent(request, get());
+        if (stillActive) {
+          set({
+            error: null,
+            connectionState: client.connected ? 'connected' : 'disconnected',
+            codeBuddyAccountAuthState: 'required',
+            codeBuddyAccountAuthUrl: null,
+            codeBuddyAccountAuthError: null,
+            codeBuddyAccountAuthMethods: client.authMethods || [],
+          });
+        }
+        get().patchThreadRuntime(thread.id, {
+          connectionState: client.connected ? 'connected' : 'disconnected',
+        });
+        await get().updateThreadRecord(thread.id, {
+          status: 'disconnected',
+          metadata: { ...(thread.metadata || {}), lastError: '需要登录 CodeBuddy 账号' },
+        });
+        return false;
+      }
       if (requestedSessionId) {
         try {
           const loaded = await client.request('session/new', { cwd: project.workspacePath || '.', mcpServers: [] });
@@ -1629,9 +1780,9 @@ export const useStore = create((set, get) => ({
           [threadId]: { ...state.threadsById[threadId], title, updatedAt: new Date().toISOString() },
         },
         sessionTitle: state.activeThreadId === threadId ? title : state.sessionTitle,
-        sessions: state.sessions.map((session) => (
-          (session.id || session.sessionId) === thread.sessionId ? { ...session, name: title } : session
-        )),
+        sessions: state.sessions.map((session) =>
+          (session.id || session.sessionId) === thread.sessionId ? { ...session, name: title } : session,
+        ),
       }));
       await get().persistProductState();
       return true;
@@ -1734,11 +1885,7 @@ export const useStore = create((set, get) => ({
         return false;
       }
       if (get().activeThreadId === threadId) {
-        const replacement = visibleProjectThreads(
-          thread.projectId,
-          get().threadOrderByProject,
-          get().threadsById,
-        )[0];
+        const replacement = visibleProjectThreads(thread.projectId, get().threadOrderByProject, get().threadsById)[0];
         if (replacement) await get().activateThread(replacement.id);
         else await get().newSession();
       }
@@ -1811,12 +1958,14 @@ export const useStore = create((set, get) => ({
           threadOrderByProject: { ...state.threadOrderByProject, [thread.projectId]: order },
           sessions: state.sessions.filter((session) => (session.id || session.sessionId) !== thread.sessionId),
           activeThreadId: wasActive ? null : state.activeThreadId,
-          ...(wasActive ? {
-            ...emptyThreadRuntime(),
-            sessionId: null,
-            sessionTitle: null,
-            sessionToken: null,
-          } : {}),
+          ...(wasActive
+            ? {
+                ...emptyThreadRuntime(),
+                sessionId: null,
+                sessionTitle: null,
+                sessionToken: null,
+              }
+            : {}),
         };
       });
       if (wasActive) setAcpSessionToken(null);
@@ -1831,15 +1980,20 @@ export const useStore = create((set, get) => ({
             projectsById: { ...state.projectsById, [projectId]: project },
             threadsById: { ...state.threadsById, [threadId]: thread },
             threadRuntimeById,
-            threadOrderByProject: { ...state.threadOrderByProject, [projectId]: previousState.threadOrderByProject[projectId] || [] },
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: previousState.threadOrderByProject[projectId] || [],
+            },
             sessions: previousState.sessions,
             activeThreadId: previousState.activeThreadId,
-            ...(wasActive ? {
-              ...previousActiveRuntime,
-              sessionId: previousState.sessionId,
-              sessionTitle: previousState.sessionTitle,
-              sessionToken: previousState.sessionToken,
-            } : {}),
+            ...(wasActive
+              ? {
+                  ...previousActiveRuntime,
+                  sessionId: previousState.sessionId,
+                  sessionTitle: previousState.sessionTitle,
+                  sessionToken: previousState.sessionToken,
+                }
+              : {}),
           };
         });
         if (wasActive) setAcpSessionToken(previousState.sessionToken || null);
@@ -2012,12 +2166,10 @@ export const useStore = create((set, get) => ({
       if (!isProjectNavigationCurrent(navigation)) return false;
       await get().persistActiveProjectTerminalState();
       if (!isProjectNavigationCurrent(navigation)) return false;
-      let project = Object.values(get().projectsById).find((item) => (
-        item.workspacePath.toLowerCase() === normalizedPath.toLowerCase()
-      ));
-      let thread = project
-        ? visibleProjectThreads(project.id, get().threadOrderByProject, get().threadsById)[0]
-        : null;
+      let project = Object.values(get().projectsById).find(
+        (item) => item.workspacePath.toLowerCase() === normalizedPath.toLowerCase(),
+      );
+      let thread = project ? visibleProjectThreads(project.id, get().threadOrderByProject, get().threadsById)[0] : null;
       if (!project) project = createProjectRecord(normalizedPath);
       if (!thread) thread = createThreadRecord(project.id);
       const projectChanged = currentProject?.id !== project.id;
@@ -2044,7 +2196,9 @@ export const useStore = create((set, get) => ({
         ...resetFileWorkspace(normalizedPath),
       }));
       get().loadProjectTerminalState(project.id);
-      try { localStorage.removeItem('codebuddy-gui-workspace'); } catch (_) {}
+      try {
+        localStorage.removeItem('codebuddy-gui-workspace');
+      } catch (_) {}
       const persisted = await get().persistProductState();
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!persisted) throw new Error(get().error || '保存项目状态失败');
@@ -2189,14 +2343,17 @@ export const useStore = create((set, get) => ({
       }
       const previousState = get();
       const threadIds = [...(previousState.threadOrderByProject[projectId] || [])];
-      await get().stopProjectRuntime(projectId).catch(() => false);
+      await get()
+        .stopProjectRuntime(projectId)
+        .catch(() => false);
       if (!isProjectNavigationCurrent(navigation)) return false;
       if (!get().projectsById[projectId]) return false;
 
       let nextProjectId = null;
       let nextThread = null;
       if (wasActive) {
-        nextProjectId = previousState.projectOrder.find((id) => id !== projectId && previousState.projectsById[id]) || null;
+        nextProjectId =
+          previousState.projectOrder.find((id) => id !== projectId && previousState.projectsById[id]) || null;
         nextThread = nextProjectId
           ? visibleProjectThreads(nextProjectId, previousState.threadOrderByProject, previousState.threadsById)[0]
           : null;
@@ -2228,8 +2385,8 @@ export const useStore = create((set, get) => ({
           threadRuntimeById,
           threadOrderByProject,
           activeProjectId: wasActive ? nextProjectId : state.activeProjectId,
-          activeThreadId: wasActive ? (nextThread?.id || null) : state.activeThreadId,
-          workspacePath: wasActive ? (projectsById[nextProjectId]?.workspacePath || null) : state.workspacePath,
+          activeThreadId: wasActive ? nextThread?.id || null : state.activeThreadId,
+          workspacePath: wasActive ? projectsById[nextProjectId]?.workspacePath || null : state.workspacePath,
           ...(wasActive ? resetProjectRuntimeViews() : {}),
           ...(wasActive ? resetFileWorkspace(projectsById[nextProjectId]?.workspacePath || '.') : {}),
         };
@@ -2245,10 +2402,14 @@ export const useStore = create((set, get) => ({
         const persistenceError = get().error;
         set({ ...previousState, error: persistenceError });
         if (wasActive || project.runtimeStatus === 'running') {
-          const runtime = await get().ensureProjectRuntime(projectId).catch(() => null);
+          const runtime = await get()
+            .ensureProjectRuntime(projectId)
+            .catch(() => null);
           if (runtime && wasActive) {
             const previousThread = previousState.threadsById[previousState.activeThreadId];
-            await get().initializeActiveThread(previousThread?.sessionId).catch(() => false);
+            await get()
+              .initializeActiveThread(previousThread?.sessionId)
+              .catch(() => false);
           }
         }
         throw new Error(persistenceError || '移除项目失败');
@@ -2293,18 +2454,16 @@ export const useStore = create((set, get) => ({
       if (!project) return {};
       const runtimeStatus = runtime.status || 'idle';
       const runtimeStartedAt = runtime.startedAt || (runtimeStatus === 'starting' ? project.runtimeStartedAt : null);
-      const runtimeChanged = runtimeStatus === 'running'
-        && Boolean(runtimeStartedAt)
-        && runtimeStartedAt !== project.runtimeStartedAt;
+      const runtimeChanged =
+        runtimeStatus === 'running' && Boolean(runtimeStartedAt) && runtimeStartedAt !== project.runtimeStartedAt;
       const runtimeUnavailable = ['stopped', 'error'].includes(runtimeStatus);
       const currentTerminalState = terminalStateFromProject(project, false);
-      const hasTerminalSessions = currentTerminalState.panes.some((pane) => pane.sessionId)
-        || (state.activeProjectId === runtime.projectId && state.terminalPanes.some((pane) => pane.sessionId));
+      const hasTerminalSessions =
+        currentTerminalState.panes.some((pane) => pane.sessionId) ||
+        (state.activeProjectId === runtime.projectId && state.terminalPanes.some((pane) => pane.sessionId));
       const resetTerminalSessions = (runtimeChanged || runtimeUnavailable) && hasTerminalSessions;
       terminalStateReset = resetTerminalSessions;
-      const terminalState = resetTerminalSessions
-        ? terminalStateFromProject(project, true)
-        : currentTerminalState;
+      const terminalState = resetTerminalSessions ? terminalStateFromProject(project, true) : currentTerminalState;
       const nextProject = {
         ...project,
         runtimeStatus,
@@ -2312,24 +2471,28 @@ export const useStore = create((set, get) => ({
         runtimePid: runtime.pid || null,
         runtimeStartedAt,
         runtimeError: runtime.error || null,
-        ...(resetTerminalSessions ? {
-          preferences: {
-            ...(project.preferences || {}),
-            terminalState: {
-              activePaneId: terminalState.activePaneId,
-              panes: terminalState.panes,
-            },
-          },
-        } : {}),
+        ...(resetTerminalSessions
+          ? {
+              preferences: {
+                ...(project.preferences || {}),
+                terminalState: {
+                  activePaneId: terminalState.activePaneId,
+                  panes: terminalState.panes,
+                },
+              },
+            }
+          : {}),
       };
       return {
         projectsById: { ...state.projectsById, [runtime.projectId]: nextProject },
-        ...(resetTerminalSessions && state.activeProjectId === runtime.projectId ? {
-          terminalPanes: terminalState.panes,
-          activePaneId: terminalState.activePaneId,
-          terminalSessions: [],
-          ptySessionId: null,
-        } : {}),
+        ...(resetTerminalSessions && state.activeProjectId === runtime.projectId
+          ? {
+              terminalPanes: terminalState.panes,
+              activePaneId: terminalState.activePaneId,
+              terminalSessions: [],
+              ptySessionId: null,
+            }
+          : {}),
       };
     });
     const runtimeUnavailable = ['stopped', 'error'].includes(runtime.status || '');
@@ -2364,6 +2527,7 @@ export const useStore = create((set, get) => ({
         threadRuntimeById[threadId] = {
           ...runtime,
           connectionState: 'disconnected',
+          timeline: closeAssistantStream(runtime.timeline),
           permissionRequests: [],
           questions: [],
           isAwaitingResponse: false,
@@ -2621,7 +2785,10 @@ export const useStore = create((set, get) => ({
   // 用途：打开文件面板的实时名匹配补全；不同于 runFileSearch 的内容搜索
   async runFileNameSearch() {
     const query = get().fileNameQuery.trim();
-    if (!query) { set({ fileNameResults: [], fileNameSearching: false }); return; }
+    if (!query) {
+      set({ fileNameResults: [], fileNameSearching: false });
+      return;
+    }
     const requestId = ++fileNameSearchRequestId;
     const projectId = get().activeProjectId;
     set({ fileNameSearching: true });
@@ -2642,14 +2809,18 @@ export const useStore = create((set, get) => ({
     const previousWatcherId = get().watcherId;
     if (previousWatcherId) {
       set({ watcherId: null });
-      try { await removeWatcher(previousWatcherId); } catch (_) {}
+      try {
+        await removeWatcher(previousWatcherId);
+      } catch (_) {}
     }
     try {
       const data = await createWatcher(target, true);
       const watcherId = data.watcherId || data.id || null;
       if (!watcherId) return null;
       if (requestId !== fileWatcherRequestId || projectId !== get().activeProjectId || target !== get().fileCwd) {
-        try { await removeWatcher(watcherId); } catch (_) {}
+        try {
+          await removeWatcher(watcherId);
+        } catch (_) {}
         return null;
       }
       set({ watcherId });
@@ -2721,7 +2892,10 @@ export const useStore = create((set, get) => ({
       clearTimeout(pending.timer || pending);
       workspaceStatePersistTimers.delete(projectId);
     }
-    return get().persistProjectWorkspaceState(projectId, workspaceStateSnapshot(get(), projectId, options.discardDirty === true));
+    return get().persistProjectWorkspaceState(
+      projectId,
+      workspaceStateSnapshot(get(), projectId, options.discardDirty === true),
+    );
   },
 
   loadProjectTerminalState(projectId) {
@@ -2841,7 +3015,7 @@ export const useStore = create((set, get) => ({
   bindPtyToPane(paneId, sessionId, projectId = get().activeProjectId) {
     if (projectId !== get().activeProjectId) return false;
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
+      terminalPanes: state.terminalPanes.map((pane) => (pane.id === paneId ? { ...pane, sessionId } : pane)),
       ptySessionId: sessionId,
     }));
     get().scheduleTerminalStatePersist();
@@ -2851,7 +3025,7 @@ export const useStore = create((set, get) => ({
   setPaneStatus(paneId, status, projectId = get().activeProjectId) {
     if (projectId !== get().activeProjectId) return false;
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, status } : pane),
+      terminalPanes: state.terminalPanes.map((pane) => (pane.id === paneId ? { ...pane, status } : pane)),
     }));
     get().scheduleTerminalStatePersist();
     return true;
@@ -2860,7 +3034,7 @@ export const useStore = create((set, get) => ({
   setPaneSession(paneId, sessionId, projectId = get().activeProjectId) {
     if (projectId !== get().activeProjectId) return false;
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, sessionId } : pane),
+      terminalPanes: state.terminalPanes.map((pane) => (pane.id === paneId ? { ...pane, sessionId } : pane)),
     }));
     get().scheduleTerminalStatePersist();
     return true;
@@ -2869,7 +3043,9 @@ export const useStore = create((set, get) => ({
   appendPaneOutput(paneId, chunk, projectId = get().activeProjectId) {
     if (projectId !== get().activeProjectId) return false;
     set((state) => ({
-      terminalPanes: state.terminalPanes.map((pane) => pane.id === paneId ? { ...pane, output: `${pane.output || ''}${chunk}`.slice(-200000) } : pane),
+      terminalPanes: state.terminalPanes.map((pane) =>
+        pane.id === paneId ? { ...pane, output: `${pane.output || ''}${chunk}`.slice(-200000) } : pane,
+      ),
     }));
     get().scheduleTerminalStatePersist();
     return true;
@@ -2936,11 +3112,13 @@ export const useStore = create((set, get) => ({
               updatedAt: resetAt,
             },
           },
-          ...(state.activeThreadId === threadId ? {
-            sessionId: normalizedSessionId,
-            sessionTitle: '新对话',
-            error: null,
-          } : {}),
+          ...(state.activeThreadId === threadId
+            ? {
+                sessionId: normalizedSessionId,
+                sessionTitle: '新对话',
+                error: null,
+              }
+            : {}),
         };
       });
       get().patchThreadRuntime(threadId, resetRuntime);
@@ -2952,7 +3130,11 @@ export const useStore = create((set, get) => ({
         get().patchThreadRuntime(threadId, { connectionState: 'error', historyReplayActive: false });
         await get().updateThreadRecord(threadId, {
           status: 'error',
-          metadata: { ...(get().threadsById[threadId]?.metadata || {}), sessionResetLoadError: message, lastError: message },
+          metadata: {
+            ...(get().threadsById[threadId]?.metadata || {}),
+            sessionResetLoadError: message,
+            lastError: message,
+          },
         });
         if (get().activeThreadId === threadId) set({ connectionState: 'error', error: message });
         return false;
@@ -2971,7 +3153,8 @@ export const useStore = create((set, get) => ({
         const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models);
         const modes = normalizeModes(loaded?.modes?.availableModes || currentRuntime.modes);
         const currentModel = loaded?.models?.currentModelId || configPatch.currentModel || currentRuntime.currentModel;
-        const currentMode = loaded?.modes?.currentModeId || configPatch.currentMode || currentRuntime.currentMode || 'default';
+        const currentMode =
+          loaded?.modes?.currentModeId || configPatch.currentMode || currentRuntime.currentMode || 'default';
         const title = loaded?.title || loaded?.name || '新对话';
         get().patchThreadRuntime(threadId, {
           connectionState: 'connected',
@@ -2999,18 +3182,23 @@ export const useStore = create((set, get) => ({
                 updatedAt: new Date().toISOString(),
               },
             },
-            ...(state.activeThreadId === threadId ? {
-              sessionId: normalizedSessionId,
-              sessionTitle: title,
-              currentModel,
-              currentMode,
-              connectionState: 'connected',
-              error: null,
-            } : {}),
+            ...(state.activeThreadId === threadId
+              ? {
+                  sessionId: normalizedSessionId,
+                  sessionTitle: title,
+                  currentModel,
+                  currentMode,
+                  connectionState: 'connected',
+                  error: null,
+                }
+              : {}),
           };
         });
         await get().persistProductState();
-        if (get().activeProjectId === project.id) await get().refreshSessions().catch(() => false);
+        if (get().activeProjectId === project.id)
+          await get()
+            .refreshSessions()
+            .catch(() => false);
         return true;
       } catch (error) {
         const currentThread = get().threadsById[threadId];
@@ -3036,12 +3224,14 @@ export const useStore = create((set, get) => ({
                 updatedAt: new Date().toISOString(),
               },
             },
-            ...(state.activeThreadId === threadId ? {
-              sessionId: normalizedSessionId,
-              sessionTitle: current.title || '新对话',
-              connectionState: 'connected',
-              error: message,
-            } : {}),
+            ...(state.activeThreadId === threadId
+              ? {
+                  sessionId: normalizedSessionId,
+                  sessionTitle: current.title || '新对话',
+                  connectionState: 'connected',
+                  error: message,
+                }
+              : {}),
           };
         });
         await get().persistProductState();
@@ -3064,7 +3254,9 @@ export const useStore = create((set, get) => ({
         meta: { ...(item.meta || {}), resolution: decision, resolvedAt },
       };
     });
-    const permissionRequests = runtime.permissionRequests.filter((item) => !sessionActionItemMatches(item, interruptionId));
+    const permissionRequests = runtime.permissionRequests.filter(
+      (item) => !sessionActionItemMatches(item, interruptionId),
+    );
     if (!timelineChanged && permissionRequests.length === runtime.permissionRequests.length) return false;
     get().patchThreadRuntime(threadId, { permissionRequests, timeline });
     set((state) => {
@@ -3097,8 +3289,11 @@ export const useStore = create((set, get) => ({
       const thread = get().threadsById[threadId];
       if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const target = runtime.timeline.find((item) => item.type === 'interruption' && sessionActionItemMatches(item, interruptionId));
-      const resolvedToolCallId = toolCallId || target?.toolCallId || target?.meta?.toolCallId || target?.raw?.toolCallId || null;
+      const target = runtime.timeline.find(
+        (item) => item.type === 'interruption' && sessionActionItemMatches(item, interruptionId),
+      );
+      const resolvedToolCallId =
+        toolCallId || target?.toolCallId || target?.meta?.toolCallId || target?.raw?.toolCallId || null;
       const client = get().getThreadClient(threadId);
       if (!client) {
         set({ error: '当前会话未连接' });
@@ -3231,107 +3426,132 @@ export const useStore = create((set, get) => ({
     });
   },
 
-  async bootstrap() {
-    const authRequest = ++authRequestVersion;
-    if (!routeListenerBound) {
-      routeListenerBound = true;
-      window.addEventListener('hashchange', () => {
-        set({ route: parseHashRoute() });
-      });
-    }
-    if (!authFailureListenerBound) {
-      authFailureListenerBound = true;
-      window.addEventListener('codebuddy:auth-required', () => {
-        authRequestVersion += 1;
-        setAcpSessionToken(null);
-        setAuthToken(null);
-        conversations.disposeAll().catch(() => null);
-        set({
-          authViewState: 'login',
-          authSubmitting: false,
-          authError: '登录已失效，请重新登录',
-          sessionId: null,
-          sessionToken: null,
-          connectionState: 'disconnected',
+  bootstrap() {
+    if (bootstrapOperation) return bootstrapOperation;
+    const operation = (async () => {
+      const authRequest = ++authRequestVersion;
+      if (!routeListenerBound) {
+        routeListenerBound = true;
+        window.addEventListener('hashchange', () => {
+          set({ route: parseHashRoute() });
         });
-      });
-    }
+      }
+      if (!authFailureListenerBound) {
+        authFailureListenerBound = true;
+        window.addEventListener('codebuddy:auth-required', () => {
+          authRequestVersion += 1;
+          setAcpSessionToken(null);
+          setAuthToken(null);
+          conversations.disposeAll().catch(() => null);
+          set({
+            authViewState: 'login',
+            authSubmitting: false,
+            authError: '登录已失效，请重新登录',
+            sessionId: null,
+            sessionToken: null,
+            connectionState: 'disconnected',
+          });
+          const projectId = get().activeProjectId;
+          if (projectId)
+            get()
+              .disconnectProjectThreads(projectId)
+              .catch(() => null);
+        });
+      }
 
-    // 1. 先恢复本地产品状态，再按活动项目惰性启动对应运行时。
-    get().loadSettingsFromStorage();
-    if (!get().productStateLoaded) await get().hydrateProductState();
-    if (authRequest !== authRequestVersion) return false;
-    if (!runtimeListenerBound && window.electronAPI?.onProjectRuntimeStatus) {
-      runtimeListenerBound = true;
-      window.electronAPI.onProjectRuntimeStatus((runtime) => get().applyProjectRuntimeStatus(runtime));
-    }
-    const projectId = get().activeProjectId;
-    if (projectId) {
-      const runtime = await get().ensureProjectRuntime(projectId);
-      if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
-      if (!runtime) {
-        set({ authViewState: 'authenticated' });
+      // 1. 先恢复本地产品状态，再按活动项目惰性启动对应运行时。
+      get().loadSettingsFromStorage();
+      if (!get().productStateLoaded) await get().hydrateProductState();
+      if (authRequest !== authRequestVersion) return false;
+      if (!runtimeListenerBound && window.electronAPI?.onProjectRuntimeStatus) {
+        runtimeListenerBound = true;
+        window.electronAPI.onProjectRuntimeStatus((runtime) => get().applyProjectRuntimeStatus(runtime));
+      }
+      const projectId = get().activeProjectId;
+      if (projectId) {
+        const runtime = await get().ensureProjectRuntime(projectId);
+        if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
+        if (!runtime) {
+          set({ authViewState: 'authenticated' });
+          return false;
+        }
+      } else {
+        set({ authViewState: 'authenticated', connectionState: 'disconnected' });
+        return true;
+      }
+
+      // 2. 鉴权态：运行时就绪后再检查当前项目服务。
+      //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
+      let authState;
+      try {
+        authState = await apiCheckAuth();
+      } catch (error) {
+        if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
+          set({
+            authViewState: 'error',
+            authError: error?.message || '无法检查 CodeBuddy 登录状态',
+            connectionState: 'error',
+          });
+        }
         return false;
       }
-    } else {
-      set({ authViewState: 'authenticated', connectionState: 'disconnected' });
-      return true;
-    }
-
-    // 2. 鉴权态：运行时就绪后再检查当前项目服务。
-    //      若后端启用鉴权且当前未通过，App.jsx 渲染登录页；通过后才连 AcpClient
-    let authState;
-    try {
-      authState = await apiCheckAuth();
-    } catch (error) {
-      if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
-        set({ authViewState: 'error', authError: error?.message || '无法检查 CodeBuddy 登录状态', connectionState: 'error' });
+      if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
+      set({ authViewState: authState, authError: null });
+      if (authState === 'login') {
+        await get()
+          .refreshInfo()
+          .catch(() => false);
+        // 等登录成功后再继续；App 登录页会调 store.login() 并重触发 bootstrap
+        return false;
       }
-      return false;
-    }
-    if (authRequest !== authRequestVersion || get().activeProjectId !== projectId) return false;
-    set({ authViewState: authState, authError: null });
-    if (authState === 'login') {
-      // 等登录成功后再继续；App 登录页会调 store.login() 并重触发 bootstrap
-      return false;
-    }
 
-    if (!conversationEventsBound) {
-      conversationEventsBound = true;
-      conversations.onEvent((event) => get().handleConversationEvent(event));
-    }
-
-    try {
-      const isCurrent = () => authRequest === authRequestVersion && get().activeProjectId === projectId;
-      const querySessionId = new URLSearchParams(window.location.search).get('sessionId');
-      if (!get().activeProjectId || !get().activeThreadId) {
-        set({ connectionState: 'disconnected', sessionId: null });
-        await Promise.allSettled([
-          get().refreshInfo(),
-          get().refreshSettings(),
-          get().refreshPlugins(),
-          get().refreshMetrics(),
-          get().refreshStats(),
-          get().refreshTraces(),
-        ]);
-        return isCurrent();
+      if (!conversationEventsBound) {
+        conversationEventsBound = true;
+        conversations.onEvent((event) => get().handleConversationEvent(event));
       }
-      if (querySessionId) {
-        await get().updateActiveThread({ sessionId: querySessionId });
+
+      try {
+        const isCurrent = () => authRequest === authRequestVersion && get().activeProjectId === projectId;
+        const querySessionId = new URLSearchParams(window.location.search).get('sessionId');
+        if (!get().activeProjectId || !get().activeThreadId) {
+          set({ connectionState: 'disconnected', sessionId: null });
+          await Promise.allSettled([
+            get().refreshInfo(),
+            get().refreshSettings(),
+            get().refreshPlugins(),
+            get().refreshMetrics(),
+            get().refreshStats(),
+            get().refreshTraces(),
+          ]);
+          return isCurrent();
+        }
+        if (querySessionId) {
+          await get().updateActiveThread({ sessionId: querySessionId });
+          if (!isCurrent()) return false;
+        }
+        const initialized = await get().initializeActiveThread(querySessionId || undefined);
+        if (!isCurrent() || !initialized) return false;
+        await get().initializeWorkspace();
         if (!isCurrent()) return false;
+        await get().refreshProjectViews();
+        const readyState = get();
+        console.info(
+          `[bootstrap] connected project=${projectId} thread=${readyState.activeThreadId || ''} models=${readyState.models.length} currentModel=${readyState.currentModel || ''}`,
+        );
+        return isCurrent();
+      } catch (error) {
+        if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
+          set({ error: error.message, connectionState: 'error' });
+        }
+        console.warn(`[bootstrap] failed project=${projectId || ''}: ${error?.message || error}`);
+        return false;
       }
-      const initialized = await get().initializeActiveThread(querySessionId || undefined);
-      if (!isCurrent() || !initialized) return false;
-      await get().initializeWorkspace();
-      if (!isCurrent()) return false;
-      await get().refreshProjectViews();
-      return isCurrent();
-    } catch (error) {
-      if (authRequest === authRequestVersion && get().activeProjectId === projectId) {
-        set({ error: error.message, connectionState: 'error' });
-      }
-      return false;
-    }
+    })();
+    const tracked = operation.finally(() => {
+      if (bootstrapOperation === tracked) bootstrapOperation = null;
+    });
+    bootstrapOperation = tracked;
+    return tracked;
   },
 
   async refreshProjectViews() {
@@ -3349,12 +3569,82 @@ export const useStore = create((set, get) => ({
     ]);
   },
 
+  async authenticateCodeBuddyAccount() {
+    if (get().codeBuddyAccountAuthState === 'authenticating') return false;
+    const projectId = get().activeProjectId;
+    const threadId = get().activeThreadId;
+    set({
+      codeBuddyAccountAuthState: 'authenticating',
+      codeBuddyAccountAuthUrl: null,
+      codeBuddyAccountAuthError: null,
+      error: null,
+    });
+    try {
+      if (!projectId || !threadId) throw new Error('请先选择一个项目和会话');
+      const client = conversations.peek(threadId) || get().getThreadClient(threadId);
+      if (!client) throw new Error('内置 CodeBuddy CLI 尚未就绪');
+      if (!client.connected) await client.connect();
+      if (!client.initialized) await client.initialize();
+      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
+
+      const authMethods = Array.isArray(client.authMethods) ? client.authMethods : [];
+      const preferredMethodIds = ['iOA', 'internal', 'external', 'selfhosted'];
+      const methodId =
+        preferredMethodIds.find((id) => authMethods.some((method) => method?.id === id)) || authMethods[0]?.id || 'iOA';
+      const result = await client.authenticate(methodId);
+      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
+      const userinfo = result?._meta?.['codebuddy.ai/userinfo'] || result?.userinfo || null;
+      set({
+        codeBuddyAccountAuthState: 'authenticated',
+        codeBuddyAccountAuthUrl: null,
+        codeBuddyAccountAuthError: null,
+        codeBuddyAccountUser: userinfo,
+        codeBuddyAccountAuthMethods: authMethods,
+      });
+      await conversations.disposeAll();
+      const restarted = projectId
+        ? await get().restartProjectRuntime(projectId, { deferInitializationUntilAuth: true })
+        : true;
+      if (!restarted) throw new Error(get().error || 'CodeBuddy 运行时重启失败');
+      const connected = await get().bootstrap();
+      if (!connected) {
+        const state = get();
+        if (state.codeBuddyAccountAuthState === 'required') return false;
+        throw new Error(state.error || 'CodeBuddy 登录成功，但会话恢复失败');
+      }
+      return true;
+    } catch (error) {
+      if (projectId !== get().activeProjectId) return false;
+      const message =
+        error?.type === 'timeout'
+          ? 'CodeBuddy 登录等待超时，请重新发起登录'
+          : error?.message || 'CodeBuddy 登录失败';
+      set({
+        codeBuddyAccountAuthState: 'error',
+        codeBuddyAccountAuthError: message,
+        codeBuddyAccountAuthUrl: null,
+      });
+      return false;
+    }
+  },
+
   async refreshInfo() {
     const request = beginScopedRequest('info', get());
-    const payload = await fetchJson('/api/v1/info');
-    if (!isScopedRequestCurrent(request, get())) return false;
-    set({ info: payload.data || payload, infoLoaded: true });
-    return true;
+    try {
+      const payload = await fetchJson('/api/v1/info');
+      if (!isScopedRequestCurrent(request, get())) return false;
+      set({ info: payload.data || payload, infoLoaded: true });
+      return true;
+    } catch (error) {
+      if (!window.electronAPI?.getCliMaintenanceInfo) throw error;
+      const cliInfo = await window.electronAPI.getCliMaintenanceInfo();
+      if (!isScopedRequestCurrent(request, get())) return false;
+      set((state) => ({
+        info: { ...(state.info || {}), version: cliInfo?.version || state.info?.version || null },
+        infoLoaded: true,
+      }));
+      return true;
+    }
   },
 
   async refreshSettings() {
@@ -3425,34 +3715,36 @@ export const useStore = create((set, get) => ({
     });
 
     const previousWrite = settingWriteChains.get(writeKey) || Promise.resolve();
-    const operation = previousWrite.catch(() => {}).then(async () => {
-      try {
-        await updateSettingByKeyApi(key, value, 'user', apiBase, requestContext);
-        confirmedSettingValues.set(writeKey, value);
-        if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
-          set((current) => {
-            const next = writeSettingPath(current.settings, key, value);
-            persistSettingsCache(next);
-            return { settings: next, settingsLoaded: true };
-          });
+    const operation = previousWrite
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await updateSettingByKeyApi(key, value, 'user', apiBase, requestContext);
+          confirmedSettingValues.set(writeKey, value);
+          if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
+            set((current) => {
+              const next = writeSettingPath(current.settings, key, value);
+              persistSettingsCache(next);
+              return { settings: next, settingsLoaded: true };
+            });
+          }
+          return true;
+        } catch (err) {
+          if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
+            const confirmedValue = confirmedSettingValues.get(writeKey);
+            set((state) => {
+              const next = writeSettingPath(state.settings, key, confirmedValue, confirmedValue === undefined);
+              persistSettingsCache(next);
+              return {
+                settings: next,
+                settingsLoaded: true,
+                error: `设置保存失败，已恢复原值: ${err.message}`,
+              };
+            });
+          }
+          return false;
         }
-        return true;
-      } catch (err) {
-        if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
-          const confirmedValue = confirmedSettingValues.get(writeKey);
-          set((state) => {
-            const next = writeSettingPath(state.settings, key, confirmedValue, confirmedValue === undefined);
-            persistSettingsCache(next);
-            return {
-              settings: next,
-              settingsLoaded: true,
-              error: `设置保存失败，已恢复原值: ${err.message}`,
-            };
-          });
-        }
-        return false;
-      }
-    });
+      });
     settingWriteChains.set(writeKey, operation);
 
     try {
@@ -3481,9 +3773,9 @@ export const useStore = create((set, get) => ({
       for (const session of visibleSessions) {
         const sessionId = session.id || session.sessionId;
         if (!sessionId) continue;
-        let thread = Object.values(threadsById).find((item) => (
-          item.projectId === projectId && item.sessionId === sessionId
-        ));
+        let thread = Object.values(threadsById).find(
+          (item) => item.projectId === projectId && item.sessionId === sessionId,
+        );
         if (!thread) {
           thread = createThreadRecord(projectId, {
             sessionId,
@@ -3890,7 +4182,8 @@ export const useStore = create((set, get) => ({
     const requestId = ++fileDiskSyncRequestId;
     try {
       const content = await downloadFile(path);
-      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile) return false;
+      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile)
+        return false;
       set((current) => {
         if (content === current.fileSavedContent) {
           return current.fileExternalChange?.path === path ? { fileExternalChange: null } : {};
@@ -3908,7 +4201,8 @@ export const useStore = create((set, get) => ({
       get().scheduleWorkspaceStatePersist();
       return true;
     } catch (error) {
-      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile) return false;
+      if (requestId !== fileDiskSyncRequestId || projectId !== get().activeProjectId || path !== get().selectedFile)
+        return false;
       set({
         fileExternalChange: {
           path,
@@ -3940,9 +4234,8 @@ export const useStore = create((set, get) => ({
     fileDiskSyncRequestId += 1;
     set((current) => ({
       fileSavedContent: typeof change.content === 'string' ? change.content : current.fileSavedContent,
-      fileDirty: typeof change.content === 'string'
-        ? current.filePreview !== change.content
-        : Boolean(current.selectedFile),
+      fileDirty:
+        typeof change.content === 'string' ? current.filePreview !== change.content : Boolean(current.selectedFile),
       fileExternalChange: null,
     }));
     get().scheduleWorkspaceStatePersist();
@@ -4033,7 +4326,8 @@ export const useStore = create((set, get) => ({
         throw new Error(`PTY 释放失败: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
-      if (projectId === get().activeProjectId && apiBase === get().apiBase) set({ error: error.message || 'PTY 释放失败' });
+      if (projectId === get().activeProjectId && apiBase === get().apiBase)
+        set({ error: error.message || 'PTY 释放失败' });
       return false;
     }
     if (projectId !== get().activeProjectId || apiBase !== get().apiBase) return true;
@@ -4057,11 +4351,14 @@ export const useStore = create((set, get) => ({
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
-        await client.request('session/cancel', { sessionId });
+        client.cancelActivePrompt?.(sessionId);
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== sessionId) return true;
         const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-        const timeline = reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', { status: 'cancelled', role: 'system' });
+        const timeline = reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', {
+          status: 'cancelled',
+          role: 'system',
+        });
         get().patchThreadRuntime(threadId, { isAwaitingResponse: false, timeline });
         await get().updateThreadRecord(threadId, { status: 'cancelled', timeline: timeline.slice(-300) });
         return true;
@@ -4149,17 +4446,19 @@ export const useStore = create((set, get) => ({
     const client = get().getThreadClient(threadId);
     if (!thread || !client) {
       const currentRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      const restoredAttachments = [...attachments, ...(currentRuntime.pendingAttachments || [])].filter((item, index, items) => (
-        items.findIndex((candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind) === index
-      ));
+      const restoredAttachments = [...attachments, ...(currentRuntime.pendingAttachments || [])].filter(
+        (item, index, items) =>
+          items.findIndex(
+            (candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind,
+          ) === index,
+      );
       get().patchThreadRuntime(threadId, { pendingAttachments: restoredAttachments });
       set({ error: '当前会话未连接' });
       return false;
     }
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-    const requestSessionId = thread.sessionId
-      || runtime.sessionId
-      || (get().activeThreadId === threadId ? get().sessionId : null);
+    const requestSessionId =
+      thread.sessionId || runtime.sessionId || (get().activeThreadId === threadId ? get().sessionId : null);
     if (!requestSessionId) {
       set({ error: '当前会话尚未完成连接' });
       return false;
@@ -4170,7 +4469,12 @@ export const useStore = create((set, get) => ({
       timeline,
       isAwaitingResponse: true,
     });
-    await get().updateThreadRecord(threadId, { status: 'running', draft: '', unread: false, timeline: timeline.slice(-300) });
+    await get().updateThreadRecord(threadId, {
+      status: 'running',
+      draft: '',
+      unread: false,
+      timeline: timeline.slice(-300),
+    });
     try {
       const prompt = [{ type: 'text', text: content }];
       for (const attachment of attachments) {
@@ -4211,8 +4515,9 @@ export const useStore = create((set, get) => ({
     } catch (error) {
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const currentThread = get().threadsById[threadId] || thread;
-      const userCancelled = currentThread.status === 'cancelled'
-        || /cancelled|canceled|aborted by user|用户取消|已取消/i.test(error.message || '');
+      const userCancelled =
+        currentThread.status === 'cancelled' ||
+        /cancelled|canceled|aborted by user|用户取消|已取消/i.test(error.message || '');
       if (userCancelled) {
         get().patchThreadRuntime(threadId, {
           timeline: closeAssistantStream(failedRuntime.timeline),
@@ -4222,13 +4527,19 @@ export const useStore = create((set, get) => ({
       }
       const failedDraft = String(draftText || '').trim();
       const currentDraft = String(currentThread.draft || '').trim();
-      const restoredDraft = failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
-      const restoredAttachments = [...attachments, ...(failedRuntime.pendingAttachments || [])].filter((item, index, items) => (
-        items.findIndex((candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind) === index
-      ));
+      const restoredDraft =
+        failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
+      const restoredAttachments = [...attachments, ...(failedRuntime.pendingAttachments || [])].filter(
+        (item, index, items) =>
+          items.findIndex(
+            (candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind,
+          ) === index,
+      );
 
       get().patchThreadRuntime(threadId, {
-        timeline: closeAssistantStream(reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' })),
+        timeline: closeAssistantStream(
+          reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }),
+        ),
         isAwaitingResponse: false,
         pendingAttachments: restoredAttachments,
       });
@@ -4253,10 +4564,11 @@ export const useStore = create((set, get) => ({
       if (thread.status === 'running' || runtime.isAwaitingResponse) return null;
 
       let attachments = Array.isArray(next.attachments) ? next.attachments : [];
-      const requiresReload = attachments.some((attachment) => (
-        (attachment.kind === 'image' && !attachment.data)
-        || (attachment.kind === 'text' && typeof attachment.text !== 'string')
-      ));
+      const requiresReload = attachments.some(
+        (attachment) =>
+          (attachment.kind === 'image' && !attachment.data) ||
+          (attachment.kind === 'text' && typeof attachment.text !== 'string'),
+      );
       if (requiresReload) {
         if (!window.electronAPI?.readAttachments) {
           set({ error: '无法恢复待发送附件：桌面文件读取接口不可用' });
@@ -4267,7 +4579,9 @@ export const useStore = create((set, get) => ({
         if (!currentThread || currentThread.sessionId !== thread.sessionId) return null;
         const rejected = (loaded || []).filter((attachment) => attachment.kind === 'unsupported');
         if (rejected.length) {
-          set({ error: `无法恢复待发送附件：${rejected.map((attachment) => `${attachment.name}: ${attachment.error}`).join('；')}` });
+          set({
+            error: `无法恢复待发送附件：${rejected.map((attachment) => `${attachment.name}: ${attachment.error}`).join('；')}`,
+          });
           return null;
         }
         const loadedByPath = new Map((loaded || []).map((attachment) => [attachment.path, attachment]));
@@ -4277,8 +4591,7 @@ export const useStore = create((set, get) => ({
           return null;
         }
         const imageSupported = Boolean(
-          runtime.capabilities?.promptCapabilities?.image
-          || runtime.capabilities?.prompt_capabilities?.image,
+          runtime.capabilities?.promptCapabilities?.image || runtime.capabilities?.prompt_capabilities?.image,
         );
         if (!imageSupported && attachments.some((attachment) => attachment.kind === 'image')) {
           set({ error: '当前运行时未声明图片输入能力，无法继续发送队列中的图片' });
@@ -4296,7 +4609,12 @@ export const useStore = create((set, get) => ({
       return { next, attachments };
     });
     if (!prepared) return false;
-    return get().runThreadPrompt(threadId, prepared.next.text, prepared.attachments, prepared.next.draftText ?? prepared.next.text);
+    return get().runThreadPrompt(
+      threadId,
+      prepared.next.text,
+      prepared.attachments,
+      prepared.next.draftText ?? prepared.next.text,
+    );
   },
 
   async moveQueuedPrompt(threadId, promptId, direction) {
@@ -4340,11 +4658,8 @@ export const useStore = create((set, get) => ({
     const authRequest = ++authRequestVersion;
     const projectId = get().activeProjectId;
     const apiBase = getApiBase();
-    const isCurrent = () => (
-      authRequest === authRequestVersion
-      && get().activeProjectId === projectId
-      && getApiBase() === apiBase
-    );
+    const isCurrent = () =>
+      authRequest === authRequestVersion && get().activeProjectId === projectId && getApiBase() === apiBase;
     set({ authSubmitting: true, authError: null });
     try {
       const result = await apiAuthLogin(String(password || ''), { baseUrl: apiBase, persistToken: false });
@@ -4356,7 +4671,9 @@ export const useStore = create((set, get) => ({
         setAuthToken(result.token || null);
         set({ authViewState: 'authenticated', authSubmitting: false, authError: null });
         // 重触发 bootstrap 继续 AcpClient 连接与非关键数据加载
-        get().bootstrap().catch((error) => console.error('bootstrap after login failed:', error));
+        get()
+          .bootstrap()
+          .catch((error) => console.error('bootstrap after login failed:', error));
         return true;
       }
       set({ authSubmitting: false, authError: result?.error || 'login.error.incorrect' });
@@ -4377,7 +4694,14 @@ export const useStore = create((set, get) => ({
     beginScopedRequest('initializeActiveThread', get(), 'threadId');
     setAcpSessionToken(null);
     apiAuthLogout();
-    set({ authViewState: 'login', authSubmitting: false, authError: null, sessionId: null, sessionToken: null, timeline: [] });
+    set({
+      authViewState: 'login',
+      authSubmitting: false,
+      authError: null,
+      sessionId: null,
+      sessionToken: null,
+      timeline: [],
+    });
     await conversations.disposeAll();
   },
 
@@ -4390,30 +4714,24 @@ export const useStore = create((set, get) => ({
     try {
       authState = await apiCheckAuth();
     } catch (error) {
-      if (
-        authRequest === authRequestVersion
-        && get().activeProjectId === projectId
-        && getApiBase() === apiBase
-      ) {
+      if (authRequest === authRequestVersion && get().activeProjectId === projectId && getApiBase() === apiBase) {
         set({ authViewState: 'error', authError: error?.message || '无法检查 CodeBuddy 登录状态' });
       }
       return false;
     }
-    if (
-      authRequest !== authRequestVersion
-      || get().activeProjectId !== projectId
-      || getApiBase() !== apiBase
-    ) return false;
+    if (authRequest !== authRequestVersion || get().activeProjectId !== projectId || getApiBase() !== apiBase)
+      return false;
     set({ authViewState: authState, authError: null });
     if (authState === 'authenticated') {
-      get().bootstrap().catch((error) => console.error('bootstrap after refreshAuth failed:', error));
+      get()
+        .bootstrap()
+        .catch((error) => console.error('bootstrap after refreshAuth failed:', error));
     }
     return true;
   },
-
 }));
 
-if (typeof window !== "undefined" && import.meta.env.DEV) {
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
   window.__sendPrompt = (text) => useStore.getState().sendPrompt(text);
   window.__ZUSTAND_STORE = useStore;
 }

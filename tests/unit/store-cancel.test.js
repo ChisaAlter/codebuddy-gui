@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  request: vi.fn(),
+  cancelActivePrompt: vi.fn(),
 }));
 
 vi.mock('../../src/lib/acp', async (importOriginal) => {
@@ -9,7 +9,7 @@ vi.mock('../../src/lib/acp', async (importOriginal) => {
   return {
     ...actual,
     AcpClient: class {
-      request = mocks.request;
+      cancelActivePrompt = mocks.cancelActivePrompt;
     },
   };
 });
@@ -18,8 +18,8 @@ import { useStore } from '../../src/store';
 
 describe('store cancellation', () => {
   beforeEach(() => {
-    mocks.request.mockReset();
-    mocks.request.mockResolvedValue({ ok: true });
+    mocks.cancelActivePrompt.mockReset();
+    mocks.cancelActivePrompt.mockReturnValue(true);
     useStore.setState({
       activeProjectId: 'project-1',
       activeThreadId: 'thread-1',
@@ -38,17 +38,21 @@ describe('store cancellation', () => {
       },
       threadRuntimeById: {
         'thread-1': {
-          timeline: [{
-            id: 'assistant-1',
-            type: 'message',
-            role: 'assistant',
-            content: 'Working',
-            streaming: true,
-            createdAt: Date.now(),
-          }],
+          timeline: [
+            {
+              id: 'assistant-1',
+              type: 'message',
+              role: 'assistant',
+              content: 'Working',
+              streaming: true,
+              createdAt: Date.now(),
+            },
+          ],
         },
       },
-      getThreadClient: () => ({ request: mocks.request }),
+      threadOrderByProject: { 'project-1': ['thread-1'] },
+      getThreadClient: () => ({ cancelActivePrompt: mocks.cancelActivePrompt }),
+      persistProductState: vi.fn().mockResolvedValue(true),
       isAwaitingResponse: true,
       error: null,
       timeline: [
@@ -64,13 +68,20 @@ describe('store cancellation', () => {
     });
   });
 
-  it('sends session/cancel before ending the local streaming state', async () => {
+  it('aborts the local prompt stream without calling an unsupported RPC method', async () => {
     await useStore.getState().cancelSession();
 
-    expect(mocks.request).toHaveBeenCalledWith('session/cancel', {
-      sessionId: 'session-123',
-    });
+    expect(mocks.cancelActivePrompt).toHaveBeenCalledWith('session-123');
     expect(useStore.getState().isAwaitingResponse).toBe(false);
     expect(useStore.getState().timeline.find((item) => item.role === 'assistant')?.streaming).toBe(false);
+  });
+
+  it('closes stale assistant streams when a project disconnects', async () => {
+    await useStore.getState().disconnectProjectThreads('project-1');
+
+    const runtime = useStore.getState().threadRuntimeById['thread-1'];
+    expect(runtime.connectionState).toBe('disconnected');
+    expect(runtime.isAwaitingResponse).toBe(false);
+    expect(runtime.timeline.find((item) => item.role === 'assistant')?.streaming).toBe(false);
   });
 });

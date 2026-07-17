@@ -170,24 +170,28 @@ export async function fetchWechatQr(instanceId) {
   try {
     const json = JSON.parse(text);
     const data = json?.data ?? json ?? {};
+    const type = data.type || '';
+    const message = data.message || '';
     const directImage = data.qrImage || data.image || data.base64 || data.qrcode;
     if (directImage) {
       const imageValue = String(directImage).trim();
       const qrImage = /^(data:image\/|blob:|https?:\/\/)/i.test(imageValue)
         ? imageValue
         : `data:image/png;base64,${imageValue.replace(/\s+/g, '')}`;
-      return { ok: true, qrImage, raw: data };
+      return { ok: true, qrImage, type, message, raw: data };
     }
     const qrContent = data.qrUrl || data.qrData || data.url || (typeof data === 'string' ? data : null);
     if (qrContent) {
       const contentValue = String(qrContent).trim();
       if (/^(data:image\/|blob:)/i.test(contentValue)) {
-        return { ok: true, qrImage: contentValue, raw: data };
+        return { ok: true, qrImage: contentValue, type, message, raw: data };
       }
       if (contentValue.length > 128 && /^[A-Za-z0-9+/=\s]+$/.test(contentValue)) {
         return {
           ok: true,
           qrImage: `data:image/png;base64,${contentValue.replace(/\s+/g, '')}`,
+          type,
+          message,
           raw: data,
         };
       }
@@ -195,10 +199,13 @@ export async function fetchWechatQr(instanceId) {
       return {
         ok: true,
         qrImage: await QRCode.toDataURL(contentValue, { width: 240, margin: 1, errorCorrectionLevel: 'M' }),
+        type,
+        message,
         raw: data,
       };
     }
-    return { ok: false, error: data.message || '二维码尚未就绪', raw: data };
+    if (type === 'error') return { ok: false, type, message, error: message || '二维码获取失败', raw: data };
+    return { ok: true, type, message, raw: data };
   } catch (_) {
     return { ok: false, error: '二维码响应格式无法识别', raw: text };
   }

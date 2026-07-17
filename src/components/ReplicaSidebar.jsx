@@ -1,4 +1,5 @@
 import React from 'react';
+import { Bot } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import ProjectSessionTree from './ProjectSessionTree';
 import { useStore } from '../store';
@@ -13,12 +14,17 @@ const ITEM_ICONS = {
   ),
   instances: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="1" width="6" height="6" rx="1" /><rect x="9" y="1" width="6" height="6" rx="1" /><rect x="1" y="9" width="6" height="6" rx="1" /><rect x="9" y="9" width="6" height="6" rx="1" />
+      <rect x="1" y="1" width="6" height="6" rx="1" />
+      <rect x="9" y="1" width="6" height="6" rx="1" />
+      <rect x="1" y="9" width="6" height="6" rx="1" />
+      <rect x="9" y="9" width="6" height="6" rx="1" />
     </svg>
   ),
   'remote-control': (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="2" /><path d="M8 2v2" />
+      <circle cx="8" cy="8" r="6" />
+      <circle cx="8" cy="8" r="2" />
+      <path d="M8 2v2" />
     </svg>
   ),
   tasks: (
@@ -28,7 +34,8 @@ const ITEM_ICONS = {
   ),
   archived: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="2" y="3" width="12" height="3" rx="1" /><path d="M3 6v7h10V6M6 9h4" />
+      <rect x="2" y="3" width="12" height="3" rx="1" />
+      <path d="M3 6v7h10V6M6 9h4" />
     </svg>
   ),
   terminal: (
@@ -38,7 +45,8 @@ const ITEM_ICONS = {
   ),
   canvas: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="1" width="14" height="14" rx="2" /><path d="M1 5h14M1 9h14" />
+      <rect x="1" y="1" width="14" height="14" rx="2" />
+      <path d="M1 5h14M1 9h14" />
     </svg>
   ),
   editor: (
@@ -48,7 +56,8 @@ const ITEM_ICONS = {
   ),
   changes: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="8" r="2" /><path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
+      <circle cx="8" cy="8" r="2" />
+      <path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
     </svg>
   ),
   plugins: (
@@ -58,12 +67,16 @@ const ITEM_ICONS = {
   ),
   mcp: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="4" cy="8" r="2" /><circle cx="12" cy="4" r="2" /><circle cx="12" cy="12" r="2" /><path d="M6 8h2.5M9.5 7l1.2-1.6M9.5 9l1.2 1.6" />
+      <circle cx="4" cy="8" r="2" />
+      <circle cx="12" cy="4" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <path d="M6 8h2.5M9.5 7l1.2-1.6M9.5 9l1.2 1.6" />
     </svg>
   ),
   sandboxes: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M8 1.5l5.5 3v7L8 14.5l-5.5-3v-7L8 1.5z" /><path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7" />
+      <path d="M8 1.5l5.5 3v7L8 14.5l-5.5-3v-7L8 1.5z" />
+      <path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7" />
     </svg>
   ),
   stats: (
@@ -78,7 +91,8 @@ const ITEM_ICONS = {
   ),
   monitor: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="2" width="14" height="10" rx="2" /><path d="M5 15h6M8 12v3" />
+      <rect x="1" y="2" width="14" height="10" rx="2" />
+      <path d="M5 15h6M8 12v3" />
     </svg>
   ),
   logs: (
@@ -88,12 +102,15 @@ const ITEM_ICONS = {
   ),
   settings: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="8" r="2.5" /><path d="M8 1v2m0 10v2M1 8h2m10 0h2m-3.66-4.66l1.42-1.42m-9.52 9.52l1.42-1.42m9.52 0l1.42 1.42m-9.52-9.52l1.42 1.42" />
+      <circle cx="8" cy="8" r="2.5" />
+      <path d="M8 1v2m0 10v2M1 8h2m10 0h2m-3.66-4.66l1.42-1.42m-9.52 9.52l1.42-1.42m9.52 0l1.42 1.42m-9.52-9.52l1.42 1.42" />
     </svg>
   ),
+  models: <Bot size={16} strokeWidth={1.5} />,
   keybindings: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1" y="4" width="6" height="6" rx="1" /><path d="M9.5 5h3M9.5 9h3M9.5 7h5" />
+      <rect x="1" y="4" width="6" height="6" rx="1" />
+      <path d="M9.5 5h3M9.5 9h3M9.5 7h5" />
     </svg>
   ),
   docs: (
@@ -103,7 +120,10 @@ const ITEM_ICONS = {
   ),
   workers: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="4" cy="4" r="2" /><circle cx="12" cy="4" r="2" /><circle cx="8" cy="11" r="2" /><path d="M2 8v6h4V8m4 0v6h4V8" />
+      <circle cx="4" cy="4" r="2" />
+      <circle cx="12" cy="4" r="2" />
+      <circle cx="8" cy="11" r="2" />
+      <path d="M2 8v6h4V8m4 0v6h4V8" />
     </svg>
   ),
   metrics: (
@@ -132,53 +152,81 @@ export function replicaSidebarFooterItems() {
 
 export default function ReplicaSidebar() {
   const {
-    route, setRoute, sidebarCollapsed,
-    info, connectionState, newSession, newSessionBusy, newSessionProjectId, newSessionError, changesCount,
-    projectNavigationBusy, projectNavigationTargetId, projectNavigationError,
-    projectsById, projectOrder, activeProjectId, activeThreadId, fileDirty, selectedFile,
-    threadsById, threadOrderByProject, activateProject, activateThread, renameThread, deleteThread, renameProject, removeProject,
-    setProjectSidebarExpanded, setThreadPinned, archiveThread,
-  } = useStore(useShallow((state) => ({
-    route: state.route,
-    setRoute: state.setRoute,
-    sidebarCollapsed: state.sidebarCollapsed,
-    info: state.info,
-    connectionState: state.connectionState,
-    newSession: state.newSession,
-    newSessionBusy: state.newSessionBusy,
-    newSessionProjectId: state.newSessionProjectId,
-    newSessionError: state.newSessionError,
-    changesCount: state.changesCount,
-    projectNavigationBusy: state.projectNavigationBusy,
-    projectNavigationTargetId: state.projectNavigationTargetId,
-    projectNavigationError: state.projectNavigationError,
-    projectsById: state.projectsById,
-    projectOrder: state.projectOrder,
-    activeProjectId: state.activeProjectId,
-    activeThreadId: state.activeThreadId,
-    fileDirty: state.fileDirty,
-    selectedFile: state.selectedFile,
-    threadsById: state.threadsById,
-    threadOrderByProject: state.threadOrderByProject,
-    activateProject: state.activateProject,
-    activateThread: state.activateThread,
-    renameThread: state.renameThread,
-    deleteThread: state.deleteThread,
-    renameProject: state.renameProject,
-    removeProject: state.removeProject,
-    setProjectSidebarExpanded: state.setProjectSidebarExpanded,
-    setThreadPinned: state.setThreadPinned,
-    archiveThread: state.archiveThread,
-  })));
+    route,
+    setRoute,
+    sidebarCollapsed,
+    info,
+    connectionState,
+    newSession,
+    newSessionBusy,
+    newSessionProjectId,
+    newSessionError,
+    changesCount,
+    projectNavigationBusy,
+    projectNavigationTargetId,
+    projectNavigationError,
+    projectsById,
+    projectOrder,
+    activeProjectId,
+    activeThreadId,
+    fileDirty,
+    selectedFile,
+    threadsById,
+    threadOrderByProject,
+    activateProject,
+    activateThread,
+    renameThread,
+    deleteThread,
+    renameProject,
+    removeProject,
+    setProjectSidebarExpanded,
+    setThreadPinned,
+    archiveThread,
+  } = useStore(
+    useShallow((state) => ({
+      route: state.route,
+      setRoute: state.setRoute,
+      sidebarCollapsed: state.sidebarCollapsed,
+      info: state.info,
+      connectionState: state.connectionState,
+      newSession: state.newSession,
+      newSessionBusy: state.newSessionBusy,
+      newSessionProjectId: state.newSessionProjectId,
+      newSessionError: state.newSessionError,
+      changesCount: state.changesCount,
+      projectNavigationBusy: state.projectNavigationBusy,
+      projectNavigationTargetId: state.projectNavigationTargetId,
+      projectNavigationError: state.projectNavigationError,
+      projectsById: state.projectsById,
+      projectOrder: state.projectOrder,
+      activeProjectId: state.activeProjectId,
+      activeThreadId: state.activeThreadId,
+      fileDirty: state.fileDirty,
+      selectedFile: state.selectedFile,
+      threadsById: state.threadsById,
+      threadOrderByProject: state.threadOrderByProject,
+      activateProject: state.activateProject,
+      activateThread: state.activateThread,
+      renameThread: state.renameThread,
+      deleteThread: state.deleteThread,
+      renameProject: state.renameProject,
+      removeProject: state.removeProject,
+      setProjectSidebarExpanded: state.setProjectSidebarExpanded,
+      setThreadPinned: state.setThreadPinned,
+      archiveThread: state.archiveThread,
+    })),
+  );
   const [projectMenuOpenId, setProjectMenuOpenId] = React.useState(null);
   const [projectMenuPosition, setProjectMenuPosition] = React.useState({ x: 0, y: 0 });
   const [projectDialog, setProjectDialog] = React.useState(null);
   const [projectName, setProjectName] = React.useState('');
   const [projectActionBusy, setProjectActionBusy] = React.useState(false);
   const [projectActionError, setProjectActionError] = React.useState('');
-  const [expandedNavGroups, setExpandedNavGroups] = React.useState(() => Object.fromEntries(
-    replicaSidebarMainGroups().map((group) => [group.id, replicaSidebarGroupInitiallyExpanded(group.id)]),
-  ));
+  const [expandedNavGroups, setExpandedNavGroups] = React.useState(() =>
+    Object.fromEntries(
+      replicaSidebarMainGroups().map((group) => [group.id, replicaSidebarGroupInitiallyExpanded(group.id)]),
+    ),
+  );
   const scopeGenerationRef = React.useRef(0);
   const projectActionInFlightRef = React.useRef(null);
 
@@ -210,9 +258,10 @@ export default function ReplicaSidebar() {
     setProjectActionBusy(true);
     setProjectActionError('');
     try {
-      const ok = mode === 'rename'
-        ? await renameProject(project.id, projectName.trim())
-        : await removeProject(project.id, { skipDirtyCheck: true });
+      const ok =
+        mode === 'rename'
+          ? await renameProject(project.id, projectName.trim())
+          : await removeProject(project.id, { skipDirtyCheck: true });
       if (generation !== scopeGenerationRef.current) return;
       if (!ok) {
         setProjectActionError(mode === 'rename' ? '重命名失败，请重试' : '移除失败，请重试');
@@ -282,18 +331,27 @@ export default function ReplicaSidebar() {
       <button
         key={item.id}
         onClick={() => setRoute(item.id)}
-        className={`sidebar-nav-link group w-full ${isActive ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
-        style={isActive ? { background: 'rgba(59,130,246,0.12)' } : undefined}
+        className={`sidebar-nav-link group w-full ${isActive ? 'active bg-[var(--color-accent-primary-dim)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
         title={sidebarCollapsed ? item.label : undefined}
       >
-        <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center ${!isActive ? 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]' : ''}`} style={isActive ? { color: 'var(--color-accent-blue)' } : undefined}>
+        <span
+          className={`flex h-4 w-4 flex-shrink-0 items-center justify-center ${!isActive ? 'text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]' : ''}`}
+          style={isActive ? { color: 'var(--color-accent-blue)' } : undefined}
+        >
           {ITEM_ICONS[item.id] || (
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="2" /></svg>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="8" cy="8" r="2" />
+            </svg>
           )}
         </span>
         {!sidebarCollapsed ? <span className="truncate text-left">{item.label}</span> : null}
         {!sidebarCollapsed && item.id === 'changes' && changesCount > 0 ? (
-          <span className="ml-auto rounded-full px-1.5 py-0 text-[10px] font-medium text-white" style={{ background: 'var(--color-accent-blue)' }}>{changesCount}</span>
+          <span
+            className="ml-auto rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
+            style={{ background: 'var(--color-accent-blue)' }}
+          >
+            {changesCount}
+          </span>
         ) : null}
       </button>
     );
@@ -301,23 +359,26 @@ export default function ReplicaSidebar() {
 
   return (
     <aside
-      role="navigation" aria-label="Main navigation"
-      className="sidebar-nav flex h-full shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)]"
+      role="navigation"
+      aria-label="Main navigation"
+      className="sidebar-nav flex h-full shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-sidebar)] text-[var(--color-text-primary)]"
       style={replicaSidebarWidthStyle(sidebarCollapsed)}
     >
       {/* Brand */}
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--color-border-default)] px-3">
-        <img src={appIconUrl} alt="" className="h-7 w-7 rounded-md" />
+      <div className="titlebar-drag flex h-11 shrink-0 items-center gap-2 border-b border-[var(--color-border-muted)] px-3">
+        <img src={appIconUrl} alt="" className="h-7 w-7 rounded-md shadow-sm" />
         {!sidebarCollapsed && (
-          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy GUI</span>
+          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>
+            CodeBuddy GUI
+          </span>
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto overflow-x-hidden py-2">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden py-2.5">
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
-              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+              className="flex min-h-9 w-full items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-card)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] shadow-sm transition-colors hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
               disabled={newSessionBusy || projectNavigationBusy}
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
@@ -328,7 +389,9 @@ export default function ReplicaSidebar() {
               {newSessionBusy || projectNavigationBusy ? (
                 <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
               ) : (
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 2v12M2 8h12" /></svg>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M8 2v12M2 8h12" />
+                </svg>
               )}
               {projectNavigationBusy ? '切换中...' : newSessionBusy ? '正在创建...' : '新对话'}
             </button>
@@ -349,8 +412,11 @@ export default function ReplicaSidebar() {
                   if (!projectNavigationBusy) useStore.getState().chooseWorkspace();
                 }}
                 title="添加项目"
+                aria-label="添加项目"
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M8 2v12M2 8h12" /></svg>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M8 2v12M2 8h12" />
+                </svg>
               </button>
             </div>
             <ProjectSessionTree
@@ -375,16 +441,6 @@ export default function ReplicaSidebar() {
                 setProjectMenuOpenId(projectMenuOpenId === project.id ? null : project.id);
               }}
             />
-            {projectMenuOpenId && projectsById[projectMenuOpenId] ? (
-              <div
-                data-project-menu
-                className="fixed z-50 w-32 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-lg"
-                style={{ left: projectMenuPosition.x, top: projectMenuPosition.y }}
-              >
-                <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]" onClick={() => openProjectDialog('rename', projectsById[projectMenuOpenId])}>重命名</button>
-                <button className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]" onClick={() => openProjectDialog('remove', projectsById[projectMenuOpenId])}>移除项目</button>
-              </div>
-            ) : null}
             {projectNavigationError ? (
               <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{projectNavigationError}</div>
             ) : null}
@@ -394,24 +450,53 @@ export default function ReplicaSidebar() {
         {replicaSidebarMainGroups().map((group) => {
           const groupExpanded = sidebarCollapsed || expandedNavGroups[group.id];
           return (
-          <div key={group.id} className="mb-1">
-            {!sidebarCollapsed && (
-              <button
-                type="button"
-                className="sidebar-section-title flex w-full items-center justify-between text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
-                aria-expanded={Boolean(groupExpanded)}
-                aria-label={`${groupExpanded ? '折叠' : '展开'}${group.title}`}
-                onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}
-              >
-                <span>{group.title}</span>
-                <svg className={`h-3 w-3 transition-transform ${groupExpanded ? 'rotate-90' : ''}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 3l5 5-5 5" /></svg>
-              </button>
-            )}
-            {groupExpanded ? <div className="space-y-0.5 px-1.5">{group.items.map(renderNavItem)}</div> : null}
-          </div>
+            <div key={group.id} className="mb-1">
+              {!sidebarCollapsed && (
+                <button
+                  type="button"
+                  className="sidebar-section-title flex w-full items-center justify-between text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                  aria-expanded={Boolean(groupExpanded)}
+                  aria-label={`${groupExpanded ? '折叠' : '展开'}${group.title}`}
+                  onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}
+                >
+                  <span>{group.title}</span>
+                  <svg
+                    className={`h-3 w-3 transition-transform ${groupExpanded ? 'rotate-90' : ''}`}
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                  >
+                    <path d="M6 3l5 5-5 5" />
+                  </svg>
+                </button>
+              )}
+              {groupExpanded ? <div className="space-y-0.5 px-1.5">{group.items.map(renderNavItem)}</div> : null}
+            </div>
           );
         })}
       </div>
+
+      {!sidebarCollapsed && projectMenuOpenId && projectsById[projectMenuOpenId] ? (
+        <div
+          data-project-menu
+          className="fixed z-50 w-32 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-lg"
+          style={{ left: projectMenuPosition.x, top: projectMenuPosition.y }}
+        >
+          <button
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+            onClick={() => openProjectDialog('rename', projectsById[projectMenuOpenId])}
+          >
+            重命名
+          </button>
+          <button
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-accent-red)] hover:bg-[var(--color-bg-hover)]"
+            onClick={() => openProjectDialog('remove', projectsById[projectMenuOpenId])}
+          >
+            移除项目
+          </button>
+        </div>
+      ) : null}
 
       {/* 项目管理弹窗 */}
       {projectDialog && (
@@ -430,7 +515,9 @@ export default function ReplicaSidebar() {
             </div>
             {projectDialog.mode === 'rename' ? (
               <div className="mt-4">
-                <label className="mb-1.5 block text-xs text-[var(--color-text-secondary)]" htmlFor="project-name-input">项目名称</label>
+                <label className="mb-1.5 block text-xs text-[var(--color-text-secondary)]" htmlFor="project-name-input">
+                  项目名称
+                </label>
                 <input
                   id="project-name-input"
                   autoFocus
@@ -461,9 +548,19 @@ export default function ReplicaSidebar() {
               <div className="mt-3 text-xs text-[var(--color-accent-red)]">{projectActionError}</div>
             ) : null}
             <div className="mt-5 flex justify-end gap-2">
-              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={projectActionBusy} onClick={closeProjectDialog}>取消</button>
               <button
-                className={projectDialog.mode === 'rename' ? 'btn-primary px-3 py-1.5 text-xs' : 'rounded-md px-3 py-1.5 text-xs font-medium text-white'}
+                className="btn-ghost px-3 py-1.5 text-xs"
+                disabled={projectActionBusy}
+                onClick={closeProjectDialog}
+              >
+                取消
+              </button>
+              <button
+                className={
+                  projectDialog.mode === 'rename'
+                    ? 'btn-primary px-3 py-1.5 text-xs'
+                    : 'rounded-md px-3 py-1.5 text-xs font-medium text-white'
+                }
                 style={projectDialog.mode === 'remove' ? { background: 'var(--color-accent-red)' } : undefined}
                 disabled={projectActionBusy || (projectDialog.mode === 'rename' && !projectName.trim())}
                 onClick={submitProjectDialog}
@@ -479,12 +576,21 @@ export default function ReplicaSidebar() {
         <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
         {!sidebarCollapsed ? (
           <div className="mt-1 flex items-center gap-2 border-t border-[var(--color-border-muted)] px-2.5 pt-2 text-[10px] text-[var(--color-text-muted)]">
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`} />
-            <span className="truncate">CodeBuddy CLI {info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}</span>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`}
+            />
+            <span className="truncate">
+              CodeBuddy CLI {info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}
+            </span>
           </div>
         ) : (
-          <div className="flex h-7 items-center justify-center" title={`CodeBuddy CLI ${info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}`}>
-            <span className={`h-2 w-2 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`} />
+          <div
+            className="flex h-7 items-center justify-center"
+            title={`CodeBuddy CLI ${info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`}
+            />
           </div>
         )}
       </div>

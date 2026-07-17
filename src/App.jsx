@@ -7,6 +7,7 @@ import appIconUrl from '../build/icon.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
+const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
 const ReplicaTerminalView = lazy(() => import('./components/ReplicaTerminalView'));
 const ReplicaWorkspaceView = lazy(() => import('./components/ReplicaWorkspaceView'));
 const ReplicaChangesView = lazy(() => import('./components/ReplicaChangesView'));
@@ -35,7 +36,9 @@ function WindowControls({ height = 'h-12' }) {
         title="最小化"
         aria-label="最小化窗口"
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><path d="M2 8.5h8" /></svg>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <path d="M2 8.5h8" />
+        </svg>
       </button>
       <button
         type="button"
@@ -44,7 +47,9 @@ function WindowControls({ height = 'h-12' }) {
         title="最大化或还原"
         aria-label="最大化或还原窗口"
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><rect x="2.25" y="2.25" width="7.5" height="7.5" /></svg>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <rect x="2.25" y="2.25" width="7.5" height="7.5" />
+        </svg>
       </button>
       <button
         type="button"
@@ -53,7 +58,9 @@ function WindowControls({ height = 'h-12' }) {
         title="关闭到托盘"
         aria-label="关闭窗口到系统托盘"
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+          <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
+        </svg>
       </button>
     </div>
   );
@@ -85,9 +92,12 @@ function LoginView() {
   const busy = authSubmitting || accessBusy;
   const activeProjectName = projectsById[activeProjectId]?.name || '当前项目';
 
-  React.useEffect(() => () => {
-    mountedRef.current = false;
-  }, []);
+  React.useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
 
   React.useEffect(() => {
     if (!alternativeProjectIds.includes(selectedProjectId)) {
@@ -164,8 +174,12 @@ function LoginView() {
         <div className="mb-5 flex items-center gap-2">
           <img src={appIconUrl} alt="CodeBuddy GUI" className="h-9 w-9 rounded-md" />
           <div className="min-w-0">
-            <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>CodeBuddy GUI</div>
-            <div className="truncate text-xs text-[var(--color-text-muted)]" title={activeProjectName}>登录项目：{activeProjectName}</div>
+            <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>
+              CodeBuddy GUI
+            </div>
+            <div className="truncate text-xs text-[var(--color-text-muted)]" title={activeProjectName}>
+              登录项目：{activeProjectName}
+            </div>
           </div>
         </div>
         <form onSubmit={onSubmit} className="space-y-3">
@@ -194,8 +208,15 @@ function LoginView() {
             </div>
           </label>
           {authError ? (
-            <div className="rounded-md border border-[var(--color-accent-red)]/30 bg-[var(--color-accent-red)]/10 px-3 py-2 text-xs text-[var(--color-accent-red)]" role="alert">
-              {authError === 'login.error.incorrect' ? '密码不正确' : authError === 'app.connectFailed' ? '无法连接到服务，请重试或重启运行时' : authError}
+            <div
+              className="rounded-md border border-[var(--color-accent-red)]/30 bg-[var(--color-accent-red)]/10 px-3 py-2 text-xs text-[var(--color-accent-red)]"
+              role="alert"
+            >
+              {authError === 'login.error.incorrect'
+                ? '密码不正确'
+                : authError === 'app.connectFailed'
+                  ? '无法连接到服务，请重试或重启运行时'
+                  : authError}
             </div>
           ) : null}
           <button
@@ -209,7 +230,9 @@ function LoginView() {
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                 登录中...
               </span>
-            ) : '登录'}
+            ) : (
+              '登录'
+            )}
           </button>
         </form>
 
@@ -225,24 +248,43 @@ function LoginView() {
                 aria-label="选择其他项目"
               >
                 {alternativeProjectIds.map((projectId) => (
-                  <option key={projectId} value={projectId}>{projectsById[projectId]?.name || projectId}</option>
+                  <option key={projectId} value={projectId}>
+                    {projectsById[projectId]?.name || projectId}
+                  </option>
                 ))}
               </select>
-              <button type="button" className="btn-ghost shrink-0 px-3 py-1.5 text-xs" disabled={busy || !selectedProjectId} onClick={switchProject}>
+              <button
+                type="button"
+                className="btn-ghost shrink-0 px-3 py-1.5 text-xs"
+                disabled={busy || !selectedProjectId}
+                onClick={switchProject}
+              >
                 {accessAction === 'switch' ? '切换中...' : '切换'}
               </button>
             </div>
           ) : null}
           <div className="grid grid-cols-2 gap-2">
-            <button type="button" className="btn-ghost justify-center px-3 py-1.5 text-xs" disabled={busy} onClick={openOtherProject}>
+            <button
+              type="button"
+              className="btn-ghost justify-center px-3 py-1.5 text-xs"
+              disabled={busy}
+              onClick={openOtherProject}
+            >
               {accessAction === 'workspace' ? '打开中...' : '打开其他项目'}
             </button>
-            <button type="button" className="btn-ghost justify-center px-3 py-1.5 text-xs" disabled={busy || !activeProjectId} onClick={restartAndRecheck}>
+            <button
+              type="button"
+              className="btn-ghost justify-center px-3 py-1.5 text-xs"
+              disabled={busy || !activeProjectId}
+              onClick={restartAndRecheck}
+            >
               {accessAction === 'restart' ? '重启中...' : '重启运行时'}
             </button>
           </div>
           {accessError ? (
-            <div className="mt-2 text-xs text-[var(--color-accent-red)]" role="alert">{accessError}</div>
+            <div className="mt-2 text-xs text-[var(--color-accent-red)]" role="alert">
+              {accessError}
+            </div>
           ) : null}
         </div>
         <div className="mt-4 text-center text-[10px] text-[var(--color-text-muted)]">
@@ -266,9 +308,12 @@ function AuthRecoveryView() {
   const mountedRef = React.useRef(true);
   const busy = Boolean(action) || projectNavigationBusy;
 
-  React.useEffect(() => () => {
-    mountedRef.current = false;
-  }, []);
+  React.useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
 
   const retry = async () => {
     if (busy) return;
@@ -331,7 +376,10 @@ function AuthRecoveryView() {
           {authError || '当前项目服务暂时不可用。可以重试连接、重启项目运行时，或打开其他项目。'}
         </div>
         {actionError ? (
-          <div className="mb-4 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]" role="alert">
+          <div
+            className="mb-4 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]"
+            role="alert"
+          >
             {actionError}
           </div>
         ) : null}
@@ -339,10 +387,18 @@ function AuthRecoveryView() {
           <button className="btn-primary w-full justify-center px-4 py-2 text-sm" disabled={busy} onClick={retry}>
             {action === 'retry' ? '正在重试...' : '重试连接'}
           </button>
-          <button className="btn-ghost w-full justify-center px-4 py-2 text-sm" disabled={busy || !activeProjectId} onClick={restartAndRetry}>
+          <button
+            className="btn-ghost w-full justify-center px-4 py-2 text-sm"
+            disabled={busy || !activeProjectId}
+            onClick={restartAndRetry}
+          >
             {action === 'restart' ? '正在重启运行时...' : '重启运行时并重试'}
           </button>
-          <button className="btn-ghost w-full justify-center px-4 py-2 text-sm" disabled={busy} onClick={openOtherProject}>
+          <button
+            className="btn-ghost w-full justify-center px-4 py-2 text-sm"
+            disabled={busy}
+            onClick={openOtherProject}
+          >
             {action === 'workspace' || projectNavigationBusy ? '正在打开项目...' : '打开其他项目'}
           </button>
         </div>
@@ -381,6 +437,7 @@ const ROUTE_TITLES = {
   traces: '链路',
   monitor: '监控',
   logs: '日志',
+  models: '模型',
   settings: '设置',
   keybindings: '快捷键',
   workers: 'Workers',
@@ -391,10 +448,13 @@ function StatusBar() {
   const route = useStore((s) => s.route);
   const sessionTitle = useStore((s) => s.sessionTitle);
   const currentModel = useStore((s) => s.currentModel);
-  const currentModelName = useStore((s) => s.models.find(m => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '');
+  const currentModelName = useStore(
+    (s) => s.models.find((m) => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '',
+  );
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
   const connectionState = useStore((s) => s.connectionState);
+  const codeBuddyAccountAuthState = useStore((s) => s.codeBuddyAccountAuthState);
   const apiBase = useStore((s) => s.apiBase);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const newSessionBusy = useStore((s) => s.newSessionBusy);
@@ -403,20 +463,23 @@ function StatusBar() {
   const projectNavigationBusy = useStore((s) => s.projectNavigationBusy);
 
   return (
-    <div className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-bg-primary)] pl-4 text-xs flex-shrink-0" role="banner" aria-label="Status bar">
+    <div
+      className="topbar titlebar-drag flex h-11 shrink-0 items-center gap-3 pl-3 text-xs"
+      role="banner"
+      aria-label="Status bar"
+    >
       <button
         className="titlebar-no-drag flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] transition-colors"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-        title="Toggle sidebar"
+        title={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+        aria-label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M2 2h4v12H2V2zm8 0h4v12h-4V2z" />
         </svg>
       </button>
       <div className="flex-1 flex items-center gap-2 min-w-0">
-        <span className="truncate text-[var(--color-text-secondary)]">
-          {ROUTE_TITLES[route] || route}
-        </span>
+        <span className="truncate text-[var(--color-text-secondary)]">{ROUTE_TITLES[route] || route}</span>
         {sessionTitle ? (
           <>
             <span className="text-[var(--color-text-muted)]">/</span>
@@ -425,18 +488,32 @@ function StatusBar() {
         ) : null}
       </div>
       <div className="titlebar-no-drag flex items-center gap-2">
-        <span
-          className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]"
-          title={apiBase || '未连接'}
-        >
-          <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-            connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' :
-            connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'
-          }`} />
-          {!activeProjectId ? '未选择项目' : connectionState === 'connected' ? '已连接' : connectionState === 'error' ? '连接失败' : connectionState === 'disconnected' ? '未连接' : '连接中...'}
+        <span className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]" title={apiBase || '未连接'}>
+          <span
+            className={`inline-block w-1.5 h-1.5 rounded-full ${
+              connectionState === 'connected'
+                ? 'bg-[var(--color-accent-green)]'
+                : connectionState === 'error'
+                  ? 'bg-[var(--color-accent-red)]'
+                  : 'bg-[var(--color-accent-yellow)]'
+            }`}
+          />
+          {!activeProjectId
+            ? '未选择项目'
+            : ['required', 'authenticating', 'error'].includes(codeBuddyAccountAuthState)
+              ? codeBuddyAccountAuthState === 'authenticating'
+                ? '等待登录'
+                : '需要登录'
+            : connectionState === 'connected'
+              ? '已连接'
+              : connectionState === 'error'
+                ? '连接失败'
+                : connectionState === 'disconnected'
+                  ? '未连接'
+                  : '连接中...'}
         </span>
         {currentModel ? (
-          <span className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-[var(--color-text-secondary)] max-w-[180px] truncate">
+          <span className="max-w-[180px] truncate rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-2.5 py-1 text-[var(--color-text-secondary)]">
             {currentModelName}
           </span>
         ) : null}
@@ -450,7 +527,15 @@ function StatusBar() {
             store.setRoute('chat');
             await store.newSession();
           }}
-          title={projectNavigationBusy ? '请等待项目或会话切换完成' : newSessionError && newSessionProjectId === activeProjectId ? newSessionError : newSessionBusy ? '正在创建新对话' : '新对话'}
+          title={
+            projectNavigationBusy
+              ? '请等待项目或会话切换完成'
+              : newSessionError && newSessionProjectId === activeProjectId
+                ? newSessionError
+                : newSessionBusy
+                  ? '正在创建新对话'
+                  : '新对话'
+          }
           aria-label={projectNavigationBusy ? '项目或会话切换中' : newSessionBusy ? '正在创建新对话' : '新对话'}
         >
           {newSessionBusy || projectNavigationBusy ? (
@@ -499,33 +584,83 @@ function MainContent() {
 
   let content;
   switch (route) {
-    case 'chat': content = <ReplicaChatView />; break;
-    case 'instances': content = <ReplicaInstancesView />; break;
-    case 'remote-control': content = <ReplicaRemoteControlView />; break;
-    case 'terminal': content = <ReplicaTerminalView />; break;
-    case 'settings': content = <ReplicaSettingsView />; break;
-    case 'editor': content = <ReplicaWorkspaceView />; break;
-    case 'changes': content = <ReplicaChangesView />; break;
-    case 'workers': content = <ReplicaWorkersView />; break;
-    case 'metrics': content = <ReplicaMetricsView />; break;
-    case 'plugins': content = <ReplicaPluginsView />; break;
-    case 'mcp': content = <ReplicaMcpView />; break;
-    case 'sandboxes': content = <ReplicaSandboxesView />; break;
-    case 'tasks': content = <ReplicaTasksView />; break;
-    case 'archived': content = <ReplicaArchivedView />; break;
-    case 'stats': content = <ReplicaStatsView />; break;
-    case 'traces': content = <ReplicaTracesView />; break;
-    case 'monitor': content = <ReplicaMonitorView />; break;
-    case 'keybindings': content = <ReplicaKeybindingsView />; break;
-    case 'logs': content = <ReplicaLogsView />; break;
-    default: content = (
+    case 'chat':
+      content = <ReplicaChatView />;
+      break;
+    case 'instances':
+      content = <ReplicaInstancesView />;
+      break;
+    case 'remote-control':
+      content = <ReplicaRemoteControlView />;
+      break;
+    case 'terminal':
+      content = <ReplicaTerminalView />;
+      break;
+    case 'models':
+      content = <ReplicaModelsView />;
+      break;
+    case 'settings':
+      content = <ReplicaSettingsView />;
+      break;
+    case 'editor':
+      content = <ReplicaWorkspaceView />;
+      break;
+    case 'changes':
+      content = <ReplicaChangesView />;
+      break;
+    case 'workers':
+      content = <ReplicaWorkersView />;
+      break;
+    case 'metrics':
+      content = <ReplicaMetricsView />;
+      break;
+    case 'plugins':
+      content = <ReplicaPluginsView />;
+      break;
+    case 'mcp':
+      content = <ReplicaMcpView />;
+      break;
+    case 'sandboxes':
+      content = <ReplicaSandboxesView />;
+      break;
+    case 'tasks':
+      content = <ReplicaTasksView />;
+      break;
+    case 'archived':
+      content = <ReplicaArchivedView />;
+      break;
+    case 'stats':
+      content = <ReplicaStatsView />;
+      break;
+    case 'traces':
+      content = <ReplicaTracesView />;
+      break;
+    case 'monitor':
+      content = <ReplicaMonitorView />;
+      break;
+    case 'keybindings':
+      content = <ReplicaKeybindingsView />;
+      break;
+    case 'logs':
+      content = <ReplicaLogsView />;
+      break;
+    default:
+      content = (
         <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)]">
-          <button className="btn-primary px-4 py-2 text-sm" onClick={() => useStore.getState().setRoute('chat')}>返回对话</button>
+          <button className="btn-primary px-4 py-2 text-sm" onClick={() => useStore.getState().setRoute('chat')}>
+            返回对话
+          </button>
         </div>
       );
   }
   return (
-    <Suspense fallback={<div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] text-sm text-[var(--color-text-muted)]">正在加载页面...</div>}>
+    <Suspense
+      fallback={
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-[var(--color-bg-primary)] text-sm text-[var(--color-text-muted)]">
+          正在加载页面...
+        </div>
+      }
+    >
       {content}
     </Suspense>
   );
@@ -536,9 +671,14 @@ function GlobalErrorNotice() {
   const clearError = useStore((state) => state.clearError);
   if (!error) return null;
   return (
-    <div className="fixed bottom-5 right-5 z-[100] flex max-w-[440px] items-start gap-3 rounded-md border border-[rgba(239,68,68,0.45)] bg-[var(--color-bg-secondary)] px-4 py-3 text-sm text-[var(--color-accent-red)] shadow-xl" role="alert">
+    <div
+      className="fixed bottom-5 right-5 z-[100] flex max-w-[440px] items-start gap-3 rounded-md border border-[rgba(239,68,68,0.45)] bg-[var(--color-bg-secondary)] px-4 py-3 text-sm text-[var(--color-accent-red)] shadow-xl"
+      role="alert"
+    >
       <span className="whitespace-pre-wrap break-words">{String(error)}</span>
-      <button className="btn-ghost shrink-0 px-2 py-1 text-xs" onClick={clearError} aria-label="关闭错误提示">关闭</button>
+      <button className="btn-ghost shrink-0 px-2 py-1 text-xs" onClick={clearError} aria-label="关闭错误提示">
+        关闭
+      </button>
     </div>
   );
 }
@@ -551,16 +691,14 @@ function DirtyFileConfirmDialog() {
     <ActionConfirmDialog
       open={Boolean(confirmation)}
       title="放弃未保存修改？"
-      description={confirmation ? (
-        <>
-          <div className="break-all font-medium text-[var(--color-text-primary)]">
-            {confirmation.filePath}
-          </div>
-          <div className="mt-2">
-            {confirmation.actionLabel}将丢失当前未保存内容，此操作无法撤销。
-          </div>
-        </>
-      ) : null}
+      description={
+        confirmation ? (
+          <>
+            <div className="break-all font-medium text-[var(--color-text-primary)]">{confirmation.filePath}</div>
+            <div className="mt-2">{confirmation.actionLabel}将丢失当前未保存内容，此操作无法撤销。</div>
+          </>
+        ) : null
+      }
       confirmLabel="放弃修改并继续"
       onCancel={() => resolve(false)}
       onConfirm={() => resolve(true)}
@@ -628,25 +766,32 @@ export default function App() {
 
   useEffect(() => {
     let quitInProgress = false;
-    const unsubscribe = window.electronAPI?.onQuitRequested?.(async () => {
+    const unsubscribe = window.electronAPI?.onQuitRequested?.(async ({ requestId } = {}) => {
       if (quitInProgress) return;
       quitInProgress = true;
+      window.electronAPI?.acknowledgeQuit?.(requestId);
+      const cancelQuit = (reason) => window.electronAPI?.cancelQuit?.(requestId, reason);
       try {
         const state = useStore.getState();
         const confirmed = await state.confirmDirtyFileAction('退出应用');
-        if (!confirmed) return;
+        if (!confirmed) {
+          cancelQuit('dirty-file-cancelled');
+          return;
+        }
         await useStore.getState().persistActiveProjectWorkspaceState?.({ discardDirty: true });
         const saved = useStore.getState().flushProductStateSync?.();
         if (!saved) {
           useStore.setState({
             error: useStore.getState().error || '退出已取消：无法保存最终项目状态，请处理保存问题后重试。',
           });
+          cancelQuit('product-state-save-failed');
           return;
         }
         if (!window.electronAPI?.confirmQuit) throw new Error('应用退出接口不可用');
-        window.electronAPI.confirmQuit();
+        window.electronAPI.confirmQuit(requestId);
       } catch (error) {
         useStore.setState({ error: '退出已取消：' + (error?.message || '保存项目状态失败') });
+        cancelQuit(error?.message || 'renderer-quit-error');
       } finally {
         quitInProgress = false;
       }
@@ -707,11 +852,17 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
-      {authViewState === 'loading' ? <AuthLoadingView /> : authViewState === 'login' ? <LoginView /> : authViewState === 'error' ? <AuthRecoveryView /> : (
+    <div className="app-shell flex h-screen w-screen overflow-hidden text-[var(--color-text-primary)]">
+      {authViewState === 'loading' ? (
+        <AuthLoadingView />
+      ) : authViewState === 'login' ? (
+        <LoginView />
+      ) : authViewState === 'error' ? (
+        <AuthRecoveryView />
+      ) : (
         <>
           <ReplicaSidebar />
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="app-main flex min-w-0 flex-1 flex-col">
             <StatusBar />
             <MainContent />
           </div>

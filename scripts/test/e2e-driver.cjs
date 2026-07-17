@@ -31,6 +31,7 @@ const ROUTE_EXPECTATIONS = Object.freeze([
     navGroup: '可观测',
     expected: { role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...' },
   },
+  { route: 'models', navLabel: '模型', expected: { role: 'button', name: '添加模型' } },
   { route: 'settings', navLabel: '设置', expected: { role: 'button', name: '亮色' } },
   {
     route: 'keybindings',

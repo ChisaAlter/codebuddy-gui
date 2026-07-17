@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AcpClient, setApiBase } from '../../src/lib/acp';
+import { AcpClient, AcpRpcError, isAcpAuthenticationError, setApiBase } from '../../src/lib/acp';
 
 function sseResponse(text) {
   return {
@@ -22,6 +22,23 @@ describe('AcpClient GET SSE notification stream', () => {
     delete window.electronAPI;
   });
 
+  it('retains native authentication methods and authenticates through ACP', async () => {
+    const client = new AcpClient();
+    client.connected = true;
+    client.connectionId = 'conn-auth';
+    client.request = vi
+      .fn()
+      .mockResolvedValueOnce({ authMethods: [{ id: 'iOA', name: 'Login with iOA' }] })
+      .mockResolvedValueOnce({ _meta: { 'codebuddy.ai/userinfo': { userId: 'user-1' } } });
+
+    await client.initialize();
+    await expect(client.authenticate('iOA')).resolves.toMatchObject({
+      _meta: { 'codebuddy.ai/userinfo': { userId: 'user-1' } },
+    });
+    expect(client.authMethods).toEqual([{ id: 'iOA', name: 'Login with iOA' }]);
+    expect(client.request).toHaveBeenNthCalledWith(2, 'authenticate', { methodId: 'iOA' });
+  });
+
   it('readSseStream 能跨 chunk 解析 SSE 消息', async () => {
     const client = new AcpClient();
     const messages = [];
@@ -37,9 +54,7 @@ describe('AcpClient GET SSE notification stream', () => {
 
     await client.readSseStream(response, (message) => messages.push(message));
 
-    expect(messages).toEqual([
-      { method: 'session/update', params: { ok: true } },
-    ]);
+    expect(messages).toEqual([{ method: 'session/update', params: { ok: true } }]);
   });
 
   it('connect 后可通过 Electron IPC stream 派发 session/update', async () => {
@@ -65,11 +80,17 @@ describe('AcpClient GET SSE notification stream', () => {
     window.electronAPI = {
       openCodeBuddyStream(request, handlers) {
         openedRequest = request;
-        queueMicrotask(() => handlers.onMessage({
-          method: 'session/update',
-          params: { sessionId: 's-ipc', update: { sessionUpdate: 'agent_message_chunk' } },
-        }));
-        return { close: () => { closeCalled = true; } };
+        queueMicrotask(() =>
+          handlers.onMessage({
+            method: 'session/update',
+            params: { sessionId: 's-ipc', update: { sessionUpdate: 'agent_message_chunk' } },
+          }),
+        );
+        return {
+          close: () => {
+            closeCalled = true;
+          },
+        };
       },
     };
 
@@ -125,13 +146,15 @@ describe('AcpClient GET SSE notification stream', () => {
     await expect(client.request('session/new', { cwd: '.', mcpServers: [] })).resolves.toEqual({
       sessionId: 'session-delayed',
     });
-    expect(updates).toEqual([{
-      sessionId: 'session-delayed',
-      update: {
-        sessionUpdate: 'available_commands_update',
-        availableCommands: [{ name: 'help', description: 'Show help' }],
+    expect(updates).toEqual([
+      {
+        sessionId: 'session-delayed',
+        update: {
+          sessionUpdate: 'available_commands_update',
+          availableCommands: [{ name: 'help', description: 'Show help' }],
+        },
       },
-    }]);
+    ]);
   });
 
   it('request 在最终结果返回前逐条派发 POST SSE 更新', async () => {
@@ -146,13 +169,15 @@ describe('AcpClient GET SSE notification stream', () => {
           status: 200,
           body: new ReadableStream({
             start(controller) {
-              controller.enqueue(new TextEncoder().encode(
-                'data: {"method":"session/update","params":{"sessionId":"s-stream","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"第一段"}}}}\n\n',
-              ));
+              controller.enqueue(
+                new TextEncoder().encode(
+                  'data: {"method":"session/update","params":{"sessionId":"s-stream","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"第一段"}}}}\n\n',
+                ),
+              );
               releaseResult = () => {
-                controller.enqueue(new TextEncoder().encode(
-                  `data: {"jsonrpc":"2.0","id":"${body.id}","result":null}\n\n`,
-                ));
+                controller.enqueue(
+                  new TextEncoder().encode(`data: {"jsonrpc":"2.0","id":"${body.id}","result":null}\n\n`),
+                );
                 controller.close();
               };
             },
@@ -169,8 +194,10 @@ describe('AcpClient GET SSE notification stream', () => {
     const updates = [];
     client.on('session/update', (event) => updates.push(event.detail));
     let requestResolved = false;
-    const request = client.request('session/prompt', { sessionId: 's-stream', prompt: [] })
-      .then((result) => { requestResolved = true; return result; });
+    const request = client.request('session/prompt', { sessionId: 's-stream', prompt: [] }).then((result) => {
+      requestResolved = true;
+      return result;
+    });
 
     await vi.waitFor(() => expect(updates).toHaveLength(1));
     expect(requestResolved).toBe(false);
@@ -191,18 +218,24 @@ describe('AcpClient GET SSE notification stream', () => {
       openCodeBuddyStream(request, nextHandlers) {
         openedRequest = request;
         handlers = nextHandlers;
-        queueMicrotask(() => handlers.onMessage({
-          method: 'session/update',
-          params: {
-            sessionId: 's-ipc-stream',
-            update: {
-              sessionUpdate: 'agent_thought_chunk',
-              messageId: 'thought-1',
-              content: { type: 'text', text: '正在分析' },
+        queueMicrotask(() =>
+          handlers.onMessage({
+            method: 'session/update',
+            params: {
+              sessionId: 's-ipc-stream',
+              update: {
+                sessionUpdate: 'agent_thought_chunk',
+                messageId: 'thought-1',
+                content: { type: 'text', text: '正在分析' },
+              },
             },
+          }),
+        );
+        return {
+          close: () => {
+            closeCalled = true;
           },
-        }));
-        return { close: () => { closeCalled = true; } };
+        };
       },
     };
 
@@ -213,8 +246,10 @@ describe('AcpClient GET SSE notification stream', () => {
     const updates = [];
     client.on('session/update', (event) => updates.push(event.detail));
     let requestResolved = false;
-    const request = client.request('session/prompt', { sessionId: 's-ipc-stream', prompt: [] })
-      .then((result) => { requestResolved = true; return result; });
+    const request = client.request('session/prompt', { sessionId: 's-ipc-stream', prompt: [] }).then((result) => {
+      requestResolved = true;
+      return result;
+    });
 
     await vi.waitFor(() => expect(updates).toHaveLength(1));
     expect(requestResolved).toBe(false);
@@ -237,6 +272,29 @@ describe('AcpClient GET SSE notification stream', () => {
     expect(closeCalled).toBe(true);
   });
 
+  it('locally cancels the active Electron prompt stream', async () => {
+    let closeCalled = false;
+    window.electronAPI = {
+      openCodeBuddyStream() {
+        return {
+          close: () => {
+            closeCalled = true;
+          },
+        };
+      },
+    };
+
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-cancel';
+    const request = client.request('session/prompt', { sessionId: 's-cancel', prompt: [] });
+
+    expect(client.cancelActivePrompt('s-cancel')).toBe(true);
+    await expect(request).rejects.toThrow('cancelled by user');
+    expect(closeCalled).toBe(true);
+    expect(client.cancelActivePrompt('s-cancel')).toBe(false);
+  });
+
   it('request 收到 result:null 时仍视为匹配到响应', async () => {
     setApiBase('http://127.0.0.1:34567');
     const fetchMock = vi.fn(async (url, init = {}) => {
@@ -256,6 +314,30 @@ describe('AcpClient GET SSE notification stream', () => {
     await expect(client.request('session/prompt', { sessionId: 's1', prompt: [] })).resolves.toBeNull();
   });
 
+  it('preserves ACP authentication error metadata', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: '1',
+          error: { code: -32000, message: 'Authentication required', data: { category: 'auth' } },
+        }),
+      })),
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-auth';
+
+    const error = await client.request('initialize', {}).catch((value) => value);
+    expect(error).toBeInstanceOf(AcpRpcError);
+    expect(error).toMatchObject({ code: -32000, category: 'auth', data: { category: 'auth' } });
+    expect(isAcpAuthenticationError(error)).toBe(true);
+  });
+
   it('connect 后建立 GET /api/v1/acp 长连接并派发 session/update', async () => {
     setApiBase('http://127.0.0.1:12345');
     const fetchMock = vi.fn(async (url, init = {}) => {
@@ -268,7 +350,9 @@ describe('AcpClient GET SSE notification stream', () => {
         };
       }
       if (url === 'http://127.0.0.1:12345/api/v1/acp' && method === 'GET') {
-        return sseResponse('data: {"method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":[{"type":"text","text":"pong"}]}}}\n\n');
+        return sseResponse(
+          'data: {"method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":[{"type":"text","text":"pong"}]}}}\n\n',
+        );
       }
       if (url === 'http://127.0.0.1:12345/api/v1/acp/connect/conn-1' && method === 'DELETE') {
         return { ok: true, status: 204, text: async () => '' };

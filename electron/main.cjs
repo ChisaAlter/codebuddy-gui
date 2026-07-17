@@ -7,7 +7,14 @@ const { parse: parseJsonc } = require('jsonc-parser');
 const http = require('http');
 const express = require('express');
 const { createProductStateStore } = require('./product-state.cjs');
-const { createCodeBuddyRuntimeManager, decodeProcessOutput } = require('./codebuddy-runtime-manager.cjs');
+const {
+  codeBuddyFetchOptions,
+  createCodeBuddyRuntimeManager,
+  decodeProcessOutput,
+} = require('./codebuddy-runtime-manager.cjs');
+const { createQuitRequestController } = require('./quit-request-controller.cjs');
+const { createFinalExitController } = require('./final-exit-controller.cjs');
+const { deleteModelConfig, ensureModelConfigFile, listModelConfig, saveModelConfig } = require('./model-config.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -35,11 +42,17 @@ function readWindowState() {
     // 简单合法性校验：宽高正数、屏幕内可见
     if (typeof s.width !== 'number' || typeof s.height !== 'number' || s.width < 100 || s.height < 100) return null;
     return s;
-  } catch (_) { return null; }
+  } catch (_) {
+    return null;
+  }
 }
 
 function writeWindowState(state) {
-  try { fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state)); } catch (_) { /* 写失败不阻塞 */ }
+  try {
+    fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify(state));
+  } catch (_) {
+    /* 写失败不阻塞 */
+  }
 }
 
 function showCloseToTrayHint() {
@@ -59,20 +72,32 @@ function showCloseToTrayHint() {
 // 真退出标志：渲染进程确认退出后为 true，普通 X 关窗口仍只隐藏到托盘。
 // 这样编辑器可以在真正退出前处理未保存内容。
 let reallyQuitting = false;
+let quitRequestPreparing = false;
+let exitCleanupStarted = false;
+const quitRequestController = createQuitRequestController({
+  timeoutMs: 8000,
+  onTimeout(requestId) {
+    if (reallyQuitting) return;
+    logStartup(`Quit request timed out request=${requestId}; forcing application exit`);
+    beginFinalApplicationExit(`renderer-timeout:${requestId}`);
+  },
+});
 
 function redactSecrets(text) {
-  return String(text || '')
-    // 后端 stdout 形态："Password    xxx" / "Password: xxx" / "Password:xxx"（大写开头，留冒号）
-    .replace(/(Password\s*:\s*)[^\s,}]+/g, '$1[redacted]')
-    .replace(/(Password\s+)[^\s,}]+/g, '$1[redacted]')
-    // JSON 形态："password":"xxx" / 'password':'xxx'（保留值的引号对）
-    .replace(/(["']password["']\s*:\s*)(["'])[^"']+\2/g, '$1$2[redacted]$2')
-    // URL query 形态：?password=xxx / &password=xxx
-    .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]')
-    .replace(/(Authorization\s*:\s*Bearer\s+)[^\s,}]+/gi, '$1[redacted]')
-    .replace(/(["'](?:token|api[_-]?key|secret|auth)["']\s*:\s*)(["'])[^"']+\2/gi, '$1$2[redacted]$2')
-    .replace(/([?&](?:token|api[_-]?key|secret|auth)=)[^\s&]+/gi, '$1[redacted]')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9_]{20,})\b/g, '[redacted-token]');
+  return (
+    String(text || '')
+      // 后端 stdout 形态："Password    xxx" / "Password: xxx" / "Password:xxx"（大写开头，留冒号）
+      .replace(/(Password\s*:\s*)[^\s,}]+/g, '$1[redacted]')
+      .replace(/(Password\s+)[^\s,}]+/g, '$1[redacted]')
+      // JSON 形态："password":"xxx" / 'password':'xxx'（保留值的引号对）
+      .replace(/(["']password["']\s*:\s*)(["'])[^"']+\2/g, '$1$2[redacted]$2')
+      // URL query 形态：?password=xxx / &password=xxx
+      .replace(/([?&]password=)[^\s&]+/gi, '$1[redacted]')
+      .replace(/(Authorization\s*:\s*Bearer\s+)[^\s,}]+/gi, '$1[redacted]')
+      .replace(/(["'](?:token|api[_-]?key|secret|auth)["']\s*:\s*)(["'])[^"']+\2/gi, '$1$2[redacted]$2')
+      .replace(/([?&](?:token|api[_-]?key|secret|auth)=)[^\s&]+/gi, '$1[redacted]')
+      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9_]{20,})\b/g, '[redacted-token]')
+  );
 }
 
 function escapeRegExp(value) {
@@ -117,16 +142,54 @@ function logStartup(message) {
         const tail = fs.readFileSync(startupLog);
         fs.writeFileSync(startupLog, tail.slice(-200 * 1024));
       }
-    } catch (_) { /* 文件不存在或读失败不阻塞写入 */ }
+    } catch (_) {
+      /* 文件不存在或读失败不阻塞写入 */
+    }
     fs.appendFileSync(startupLog, `[${new Date().toISOString()}] ${message}\n`);
   } catch (_) {}
+}
+
+function destroyTrayIcon(reason = 'exit') {
+  if (!tray) return;
+  try {
+    tray.destroy();
+    logStartup(`Tray icon destroyed reason=${reason}`);
+  } catch (error) {
+    logStartup(`Tray destroy failed reason=${reason}: ${error?.message || error}`);
+  }
+  tray = null;
+}
+
+const finalExitController = createFinalExitController({
+  destroyTray: destroyTrayIcon,
+  requestQuit(reason) {
+    logStartup(`Electron app.quit requested reason=${reason}`);
+    app.quit();
+  },
+  forceExit(reason) {
+    logStartup(`Electron app.exit fallback reason=${reason}`);
+    app.exit(0);
+  },
+});
+
+function beginFinalApplicationExit(reason) {
+  if (reallyQuitting || finalExitController.isStarted()) return false;
+  reallyQuitting = true;
+  logStartup(`Final application exit started reason=${reason}`);
+  return finalExitController.start(reason);
 }
 
 const GUI_RELEASES_URL = 'https://github.com/ChisaAlter/codebuddy-gui/releases';
 const GUI_LATEST_RELEASE_API = 'https://api.github.com/repos/ChisaAlter/codebuddy-gui/releases/latest';
 
 function compareVersions(left, right) {
-  const parts = (value) => String(value || '').trim().replace(/^v/i, '').split('-')[0].split('.').map((item) => Number.parseInt(item, 10) || 0);
+  const parts = (value) =>
+    String(value || '')
+      .trim()
+      .replace(/^v/i, '')
+      .split('-')[0]
+      .split('.')
+      .map((item) => Number.parseInt(item, 10) || 0);
   const leftParts = parts(left);
   const rightParts = parts(right);
   const length = Math.max(leftParts.length, rightParts.length, 3);
@@ -140,7 +203,8 @@ function compareVersions(left, right) {
 function trustedGuiReleaseUrl(value) {
   try {
     const parsed = new URL(String(value || GUI_RELEASES_URL));
-    if (parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/ChisaAlter/codebuddy-gui/releases')) return parsed.toString();
+    if (parsed.origin === 'https://github.com' && parsed.pathname.startsWith('/ChisaAlter/codebuddy-gui/releases'))
+      return parsed.toString();
   } catch (_) {}
   return GUI_RELEASES_URL;
 }
@@ -148,8 +212,17 @@ function trustedGuiReleaseUrl(value) {
 function trustedGuiDownloadUrl(value) {
   try {
     const parsed = new URL(String(value || ''));
-    const match = decodeURIComponent(parsed.pathname).match(/^\/ChisaAlter\/codebuddy-gui\/releases\/download\/v(\d+(?:\.\d+){1,3})\/CodeBuddy-GUI-Setup-(\d+(?:\.\d+){1,3})\.exe$/i);
-    if (parsed.origin === 'https://github.com' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && match?.[1] === match?.[2]) {
+    const match = decodeURIComponent(parsed.pathname).match(
+      /^\/ChisaAlter\/codebuddy-gui\/releases\/download\/v(\d+(?:\.\d+){1,3})\/CodeBuddy-GUI-Setup-(\d+(?:\.\d+){1,3})\.exe$/i,
+    );
+    if (
+      parsed.origin === 'https://github.com' &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash &&
+      match?.[1] === match?.[2]
+    ) {
       return parsed.toString();
     }
   } catch (_) {}
@@ -203,7 +276,8 @@ function publicMcpUrl(value) {
     if (parsed.username) parsed.username = 'redacted';
     if (parsed.password) parsed.password = 'redacted';
     for (const key of Array.from(parsed.searchParams.keys())) {
-      if (/(?:token|api[-_]?key|secret|password|auth|credential)/i.test(key)) parsed.searchParams.set(key, '[redacted]');
+      if (/(?:token|api[-_]?key|secret|password|auth|credential)/i.test(key))
+        parsed.searchParams.set(key, '[redacted]');
     }
     return redactSecrets(parsed.toString());
   } catch (_) {
@@ -219,7 +293,10 @@ function publicMcpConfig(config = {}) {
     url: typeof config.url === 'string' ? publicMcpUrl(config.url) : '',
     description: typeof config.description === 'string' ? config.description : '',
     envKeys: config.env && typeof config.env === 'object' && !Array.isArray(config.env) ? Object.keys(config.env) : [],
-    headerKeys: config.headers && typeof config.headers === 'object' && !Array.isArray(config.headers) ? Object.keys(config.headers) : [],
+    headerKeys:
+      config.headers && typeof config.headers === 'object' && !Array.isArray(config.headers)
+        ? Object.keys(config.headers)
+        : [],
   };
 }
 
@@ -236,16 +313,29 @@ function resolveMcpConfigLocations(cwd) {
   const configRoot = String(process.env.CODEBUDDY_CONFIG_DIR || '').trim() || path.join(homeDir, '.codebuddy');
   return {
     cwd: resolvedCwd,
-    user: firstExistingPath([path.join(configRoot, '.mcp.json'), path.join(configRoot, 'mcp.json'), path.join(homeDir, '.codebuddy.json')]),
+    user: firstExistingPath([
+      path.join(configRoot, '.mcp.json'),
+      path.join(configRoot, 'mcp.json'),
+      path.join(homeDir, '.codebuddy.json'),
+    ]),
     project: firstExistingPath([path.join(resolvedCwd, '.mcp.json'), path.join(resolvedCwd, 'mcp.json')]),
     local: path.join(homeDir, '.mcp.json'),
   };
 }
 
 function configuredMcpServers(scope, config, filePath) {
-  const servers = config?.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers) ? config.mcpServers : {};
+  const servers =
+    config?.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers)
+      ? config.mcpServers
+      : {};
   const disabled = new Set(Array.isArray(config?.disabledMcpServers) ? config.disabledMcpServers.map(String) : []);
-  return Object.entries(servers).map(([name, value]) => ({ name, scope, filePath, disabled: disabled.has(name), config: publicMcpConfig(value) }));
+  return Object.entries(servers).map(([name, value]) => ({
+    name,
+    scope,
+    filePath,
+    disabled: disabled.has(name),
+    config: publicMcpConfig(value),
+  }));
 }
 
 function listConfiguredMcpServers(cwd) {
@@ -262,13 +352,16 @@ function listConfiguredMcpServers(cwd) {
   const user = readScope('user', locations.user);
   const project = readScope('project', locations.project);
   const local = readScope('local', locations.local, (value) => {
-    const projects = value?.projects && typeof value.projects === 'object' && !Array.isArray(value.projects) ? value.projects : {};
+    const projects =
+      value?.projects && typeof value.projects === 'object' && !Array.isArray(value.projects) ? value.projects : {};
     const target = comparableMcpPath(locations.cwd);
     const projectKey = Object.keys(projects).find((candidate) => comparableMcpPath(candidate) === target);
     return projectKey ? projects[projectKey] : {};
   });
   const scopeRank = { local: 0, project: 1, user: 2 };
-  const servers = [...local, ...project, ...user].sort((left, right) => (scopeRank[left.scope] - scopeRank[right.scope]) || left.name.localeCompare(right.name));
+  const servers = [...local, ...project, ...user].sort(
+    (left, right) => scopeRank[left.scope] - scopeRank[right.scope] || left.name.localeCompare(right.name),
+  );
   return { cwd: locations.cwd, locations, servers, errors };
 }
 
@@ -291,12 +384,12 @@ function readSandboxSnapshot() {
   }
 
   const e2b = state?.e2b && typeof state.e2b === 'object' ? state.e2b : {};
-  const sandboxValues = e2b.sandboxes && typeof e2b.sandboxes === 'object' && !Array.isArray(e2b.sandboxes)
-    ? e2b.sandboxes
-    : {};
-  const aliasValues = e2b.aliasMapping && typeof e2b.aliasMapping === 'object' && !Array.isArray(e2b.aliasMapping)
-    ? e2b.aliasMapping
-    : {};
+  const sandboxValues =
+    e2b.sandboxes && typeof e2b.sandboxes === 'object' && !Array.isArray(e2b.sandboxes) ? e2b.sandboxes : {};
+  const aliasValues =
+    e2b.aliasMapping && typeof e2b.aliasMapping === 'object' && !Array.isArray(e2b.aliasMapping)
+      ? e2b.aliasMapping
+      : {};
   const aliases = Object.entries(aliasValues)
     .map(([alias, sandboxId]) => ({ alias: String(alias), sandboxId: String(sandboxId || '') }))
     .filter((item) => item.alias && item.sandboxId)
@@ -308,36 +401,37 @@ function readSandboxSnapshot() {
     aliasesBySandbox.set(item.sandboxId, values);
   }
   const currentSandboxId = typeof e2b.currentSandboxId === 'string' ? e2b.currentSandboxId : null;
-  const sandboxes = Object.entries(sandboxValues).map(([key, rawValue]) => {
-    const value = rawValue && typeof rawValue === 'object' ? rawValue : {};
-    const sandboxId = String(value.sandboxId || key);
-    const projectValues = value.projects && typeof value.projects === 'object' && !Array.isArray(value.projects)
-      ? value.projects
-      : {};
-    const projects = Object.entries(projectValues).map(([projectKey, rawProject]) => {
-      const project = rawProject && typeof rawProject === 'object' ? rawProject : {};
+  const sandboxes = Object.entries(sandboxValues)
+    .map(([key, rawValue]) => {
+      const value = rawValue && typeof rawValue === 'object' ? rawValue : {};
+      const sandboxId = String(value.sandboxId || key);
+      const projectValues =
+        value.projects && typeof value.projects === 'object' && !Array.isArray(value.projects) ? value.projects : {};
+      const projects = Object.entries(projectValues).map(([projectKey, rawProject]) => {
+        const project = rawProject && typeof rawProject === 'object' ? rawProject : {};
+        return {
+          key: String(projectKey),
+          localPath: typeof project.localPath === 'string' ? project.localPath : '',
+          remotePath: typeof project.remotePath === 'string' ? project.remotePath : '',
+          lastSyncedAt: typeof project.lastSyncedAt === 'string' ? project.lastSyncedAt : null,
+        };
+      });
       return {
-        key: String(projectKey),
-        localPath: typeof project.localPath === 'string' ? project.localPath : '',
-        remotePath: typeof project.remotePath === 'string' ? project.remotePath : '',
-        lastSyncedAt: typeof project.lastSyncedAt === 'string' ? project.lastSyncedAt : null,
+        sandboxId,
+        current: sandboxId === currentSandboxId,
+        createdAt: typeof value.createdAt === 'string' ? value.createdAt : null,
+        lastUsedAt: typeof value.lastUsedAt === 'string' ? value.lastUsedAt : null,
+        templateName: typeof value.templateName === 'string' ? value.templateName : '',
+        aliases: aliasesBySandbox.get(sandboxId) || [],
+        projects,
       };
+    })
+    .sort((left, right) => {
+      if (left.current !== right.current) return left.current ? -1 : 1;
+      const leftTime = Date.parse(left.lastUsedAt || left.createdAt || '') || 0;
+      const rightTime = Date.parse(right.lastUsedAt || right.createdAt || '') || 0;
+      return rightTime - leftTime || left.sandboxId.localeCompare(right.sandboxId);
     });
-    return {
-      sandboxId,
-      current: sandboxId === currentSandboxId,
-      createdAt: typeof value.createdAt === 'string' ? value.createdAt : null,
-      lastUsedAt: typeof value.lastUsedAt === 'string' ? value.lastUsedAt : null,
-      templateName: typeof value.templateName === 'string' ? value.templateName : '',
-      aliases: aliasesBySandbox.get(sandboxId) || [],
-      projects,
-    };
-  }).sort((left, right) => {
-    if (left.current !== right.current) return left.current ? -1 : 1;
-    const leftTime = Date.parse(left.lastUsedAt || left.createdAt || '') || 0;
-    const rightTime = Date.parse(right.lastUsedAt || right.createdAt || '') || 0;
-    return rightTime - leftTime || left.sandboxId.localeCompare(right.sandboxId);
-  });
 
   return { statePath, stateExists: true, currentSandboxId, aliases, sandboxes };
 }
@@ -348,13 +442,17 @@ function validateSandboxId(value) {
   return sandboxId;
 }
 
-function runCapturedProcess(command, args, {
-  cwd = os.homedir(),
-  env = process.env,
-  timeoutMs = 120000,
-  maxOutputBytes = 2 * 1024 * 1024,
-  timeoutMessage = 'CodeBuddy 命令执行超时',
-} = {}) {
+function runCapturedProcess(
+  command,
+  args,
+  {
+    cwd = os.homedir(),
+    env = process.env,
+    timeoutMs = 120000,
+    maxOutputBytes = 2 * 1024 * 1024,
+    timeoutMessage = 'CodeBuddy 命令执行超时',
+  } = {},
+) {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, {
       cwd,
@@ -382,13 +480,17 @@ function runCapturedProcess(command, args, {
             windowsHide: true,
           });
           killer.once('error', () => {
-            try { proc.kill('SIGKILL'); } catch (_) {}
+            try {
+              proc.kill('SIGKILL');
+            } catch (_) {}
           });
           killer.unref();
           return;
         } catch (_) {}
       }
-      try { proc.kill('SIGKILL'); } catch (_) {}
+      try {
+        proc.kill('SIGKILL');
+      } catch (_) {}
     };
     const timeoutId = setTimeout(() => {
       if (settled) return;
@@ -415,15 +517,24 @@ function runCapturedProcess(command, args, {
       stderrTruncated = next.truncated;
     });
     proc.on('error', (error) => {
-      const message = /(?:ENOENT|not recognized|not found|不是内部或外部命令|找不到)/i.test(String(error?.message || error))
+      const message = /(?:ENOENT|not recognized|not found|不是内部或外部命令|找不到)/i.test(
+        String(error?.message || error),
+      )
         ? '未找到 CodeBuddy CLI。请确认命令行中可以直接运行 codebuddy。'
-        : (error?.message || String(error));
+        : error?.message || String(error);
       finish(new Error(message));
     });
     proc.on('close', (code) => {
       const output = decodeProcessOutput(stdout).trim();
       const errorOutput = decodeProcessOutput(stderr).trim();
-      if (code === 0) finish(null, { output: output || errorOutput, stdout: output, stderr: errorOutput, stdoutTruncated, stderrTruncated });
+      if (code === 0)
+        finish(null, {
+          output: output || errorOutput,
+          stdout: output,
+          stderr: errorOutput,
+          stdoutTruncated,
+          stderrTruncated,
+        });
       else finish(new Error(errorOutput || output || `CodeBuddy 命令执行失败，退出码 ${code}`));
     });
   });
@@ -431,10 +542,8 @@ function runCapturedProcess(command, args, {
 
 function runCodeBuddyCli(args, options = {}) {
   const isWindows = process.platform === 'win32';
-  const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'codebuddy';
-  const commandArgs = isWindows
-    ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`]
-    : args;
+  const command = isWindows ? process.env.ComSpec || 'cmd.exe' : 'codebuddy';
+  const commandArgs = isWindows ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`] : args;
   return runCapturedProcess(command, commandArgs, options);
 }
 
@@ -457,8 +566,8 @@ async function runExclusiveSandboxOperation(args) {
 }
 
 function publicBackgroundSession(value = {}) {
-  const numberValue = (item) => Number.isFinite(Number(item)) ? Number(item) : null;
-  const stringValue = (item) => typeof item === 'string' ? item : '';
+  const numberValue = (item) => (Number.isFinite(Number(item)) ? Number(item) : null);
+  const stringValue = (item) => (typeof item === 'string' ? item : '');
   return {
     pid: numberValue(value.pid),
     name: stringValue(value.name),
@@ -482,7 +591,8 @@ function publicBackgroundSession(value = {}) {
 async function listBackgroundSessions() {
   const result = await runCodeBuddyCli(['ps', '--json'], { timeoutMs: 30000 });
   const output = String(result.stdout || result.output || '').trim();
-  if (!output || /^No active sessions\.?$/i.test(output)) return { sessions: [], refreshedAt: new Date().toISOString() };
+  if (!output || /^No active sessions\.?$/i.test(output))
+    return { sessions: [], refreshedAt: new Date().toISOString() };
   let parsed;
   try {
     const arrayStart = output.indexOf('[');
@@ -507,7 +617,8 @@ function validateBackgroundPid(value) {
 
 function validateBackgroundSessionName(value) {
   const name = String(value || '').trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) throw new Error('后台会话名称只能包含字母、数字、点、连字符和下划线');
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name))
+    throw new Error('后台会话名称只能包含字母、数字、点、连字符和下划线');
   return name;
 }
 
@@ -537,16 +648,31 @@ async function startBackgroundSession(payload = {}) {
 
   let result;
   if (process.platform === 'win32') {
-    const windowsPowerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const windowsPowerShell = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    );
     const command = fs.existsSync(windowsPowerShell) ? windowsPowerShell : 'powershell.exe';
-    result = await runCapturedProcess(command, [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
-      "$name=$env:CODEBUDDY_GUI_BG_NAME; $prompt=$env:CODEBUDDY_GUI_BG_PROMPT; Remove-Item Env:CODEBUDDY_GUI_BG_NAME -ErrorAction SilentlyContinue; Remove-Item Env:CODEBUDDY_GUI_BG_PROMPT -ErrorAction SilentlyContinue; & codebuddy --bg --name $name -- $prompt",
-    ], {
-      cwd,
-      env: { ...process.env, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
-      timeoutMs: 60000,
-    });
+    result = await runCapturedProcess(
+      command,
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        '$name=$env:CODEBUDDY_GUI_BG_NAME; $prompt=$env:CODEBUDDY_GUI_BG_PROMPT; Remove-Item Env:CODEBUDDY_GUI_BG_NAME -ErrorAction SilentlyContinue; Remove-Item Env:CODEBUDDY_GUI_BG_PROMPT -ErrorAction SilentlyContinue; & codebuddy --bg --name $name -- $prompt',
+      ],
+      {
+        cwd,
+        env: { ...process.env, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
+        timeoutMs: 60000,
+      },
+    );
   } else {
     result = await runCapturedProcess('codebuddy', ['--bg', '--name', name, '--', prompt], { cwd, timeoutMs: 60000 });
   }
@@ -580,7 +706,10 @@ async function readBackgroundSessionLogs(pidValue) {
   } catch (error) {
     throw new Error(`后台日志读取失败: ${error?.message || error}`);
   } finally {
-    if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch (_) {}
+    if (descriptor !== undefined)
+      try {
+        fs.closeSync(descriptor);
+      } catch (_) {}
   }
   return {
     pid,
@@ -640,7 +769,13 @@ async function attachBackgroundSession(pidValue) {
   if (process.platform !== 'win32') throw new Error('当前版本仅支持在 Windows 交互终端中接管后台会话');
 
   const cwd = validateBackgroundCwd(target.cwd);
-  const windowsPowerShell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const windowsPowerShell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
   const powershell = fs.existsSync(windowsPowerShell) ? windowsPowerShell : 'powershell.exe';
   const command = `& codebuddy attach ${pid}`;
   const title = `CodeBuddy · ${target.name || `PID ${pid}`}`.slice(0, 80);
@@ -648,10 +783,25 @@ async function attachBackgroundSession(pidValue) {
 
   if (fs.existsSync(windowsTerminal)) {
     try {
-      const launched = await spawnDetachedInteractiveProcess(windowsTerminal, [
-        '-w', '0', 'new-tab', '--title', title, '-d', cwd,
-        powershell, '-NoLogo', '-NoProfile', '-NoExit', '-Command', command,
-      ], { cwd, windowsHide: true });
+      const launched = await spawnDetachedInteractiveProcess(
+        windowsTerminal,
+        [
+          '-w',
+          '0',
+          'new-tab',
+          '--title',
+          title,
+          '-d',
+          cwd,
+          powershell,
+          '-NoLogo',
+          '-NoProfile',
+          '-NoExit',
+          '-Command',
+          command,
+        ],
+        { cwd, windowsHide: true },
+      );
       return { session: target, terminal: 'Windows Terminal', launcherPid: launched.pid };
     } catch (error) {
       logStartup(`Windows Terminal attach launch failed: ${error?.message || error}`);
@@ -659,9 +809,11 @@ async function attachBackgroundSession(pidValue) {
   }
 
   try {
-    const launched = await spawnDetachedInteractiveProcess(powershell, [
-      '-NoLogo', '-NoProfile', '-NoExit', '-Command', command,
-    ], { cwd, windowsHide: false });
+    const launched = await spawnDetachedInteractiveProcess(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NoExit', '-Command', command],
+      { cwd, windowsHide: false },
+    );
     return { session: target, terminal: 'Windows PowerShell', launcherPid: launched.pid };
   } catch (error) {
     throw new Error(`无法打开交互终端: ${error?.message || error}`);
@@ -703,7 +855,9 @@ async function readDaemonServiceStatus() {
   try {
     const objectStart = output.indexOf('{');
     const objectEnd = output.lastIndexOf('}');
-    parsed = JSON.parse(objectStart >= 0 && objectEnd > objectStart ? output.slice(objectStart, objectEnd + 1) : output);
+    parsed = JSON.parse(
+      objectStart >= 0 && objectEnd > objectStart ? output.slice(objectStart, objectEnd + 1) : output,
+    );
   } catch (error) {
     throw new Error(`CodeBuddy Daemon 状态格式无效: ${error?.message || error}`);
   }
@@ -972,8 +1126,12 @@ ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
     return { shown: false, reason: 'window-focused' };
   }
 
-  const title = String(payload.title || 'CodeBuddy GUI').trim().slice(0, 120);
-  const body = String(payload.body || '').trim().slice(0, 500);
+  const title = String(payload.title || 'CodeBuddy GUI')
+    .trim()
+    .slice(0, 120);
+  const body = String(payload.body || '')
+    .trim()
+    .slice(0, 500);
   const target = {
     projectId: typeof payload.projectId === 'string' ? payload.projectId : null,
     threadId: typeof payload.threadId === 'string' ? payload.threadId : null,
@@ -1017,11 +1175,19 @@ ipcMain.handle('app:checkForUpdates', async () => {
       },
     });
     if (response.status === 404) {
-      return { status: 'no-release', currentVersion, latestVersion: null, updateAvailable: false, releaseUrl: GUI_RELEASES_URL };
+      return {
+        status: 'no-release',
+        currentVersion,
+        latestVersion: null,
+        updateAvailable: false,
+        releaseUrl: GUI_RELEASES_URL,
+      };
     }
     if (!response.ok) throw new Error(`GitHub Releases 请求失败: ${response.status} ${response.statusText}`);
     const release = await response.json();
-    const latestVersion = String(release?.tag_name || '').trim().replace(/^v/i, '');
+    const latestVersion = String(release?.tag_name || '')
+      .trim()
+      .replace(/^v/i, '');
     if (!latestVersion || !/^\d+(?:\.\d+){0,3}(?:[-+].*)?$/.test(latestVersion)) {
       throw new Error('最新发布版本号格式无效');
     }
@@ -1041,9 +1207,16 @@ ipcMain.handle('app:checkForUpdates', async () => {
       publishedAt: release?.published_at || null,
     };
   } catch (error) {
-    const message = error?.name === 'AbortError' ? 'GitHub Releases 请求超时' : (error?.message || String(error));
+    const message = error?.name === 'AbortError' ? 'GitHub Releases 请求超时' : error?.message || String(error);
     logStartup(`GUI update check failed: ${message}`);
-    return { status: 'error', currentVersion, latestVersion: null, updateAvailable: false, releaseUrl: GUI_RELEASES_URL, error: message };
+    return {
+      status: 'error',
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      releaseUrl: GUI_RELEASES_URL,
+      error: message,
+    };
   } finally {
     timeout.cleanup();
   }
@@ -1071,33 +1244,60 @@ ipcMain.handle('app:getInfo', () => ({
 
 ipcMain.handle('mcp:listConfigs', (_event, cwd) => listConfiguredMcpServers(cwd));
 ipcMain.handle('sandbox:list', () => readSandboxSnapshot());
-ipcMain.handle('sandbox:kill', (_event, sandboxId) => runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]));
+ipcMain.handle('sandbox:kill', (_event, sandboxId) =>
+  runExclusiveSandboxOperation(['kill', validateSandboxId(sandboxId)]),
+);
 ipcMain.handle('sandbox:clean', () => runExclusiveSandboxOperation(['clean']));
 ipcMain.handle('backgroundSession:list', () => listBackgroundSessions());
-ipcMain.handle('backgroundSession:start', (_event, payload) => runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload)));
+ipcMain.handle('backgroundSession:start', (_event, payload) =>
+  runExclusiveBackgroundSessionOperation(() => startBackgroundSession(payload)),
+);
 ipcMain.handle('backgroundSession:logs', (_event, pid) => readBackgroundSessionLogs(pid));
-ipcMain.handle('backgroundSession:kill', (_event, pid) => runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)));
+ipcMain.handle('backgroundSession:kill', (_event, pid) =>
+  runExclusiveBackgroundSessionOperation(() => killBackgroundSession(pid)),
+);
 ipcMain.handle('backgroundSession:openEndpoint', (_event, endpoint) => openBackgroundSessionEndpoint(endpoint));
 ipcMain.handle('backgroundSession:attach', (_event, pid) => attachBackgroundSession(pid));
 ipcMain.handle('daemonService:status', () => readDaemonServiceStatus());
-ipcMain.handle('daemonService:install', (_event, payload) => runExclusiveDaemonServiceOperation(() => installDaemonService(payload)));
+ipcMain.handle('daemonService:install', (_event, payload) =>
+  runExclusiveDaemonServiceOperation(() => installDaemonService(payload)),
+);
 ipcMain.handle('daemonService:uninstall', () => runExclusiveDaemonServiceOperation(() => uninstallDaemonService()));
 ipcMain.handle('cliMaintenance:getInfo', () => getCodeBuddyCliInfo());
 ipcMain.handle('cliMaintenance:doctor', () => runExclusiveCliMaintenanceOperation(() => runCodeBuddyCliDoctor()));
 ipcMain.handle('cliMaintenance:update', () => runExclusiveCliMaintenanceOperation(() => updateCodeBuddyCli()));
-ipcMain.handle('cliMaintenance:install', (_event, target) => runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target)));
-ipcMain.handle('pluginMaintenance:update', (_event, payload) => runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)));
-ipcMain.handle('pluginMaintenance:previewPrune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload)));
-ipcMain.handle('pluginMaintenance:prune', (_event, payload) => runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload)));
+ipcMain.handle('cliMaintenance:install', (_event, target) =>
+  runExclusiveCliMaintenanceOperation(() => installCodeBuddyCli(target)),
+);
+ipcMain.handle('pluginMaintenance:update', (_event, payload) =>
+  runExclusiveCliMaintenanceOperation(() => updateInstalledPlugin(payload)),
+);
+ipcMain.handle('pluginMaintenance:previewPrune', (_event, payload) =>
+  runExclusiveCliMaintenanceOperation(() => previewPluginDependencyPrune(payload)),
+);
+ipcMain.handle('pluginMaintenance:prune', (_event, payload) =>
+  runExclusiveCliMaintenanceOperation(() => prunePluginDependencies(payload)),
+);
+ipcMain.handle('modelConfig:list', () => listModelConfig());
+ipcMain.handle('modelConfig:save', (_event, payload) => saveModelConfig(payload));
+ipcMain.handle('modelConfig:delete', (_event, modelId) => deleteModelConfig(modelId));
+ipcMain.handle('modelConfig:open', async () => {
+  const filePath = ensureModelConfigFile();
+  shell.showItemInFolder(filePath);
+  return { filePath };
+});
 
 ipcMain.handle('app:reportRendererError', (_event, payload = {}) => {
-  const kind = String(payload.kind || 'reactErrorBoundary').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || 'rendererError';
+  const kind =
+    String(payload.kind || 'reactErrorBoundary')
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(0, 40) || 'rendererError';
   const message = String(payload.message || 'Renderer error').slice(0, 4000);
   const stack = String(payload.stack || '').slice(0, 40000);
   const componentStack = String(payload.componentStack || '').slice(0, 20000);
   const route = String(payload.route || '').slice(0, 500);
   writeCrashLog('renderer:' + kind, {
-    stack: [message, stack, componentStack && ('Component stack:' + componentStack), route && ('Route: ' + route)]
+    stack: [message, stack, componentStack && 'Component stack:' + componentStack, route && 'Route: ' + route]
       .filter(Boolean)
       .join('\n'),
   });
@@ -1112,9 +1312,10 @@ ipcMain.handle('app:exportDiagnostics', async () => {
     defaultPath: `CodeBuddy-GUI-diagnostics-${fileTimestamp}.json`,
     filters: [{ name: 'JSON', extensions: ['json'] }],
   };
-  const result = mainWindow && !mainWindow.isDestroyed()
-    ? await dialog.showSaveDialog(mainWindow, saveOptions)
-    : await dialog.showSaveDialog(saveOptions);
+  const result =
+    mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showSaveDialog(mainWindow, saveOptions)
+      : await dialog.showSaveDialog(saveOptions);
   if (result.canceled || !result.filePath) return { canceled: true };
 
   const runtimes = runtimeManager.list().map((runtime) => ({
@@ -1127,13 +1328,16 @@ ipcMain.handle('app:exportDiagnostics', async () => {
     error: runtime.error ? redactProjectPath(runtime.error, runtime.cwd) : null,
     startedAt: runtime.startedAt,
   }));
-  const windowState = mainWindow && !mainWindow.isDestroyed() ? {
-    visible: mainWindow.isVisible(),
-    focused: mainWindow.isFocused(),
-    minimized: mainWindow.isMinimized(),
-    maximized: mainWindow.isMaximized(),
-    bounds: mainWindow.getBounds(),
-  } : null;
+  const windowState =
+    mainWindow && !mainWindow.isDestroyed()
+      ? {
+          visible: mainWindow.isVisible(),
+          focused: mainWindow.isFocused(),
+          minimized: mainWindow.isMinimized(),
+          maximized: mainWindow.isMaximized(),
+          bounds: mainWindow.getBounds(),
+        }
+      : null;
   const report = {
     schemaVersion: 1,
     generatedAt: timestamp,
@@ -1161,7 +1365,14 @@ ipcMain.handle('app:exportDiagnostics', async () => {
       startup: readDiagnosticLog(startupLog),
       crash: readDiagnosticLog(path.join(app.getPath('userData'), 'crash.log')),
     },
-    exclusions: ['project files', 'project paths', 'conversation content', 'drafts', 'product-state.json', 'runtime passwords'],
+    exclusions: [
+      'project files',
+      'project paths',
+      'conversation content',
+      'drafts',
+      'product-state.json',
+      'runtime passwords',
+    ],
   };
   await fs.promises.writeFile(result.filePath, JSON.stringify(report, null, 2), 'utf8');
   return { canceled: false, path: result.filePath };
@@ -1252,9 +1463,7 @@ async function createWindow() {
   mainWindow = new BrowserWindow(winOpts);
   mainWindow.webContents.on('render-process-gone', async (_event, details = {}) => {
     const reason = details.reason || 'unknown';
-    writeCrashLog('renderProcessGone', new Error(
-      'reason=' + reason + ' exitCode=' + (details.exitCode ?? 'unknown'),
-    ));
+    writeCrashLog('renderProcessGone', new Error('reason=' + reason + ' exitCode=' + (details.exitCode ?? 'unknown')));
     if (reallyQuitting || reason === 'clean-exit') return;
     const targetWindow = mainWindow;
     try {
@@ -1268,12 +1477,12 @@ async function createWindow() {
         cancelId: 2,
         noLink: true,
       };
-      const result = targetWindow && !targetWindow.isDestroyed()
-        ? await dialog.showMessageBox(targetWindow, options)
-        : await dialog.showMessageBox(options);
+      const result =
+        targetWindow && !targetWindow.isDestroyed()
+          ? await dialog.showMessageBox(targetWindow, options)
+          : await dialog.showMessageBox(options);
       if (result.response === 2) {
-        reallyQuitting = true;
-        app.quit();
+        beginFinalApplicationExit('renderer-crash-dialog');
         return;
       }
       if (result.response === 1) {
@@ -1301,9 +1510,9 @@ async function createWindow() {
     if (minimized && !options.allowMinimized) return;
     const isMax = mainWindow.isMaximized();
     const b = minimized
-      ? (lastNormalBounds || mainWindow.getNormalBounds())
+      ? lastNormalBounds || mainWindow.getNormalBounds()
       : isMax
-        ? (lastNormalBounds || mainWindow.getNormalBounds())
+        ? lastNormalBounds || mainWindow.getNormalBounds()
         : mainWindow.getBounds();
     if (!isMax && !minimized) lastNormalBounds = b;
     writeWindowState({ ...b, isMaximized: isMax, closeToTrayHintShown });
@@ -1311,7 +1520,10 @@ async function createWindow() {
   let lastNormalBounds = null;
   mainWindow.on('resize', saveWindowState);
   mainWindow.on('move', saveWindowState);
-  mainWindow.on('maximize', () => { lastNormalBounds = mainWindow.getNormalBounds(); saveWindowState(); });
+  mainWindow.on('maximize', () => {
+    lastNormalBounds = mainWindow.getNormalBounds();
+    saveWindowState();
+  });
   mainWindow.on('unmaximize', saveWindowState);
   mainWindow.on('close', (event) => {
     if (!reallyQuitting && tray) {
@@ -1391,7 +1603,9 @@ function showOrCreateMainWindow() {
             dialog.showErrorBox('CodeBuddy GUI 启动失败', error?.message || String(error));
           } catch (_) {}
         })
-        .finally(() => { windowCreationPromise = null; });
+        .finally(() => {
+          windowCreationPromise = null;
+        });
     }
     return windowCreationPromise;
   }
@@ -1402,28 +1616,82 @@ function showOrCreateMainWindow() {
 }
 
 async function requestApplicationQuit() {
-  const windowResult = showOrCreateMainWindow();
-  if (windowResult && typeof windowResult.then === 'function') await windowResult;
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    reallyQuitting = true;
-    app.quit();
+  if (reallyQuitting) return;
+  if (quitRequestPreparing || quitRequestController.hasPending()) {
+    logStartup(
+      `Quit request ignored because one is already pending request=${quitRequestController.currentRequestId() || 'preparing'}`,
+    );
     return;
   }
+  quitRequestPreparing = true;
+  const windowResult = showOrCreateMainWindow();
+  try {
+    if (windowResult && typeof windowResult.then === 'function') await windowResult;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      beginFinalApplicationExit('no-main-window');
+      return;
+    }
 
-  const sendRequest = () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:quitRequested');
-  };
-  if (mainWindow.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', sendRequest);
-  else sendRequest();
+    const { started, requestId } = quitRequestController.begin();
+    if (!started) return;
+    const sendRequest = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      logStartup(`Quit request sent request=${requestId}`);
+      mainWindow.webContents.send('app:quitRequested', { requestId });
+    };
+    if (mainWindow.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', sendRequest);
+    else sendRequest();
+  } finally {
+    quitRequestPreparing = false;
+  }
 }
 
-ipcMain.on('app:confirmQuit', () => {
-  reallyQuitting = true;
-  app.quit();
+ipcMain.on('app:confirmQuit', (_event, requestId) => {
+  if (!quitRequestController.confirm(requestId)) {
+    logStartup(`Ignored stale quit confirmation request=${String(requestId || '')}`);
+    return;
+  }
+  logStartup(`Quit request confirmed request=${requestId}`);
+  beginFinalApplicationExit(`renderer-confirmed:${requestId}`);
+});
+
+ipcMain.on('app:acknowledgeQuit', (_event, requestId) => {
+  if (!quitRequestController.acknowledge(requestId)) {
+    logStartup(`Ignored stale quit acknowledgement request=${String(requestId || '')}`);
+    return;
+  }
+  logStartup(`Quit request acknowledged by renderer request=${requestId}`);
+});
+
+ipcMain.on('app:cancelQuit', (_event, payload = {}) => {
+  const requestId = String(payload?.requestId || '');
+  if (!quitRequestController.cancel(requestId)) {
+    logStartup(`Ignored stale quit cancellation request=${requestId}`);
+    return;
+  }
+  logStartup(
+    `Quit request cancelled request=${requestId} reason=${redactDiagnosticText(payload?.reason || 'unspecified')}`,
+  );
 });
 
 const GIT_ALLOWED_COMMANDS = new Set([
-  'add', 'branch', 'checkout', 'clean', 'commit', 'diff', 'fetch', 'init', 'log', 'pull', 'push', 'remote', 'reset', 'restore', 'rev-parse', 'stash', 'status',
+  'add',
+  'branch',
+  'checkout',
+  'clean',
+  'commit',
+  'diff',
+  'fetch',
+  'init',
+  'log',
+  'pull',
+  'push',
+  'remote',
+  'reset',
+  'restore',
+  'rev-parse',
+  'stash',
+  'status',
 ]);
 
 // 二级子命令白名单：只校验出现在主命令后第一位置的子动词（非选项，即不以 - 开头）
@@ -1440,18 +1708,19 @@ const GIT_ALLOWED_SUBCOMMANDS = {
 // git 选项黑名单：拦截可执行外部命令 / 改变传输行为的危险选项
 // 参考 git-receive-pack / git-upload-pack 可被恶意 server 触发执行任意 hook
 const GIT_BLOCKED_OPTIONS = new Set([
-  '--upload-pack',    // fetch/pull 可指定 upload-pack，传 shell 命令被远端执行
-  '--receive-pack',   // push 同理
-  '--config', '-c',   // 任意 config override，可覆盖 core.hooksPath / user 等
-  '--exec',           // git exec-path
-  '--shallow-exclude',// 改 shallow 边界，虽不直接 exec 但可放大攻击面
-  '--local-config',   // alias 链
+  '--upload-pack', // fetch/pull 可指定 upload-pack，传 shell 命令被远端执行
+  '--receive-pack', // push 同理
+  '--config',
+  '-c', // 任意 config override，可覆盖 core.hooksPath / user 等
+  '--exec', // git exec-path
+  '--shallow-exclude', // 改 shallow 边界，虽不直接 exec 但可放大攻击面
+  '--local-config', // alias 链
 ]);
 
 const GIT_PATH_OPTIONS = new Set(['--']); // '之后' 一律当 path，不再当选项解析
 
 function normalizeGitRequest(payload) {
-  const request = Array.isArray(payload) ? { args: payload } : (payload || {});
+  const request = Array.isArray(payload) ? { args: payload } : payload || {};
   const args = Array.isArray(request.args) ? request.args.map(String) : [];
   const cwd = typeof request.cwd === 'string' && request.cwd.trim() ? request.cwd.trim() : process.cwd();
   return { args, cwd };
@@ -1486,7 +1755,10 @@ function validateGitArgs(args) {
   for (let i = cmdIndex + 1; i < args.length; i++) {
     const a = args[i];
     if (inPath) continue;
-    if (GIT_PATH_OPTIONS.has(a)) { inPath = true; continue; }
+    if (GIT_PATH_OPTIONS.has(a)) {
+      inPath = true;
+      continue;
+    }
     const key = a.split('=')[0];
     if (GIT_BLOCKED_OPTIONS.has(key)) {
       return `git option is blocked for security: ${key}`;
@@ -1518,8 +1790,12 @@ ipcMain.handle('git:run', async (_event, payload = {}) => {
     const proc = spawn('git', args, { cwd, shell: false });
     let stdout = '';
     let stderr = '';
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.stdout.on('data', (d) => {
+      stdout += d.toString();
+    });
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
     proc.on('error', (error) => resolve({ ok: false, error: error.message }));
     proc.on('close', (code) => {
       if (code === 0) resolve({ ok: true, output: stdout });
@@ -1536,7 +1812,8 @@ function parseSseMessagesFromBuffer(buffer) {
     const lines = part.split(/\r?\n/);
     const eventType = lines
       .find((line) => line.startsWith('event:'))
-      ?.slice(6).trim();
+      ?.slice(6)
+      .trim();
     const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trim())
@@ -1560,7 +1837,9 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   const streamId = String(request.streamId || '');
   const url = String(request.url || '');
   const method = String(request.method || 'GET').toUpperCase();
-  const timeoutMs = Number.isFinite(Number(request.timeoutMs)) ? Number(request.timeoutMs) : CODEBUDDY_REQUEST_TIMEOUT_MS;
+  const timeoutMs = Number.isFinite(Number(request.timeoutMs))
+    ? Number(request.timeoutMs)
+    : CODEBUDDY_REQUEST_TIMEOUT_MS;
   const expectedRpcId = request.rpcId == null ? null : String(request.rpcId);
   if (!streamId) return { ok: false, error: 'missing streamId' };
   if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
@@ -1581,12 +1860,15 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   };
   armTimeout();
   try {
-    const response = await net.fetch(url, {
-      method,
-      headers: request.headers || {},
-      body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
-      signal: controller.signal,
-    });
+    const response = await net.fetch(
+      url,
+      codeBuddyFetchOptions({
+        method,
+        headers: request.headers || {},
+        body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
+        signal: controller.signal,
+      }),
+    );
     if (!response.ok) {
       if (timeoutId) clearTimeout(timeoutId);
       codebuddyStreams.delete(streamId);
@@ -1601,7 +1883,9 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
       if (method !== 'GET' && !event.sender.isDestroyed()) {
         const parsed = parseSseMessagesFromBuffer(`${text}\n\n`).messages;
         if (!parsed.length && text.trim()) {
-          try { parsed.push(JSON.parse(text)); } catch (_) {}
+          try {
+            parsed.push(JSON.parse(text));
+          } catch (_) {}
         }
         for (const message of parsed) event.sender.send('codebuddy:streamMessage', { streamId, message });
         event.sender.send('codebuddy:streamEnd', {
@@ -1640,7 +1924,9 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
               const parsed = parseSseMessagesFromBuffer(`${buffer}\n\n`);
               buffer = parsed.rest;
               if (emitMessages(parsed.messages)) {
-                try { await reader.cancel(); } catch (_) {}
+                try {
+                  await reader.cancel();
+                } catch (_) {}
               }
             }
             break;
@@ -1650,15 +1936,20 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
           if (emitMessages(parsed.messages)) {
-            try { await reader.cancel(); } catch (_) {}
+            try {
+              await reader.cancel();
+            } catch (_) {}
             break;
           }
         }
       } catch (error) {
-        if (!controller.signal.aborted || timedOut) streamError = timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message;
+        if (!controller.signal.aborted || timedOut)
+          streamError = timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
-        try { reader.releaseLock?.(); } catch (_) {}
+        try {
+          reader.releaseLock?.();
+        } catch (_) {}
         codebuddyStreams.delete(streamId);
         if (!sender.isDestroyed()) {
           if (streamError) {
@@ -1680,7 +1971,10 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   } catch (error) {
     if (timeoutId) clearTimeout(timeoutId);
     codebuddyStreams.delete(streamId);
-    event.sender.send('codebuddy:streamError', { streamId, error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message });
+    event.sender.send('codebuddy:streamError', {
+      streamId,
+      error: timedOut ? `CodeBuddy stream timed out after ${timeoutMs}ms` : error.message,
+    });
     return { ok: false, error: error.message };
   }
 });
@@ -1695,20 +1989,30 @@ ipcMain.on('codebuddy:closeStream', (_event, streamId) => {
 
 ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
   // timeoutMs 由前端透传：session/prompt 等 SSE 长请求使用 120000ms，普通 REST 使用 30000ms。
-  const timeoutMs = Number.isFinite(Number(request.timeoutMs)) ? Number(request.timeoutMs) : CODEBUDDY_REQUEST_TIMEOUT_MS;
+  const timeoutMs = Number.isFinite(Number(request.timeoutMs))
+    ? Number(request.timeoutMs)
+    : CODEBUDDY_REQUEST_TIMEOUT_MS;
   const timeout = createTimeoutSignal(timeoutMs);
   try {
     const method = request.method || 'GET';
     const url = String(request.url || '');
     if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
-      return { ok: false, status: 400, statusText: 'Bad Request', body: 'Only localhost CodeBuddy requests are allowed' };
+      return {
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        body: 'Only localhost CodeBuddy requests are allowed',
+      };
     }
-    const response = await net.fetch(url, {
-      method,
-      headers: request.headers || {},
-      body: request.body,
-      signal: timeout.signal,
-    });
+    const response = await net.fetch(
+      url,
+      codeBuddyFetchOptions({
+        method,
+        headers: request.headers || {},
+        body: request.body,
+        signal: timeout.signal,
+      }),
+    );
     // SSE 流式：net.fetch 的 AbortSignal 对流读取不一定生效，这里改成主动读流 + 超 timeout 强切
     const contentType = response.headers.get('content-type') || '';
     const isSse = contentType.includes('text/event-stream');
@@ -1720,7 +2024,13 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       const decoder = new TextDecoder();
       const tMax = Date.now() + timeoutMs;
       while (true) {
-        if (Date.now() > tMax) { truncated = true; try { reader.cancel(); } catch(_) {} break; }
+        if (Date.now() > tMax) {
+          truncated = true;
+          try {
+            reader.cancel();
+          } catch (_) {}
+          break;
+        }
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
@@ -1732,6 +2042,21 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
       bodyBase64 = buffer.toString('base64');
     } else {
       body = await response.text();
+    }
+    if (/\/api\/v1\/auth\/status(?:\?|$)/.test(url)) {
+      logStartup(`CodeBuddy auth status response status=${response.status} body=${redactSecrets(body)}`);
+    }
+    if (/\/api\/v1\/acp(?:\/connect)?(?:\?|$)/.test(url)) {
+      let rpcMethod = '';
+      try {
+        rpcMethod = JSON.parse(String(request.body || '{}'))?.method || '';
+      } catch (_) {}
+      const hasAuthorization = Boolean(request.headers?.Authorization || request.headers?.authorization);
+      const hasRpcError = /"error"\s*:/.test(body);
+      const errorSummary = !response.ok || hasRpcError ? ` body=${redactSecrets(body).slice(0, 1000)}` : '';
+      logStartup(
+        `CodeBuddy ACP response path=${new URL(url).pathname} rpc=${rpcMethod || '-'} status=${response.status} authorization=${hasAuthorization}${errorSummary}`,
+      );
     }
     return {
       ok: response.ok,
@@ -1754,14 +2079,20 @@ ipcMain.handle('codebuddy:request', async (_event, request = {}) => {
     timeout.cleanup();
   }
 });
-ipcMain.on('window:minimize', () => { if (mainWindow) mainWindow.minimize(); });
+ipcMain.on('window:minimize', () => {
+  if (mainWindow) mainWindow.minimize();
+});
 ipcMain.on('window:maximize', () => {
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) mainWindow.unmaximize();
   else mainWindow.maximize();
 });
-ipcMain.on('window:close', () => { if (mainWindow) mainWindow.close(); });
-ipcMain.on('window:reload', () => { if (mainWindow) mainWindow.webContents.reload(); });
+ipcMain.on('window:close', () => {
+  if (mainWindow) mainWindow.close();
+});
+ipcMain.on('window:reload', () => {
+  if (mainWindow) mainWindow.webContents.reload();
+});
 
 // 工作区选择：弹原生目录选择对话框，返回所选绝对路径或 null（用户取消）
 ipcMain.handle('workspace:choose', async () => {
@@ -1789,28 +2120,87 @@ const ATTACHMENT_IMAGE_EXTENSIONS = {
 const CLIPBOARD_ATTACHMENT_DIR = path.join(app.getPath('userData'), 'clipboard-attachments');
 const CLIPBOARD_ATTACHMENT_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const ATTACHMENT_TEXT_EXTENSIONS = new Set([
-  '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
-  '.yml', '.yaml', '.toml', '.ini', '.py', '.java', '.c', '.h', '.cpp', '.hpp',
-  '.go', '.rs', '.sh', '.ps1', '.sql', '.csv', '.log', '.env', '.lock', '.vue',
-  '.svelte', '.rb', '.php', '.kt', '.kts', '.swift', '.lua', '.r', '.graphql', '.gql',
-  '.proto', '.dart', '.scala', '.cs', '.fs', '.fsx', '.vb', '.gradle', '.properties',
-  '.conf', '.cfg', '.bat', '.cmd',
+  '.txt',
+  '.md',
+  '.json',
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.css',
+  '.html',
+  '.xml',
+  '.yml',
+  '.yaml',
+  '.toml',
+  '.ini',
+  '.py',
+  '.java',
+  '.c',
+  '.h',
+  '.cpp',
+  '.hpp',
+  '.go',
+  '.rs',
+  '.sh',
+  '.ps1',
+  '.sql',
+  '.csv',
+  '.log',
+  '.env',
+  '.lock',
+  '.vue',
+  '.svelte',
+  '.rb',
+  '.php',
+  '.kt',
+  '.kts',
+  '.swift',
+  '.lua',
+  '.r',
+  '.graphql',
+  '.gql',
+  '.proto',
+  '.dart',
+  '.scala',
+  '.cs',
+  '.fs',
+  '.fsx',
+  '.vb',
+  '.gradle',
+  '.properties',
+  '.conf',
+  '.cfg',
+  '.bat',
+  '.cmd',
 ]);
 const ATTACHMENT_TEXT_FILE_NAMES = new Set([
-  'dockerfile', 'makefile', 'license', 'notice', 'readme', '.gitignore', '.gitattributes',
-  '.gitmodules', '.npmrc', '.editorconfig', '.prettierrc', '.eslintrc',
+  'dockerfile',
+  'makefile',
+  'license',
+  'notice',
+  'readme',
+  '.gitignore',
+  '.gitattributes',
+  '.gitmodules',
+  '.npmrc',
+  '.editorconfig',
+  '.prettierrc',
+  '.eslintrc',
 ]);
 
 async function pruneClipboardAttachments() {
   try {
     const entries = await fs.promises.readdir(CLIPBOARD_ATTACHMENT_DIR, { withFileTypes: true });
     const cutoff = Date.now() - CLIPBOARD_ATTACHMENT_MAX_AGE_MS;
-    await Promise.allSettled(entries.map(async (entry) => {
-      if (!entry.isFile()) return;
-      const filePath = path.join(CLIPBOARD_ATTACHMENT_DIR, entry.name);
-      const stat = await fs.promises.stat(filePath);
-      if (stat.mtimeMs < cutoff) await fs.promises.rm(filePath, { force: true });
-    }));
+    await Promise.allSettled(
+      entries.map(async (entry) => {
+        if (!entry.isFile()) return;
+        const filePath = path.join(CLIPBOARD_ATTACHMENT_DIR, entry.name);
+        const stat = await fs.promises.stat(filePath);
+        if (stat.mtimeMs < cutoff) await fs.promises.rm(filePath, { force: true });
+      }),
+    );
   } catch (error) {
     if (error?.code !== 'ENOENT') logStartup(`Clipboard attachment cleanup failed: ${error.message}`);
   }
@@ -1818,8 +2208,11 @@ async function pruneClipboardAttachments() {
 
 async function readAttachmentFiles(filePaths) {
   const attachments = [];
-  const uniquePaths = [...new Set((Array.isArray(filePaths) ? filePaths : [])
-    .filter((filePath) => typeof filePath === 'string' && filePath.trim()))];
+  const uniquePaths = [
+    ...new Set(
+      (Array.isArray(filePaths) ? filePaths : []).filter((filePath) => typeof filePath === 'string' && filePath.trim()),
+    ),
+  ];
   for (const filePath of uniquePaths) {
     const name = path.basename(filePath);
     try {
@@ -1836,7 +2229,12 @@ async function readAttachmentFiles(filePaths) {
           continue;
         }
         const data = await fs.promises.readFile(filePath);
-        attachments.push({ ...base, kind: 'image', mimeType: ATTACHMENT_IMAGE_TYPES[ext], data: data.toString('base64') });
+        attachments.push({
+          ...base,
+          kind: 'image',
+          mimeType: ATTACHMENT_IMAGE_TYPES[ext],
+          data: data.toString('base64'),
+        });
         continue;
       }
       const extensionlessText = !ext && ATTACHMENT_TEXT_FILE_NAMES.has(name.toLowerCase());
@@ -1899,7 +2297,9 @@ ipcMain.on('productState:saveSync', (event, state) => {
     event.returnValue = { ok: false, error: error.message };
   }
 });
-ipcMain.on('window:openDevTools', () => { if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' }); });
+ipcMain.on('window:openDevTools', () => {
+  if (mainWindow) mainWindow.webContents.openDevTools({ mode: 'detach' });
+});
 
 // 未捕获异常处理（P0-4）：写 crash log 到 userData，dialog 提示用户
 function writeCrashLog(type, err) {
@@ -1911,16 +2311,23 @@ function writeCrashLog(type, err) {
         const tail = fs.readFileSync(logPath);
         fs.writeFileSync(logPath, tail.slice(-200 * 1024));
       }
-    } catch (_) { /* 文件不存在或轮转失败不阻塞崩溃记录 */ }
+    } catch (_) {
+      /* 文件不存在或轮转失败不阻塞崩溃记录 */
+    }
     const ts = new Date().toISOString();
     const stack = redactDiagnosticText(err?.stack || String(err));
     fs.appendFileSync(logPath, `\n[${ts}] ${type}: ${stack}\n`);
-  } catch (_) { /* 写失败不阻塞 */ }
+  } catch (_) {
+    /* 写失败不阻塞 */
+  }
 }
 process.on('uncaughtException', (err) => {
   writeCrashLog('uncaughtException', err);
   try {
-    dialog.showErrorBox('CodeBuddy GUI 发生异常', `程序遇到未捕获异常:\n\n${err?.message || err}\n\n崩溃日志已写入 userData/crash.log，重启应用前建议反馈给开发者。`);
+    dialog.showErrorBox(
+      'CodeBuddy GUI 发生异常',
+      `程序遇到未捕获异常:\n\n${err?.message || err}\n\n崩溃日志已写入 userData/crash.log，重启应用前建议反馈给开发者。`,
+    );
   } catch (_) {}
 });
 process.on('unhandledRejection', (reason) => {
@@ -1933,7 +2340,11 @@ logStartup(`single instance lock acquired=${gotLock}`);
 if (!gotLock) {
   app.exit(0);
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine = []) => {
+    if (commandLine.includes('--request-quit')) {
+      requestApplicationQuit().catch((error) => logStartup(`Command-line quit request failed: ${error.message}`));
+      return;
+    }
     // 二次启动可能发生在首个实例仍初始化静态服务器时，统一延迟到就绪后显示。
     showOrCreateMainWindow();
   });
@@ -1972,17 +2383,19 @@ app.whenReady().then(async () => {
   // 启动本地 HTTP 服务器，从 out/dist 目录服务生产构建
   const distPath = path.join(__dirname, '..', 'out', 'dist');
   const staticApp = express();
-  staticApp.use(express.static(distPath, {
-    etag: true,
-    maxAge: isDev ? 0 : '1h',
-    setHeaders(res, filePath) {
-      if (/\.[a-f0-9]{8,}\./i.test(path.basename(filePath))) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      } else {
-        res.setHeader('Cache-Control', isDev ? 'no-store' : 'public, max-age=3600');
-      }
-    },
-  }));
+  staticApp.use(
+    express.static(distPath, {
+      etag: true,
+      maxAge: isDev ? 0 : '1h',
+      setHeaders(res, filePath) {
+        if (/\.[a-f0-9]{8,}\./i.test(path.basename(filePath))) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', isDev ? 'no-store' : 'public, max-age=3600');
+        }
+      },
+    }),
+  );
   const staticServerInstance = await new Promise((resolve) => {
     const s = staticApp.listen(0, '127.0.0.1', () => resolve(s));
   });
@@ -2003,7 +2416,10 @@ app.whenReady().then(async () => {
     const menu = Menu.buildFromTemplate([
       { label: '打开 CodeBuddy GUI', click: showOrCreateMainWindow },
       { type: 'separator' },
-      { label: '完全退出', click: () => requestApplicationQuit().catch((error) => logStartup(`Quit request failed: ${error.message}`)) },
+      {
+        label: '完全退出',
+        click: () => requestApplicationQuit().catch((error) => logStartup(`Quit request failed: ${error.message}`)),
+      },
     ]);
     tray.setContextMenu(menu);
     logStartup('Tray icon created');
@@ -2020,22 +2436,38 @@ app.whenReady().then(async () => {
 // 不树杀会变孤儿进程占 stdout + 占端口，下次启动端口冲突（实测残留过 PID 42940/18192）
 app.on('before-quit', () => {
   reallyQuitting = true;
+  if (exitCleanupStarted) return;
+  exitCleanupStarted = true;
+  logStartup('Electron before-quit cleanup started');
+  const pendingQuitRequestId = quitRequestController.currentRequestId();
+  if (pendingQuitRequestId) quitRequestController.cancel(pendingQuitRequestId);
   // 显式关闭 express 静态服务器：OS 虽会随进程退出回收端口，但显式 close 避免单实例锁失败场景的端口短暂残留
   if (staticServer) {
-    try { staticServer.close(); } catch (_) {}
+    try {
+      staticServer.close();
+    } catch (_) {}
     staticServer = null;
   }
   for (const notification of activeTaskNotifications) {
-    try { notification.close(); } catch (_) {}
+    try {
+      notification.close();
+    } catch (_) {}
   }
   activeTaskNotifications.clear();
   pendingNotificationTarget = null;
   for (const controller of codebuddyStreams.values()) {
-    try { controller.abort(); } catch (_) {}
+    try {
+      controller.abort();
+    } catch (_) {}
   }
   codebuddyStreams.clear();
   runtimeManager.stopAll().catch((error) => logStartup(`Runtime shutdown failed: ${error.message}`));
-  if (tray) { try { tray.destroy(); } catch (_) {} tray = null; }
+  destroyTrayIcon('before-quit');
+});
+
+app.on('quit', (_event, exitCode) => {
+  finalExitController.complete();
+  logStartup(`Electron quit completed exitCode=${exitCode}`);
 });
 
 // 关窗口不退出；托盘退出先由渲染进程处理未保存内容，确认后才进入 Electron 退出链。

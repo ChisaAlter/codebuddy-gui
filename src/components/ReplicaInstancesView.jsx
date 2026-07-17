@@ -157,10 +157,13 @@ export default function ReplicaInstancesView() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
-      <div className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border-default)] px-6 py-2">
+    <div className="page-shell">
+      <div className="page-header flex-wrap">
         <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">实例</h2>
+          <div>
+            <h2 className="page-header-title">实例</h2>
+            <div className="page-header-desc">管理项目运行时与后台会话</div>
+          </div>
           <div className="flex items-center rounded-md border border-[var(--color-border-default)] p-0.5" role="tablist" aria-label="实例视图">
             <button type="button" role="tab" aria-selected={view === 'projects'} className={`rounded px-2.5 py-1 text-xs ${view === 'projects' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('projects')}>项目运行时</button>
             <button type="button" role="tab" aria-selected={view === 'background'} className={`rounded px-2.5 py-1 text-xs ${view === 'background' ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}`} onClick={() => setView('background')}>后台会话</button>
@@ -172,7 +175,7 @@ export default function ReplicaInstancesView() {
         </div> : null}
       </div>
 
-      {view === 'background' ? <ReplicaBackgroundSessionsView /> : <div className="flex-1 overflow-y-auto p-6">
+      {view === 'background' ? <ReplicaBackgroundSessionsView /> : <div className="flex-1 overflow-y-auto"><div className="page-content-wide">
         {refreshError ? (
           <div className="mb-4 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-xs text-[var(--color-accent-red)]">
             <span>{refreshError}</span>
@@ -184,7 +187,7 @@ export default function ReplicaInstancesView() {
             <button className="btn-primary px-4 py-2 text-sm" onClick={() => chooseWorkspace()}>打开第一个项目</button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <div className="responsive-card-grid">
             {projectOrder.map((projectId) => {
               const project = projectsById[projectId];
               if (!project) return null;
@@ -192,8 +195,8 @@ export default function ReplicaInstancesView() {
               const busy = Boolean(actionState.busy) || ['starting', 'stopping'].includes(project.runtimeStatus);
               const running = project.runtimeStatus === 'running';
               return (
-                <article key={projectId} className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-card)] p-4">
-                  <div className="flex items-start justify-between gap-4">
+                <article key={projectId} className="surface-panel p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className={`h-2 w-2 rounded-full ${running ? 'bg-[var(--color-accent-green)]' : project.runtimeStatus === 'error' ? 'bg-[var(--color-accent-red)]' : busy ? 'bg-[var(--color-accent-yellow)]' : 'bg-[var(--color-text-muted)]'}`} />
@@ -240,7 +243,7 @@ export default function ReplicaInstancesView() {
             })}
           </div>
         )}
-      </div>}
+      </div></div>}
     </div>
   );
 }

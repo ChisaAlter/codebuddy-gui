@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   cancelSession: vi.fn(),
+  connectionState: 'connected',
 }));
 
 vi.mock('../../src/store', () => ({
@@ -16,7 +17,7 @@ vi.mock('../../src/store', () => ({
       threadsById: { 'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '' } },
       guiSettings: {},
       capabilities: {},
-      connectionState: 'connected',
+      connectionState: mocks.connectionState,
       currentModel: 'test-model',
       currentMode: 'default',
       sessionTitle: 'Test session',
@@ -24,6 +25,8 @@ vi.mock('../../src/store', () => ({
       availableCommands: [],
       sendPrompt: vi.fn(),
       cancelSession: mocks.cancelSession,
+      bootstrap: vi.fn(),
+      restartProjectRuntime: vi.fn(),
       isAwaitingResponse: true,
       models: [{ id: 'test-model', name: 'Test model' }],
       modes: [
@@ -33,6 +36,10 @@ vi.mock('../../src/store', () => ({
         { id: 'auto', name: 'Auto' },
         { id: 'dontAsk', name: "Don't Ask" },
         { id: 'bypassPermissions', name: 'Bypass Permissions' },
+        { id: 'delegate', name: 'Delegate' },
+        { id: 'fullAccess', name: 'Full Access' },
+        { id: 'work', name: 'Work' },
+        { id: 'ignore', name: 'Ignore' },
       ],
       setModel: vi.fn(),
       setMode: vi.fn(),
@@ -58,6 +65,7 @@ describe('ReplicaChatView cancellation', () => {
     originalScrollIntoView = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = vi.fn();
     mocks.cancelSession.mockReset();
+    mocks.connectionState = 'connected';
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -85,11 +93,19 @@ describe('ReplicaChatView cancellation', () => {
     expect(mocks.cancelSession).toHaveBeenCalledTimes(1);
   });
 
+  it('does not show Stop while the session is disconnected', async () => {
+    mocks.connectionState = 'error';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.querySelector('button[title="停止生成"]')).toBeNull();
+    expect(container.querySelector('button[title="等待会话连接"]')).toBeTruthy();
+  });
+
   it('shows Chinese permission modes and anchors the model picker inside the window', async () => {
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const findButton = (label) => Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.trim() === label);
+    const findButton = (label) =>
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent.trim() === label);
     const modeButton = findButton('始终询问');
     expect(modeButton).toBeTruthy();
 
@@ -103,7 +119,12 @@ describe('ReplicaChatView cancellation', () => {
     expect(modeText).toContain('自动执行');
     expect(modeText).toContain('不再询问');
     expect(modeText).toContain('跳过权限确认');
+    expect(modeText).toContain('协调模式');
+    expect(modeText).toContain('完全访问');
+    expect(modeText).toContain('工作模式');
+    expect(modeText).toContain('继承主会话模式');
     expect(modeText).not.toContain('Bypass Permissions');
+    expect(modeText).not.toContain('Full Access');
 
     await act(async () => {
       modeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));

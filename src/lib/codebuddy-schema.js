@@ -3,7 +3,6 @@ export const NAV_GROUPS = [
     id: 'primary',
     title: 'Primary',
     items: [
-      { id: 'chat', label: '对话' },
       { id: 'instances', label: '实例' },
       { id: 'remote-control', label: '远程控制' },
     ],
@@ -38,6 +37,7 @@ export const NAV_GROUPS = [
     id: 'preferences',
     title: '配置',
     items: [
+      { id: 'models', label: '模型' },
       { id: 'settings', label: '设置' },
       { id: 'keybindings', label: '快捷键' },
     ],

@@ -17,6 +17,7 @@ export const ROUTES = [
   'logs',
   'workers',
   'keybindings',
+  'models',
   'settings',
 ];
 

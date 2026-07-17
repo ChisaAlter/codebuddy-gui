@@ -4,7 +4,7 @@ import { name as appName, version as appVersion } from '../../package.json';
 // 正常运行时 store.bootstrap() 会按活动项目请求 Electron 运行时管理器，并用该项目的随机端口覆盖此值。
 let _apiBase = 'http://127.0.0.1:63918';
 
-const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt']);
+const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt', 'authenticate']);
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 const LONG_REQUEST_IDLE_TIMEOUT_MS = 0;
 
@@ -32,13 +32,21 @@ export function setAuthToken(token) {
   try {
     if (token) sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
     else sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-  } catch (_) { /* sessionStorage 不可达不阻塞 */ }
+  } catch (_) {
+    /* sessionStorage 不可达不阻塞 */
+  }
 }
 export function getAuthToken() {
   if (_authToken) return _authToken;
-  try { return sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || null; } catch (_) { return null; }
+  try {
+    return sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || null;
+  } catch (_) {
+    return null;
+  }
 }
-export function clearAuthToken() { setAuthToken(null); }
+export function clearAuthToken() {
+  setAuthToken(null);
+}
 
 function announceAuthRequired(url, status) {
   if (status !== 401 || typeof window === 'undefined') return;
@@ -78,7 +86,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
   const controller = new AbortController();
   // 走 IPC 代理通道时由主进程统一管超时（避免前端 30s 抢盖主进程 120s 长响应）
   const viaIpc = typeof window !== 'undefined' && window.electronAPI?.requestCodeBuddy;
-  const timeoutId = (!viaIpc && timeoutMs > 0) ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const timeoutId = !viaIpc && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   const onAbort = () => controller.abort();
   const cleanup = () => {
     if (timeoutId) clearTimeout(timeoutId);
@@ -104,9 +112,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
       const bodyBytes = proxied?.bodyBase64
         ? Uint8Array.from(atob(proxied.bodyBase64), (character) => character.charCodeAt(0))
         : null;
-      const readText = () => bodyBytes
-        ? new TextDecoder().decode(bodyBytes)
-        : (proxied?.body || '');
+      const readText = () => (bodyBytes ? new TextDecoder().decode(bodyBytes) : proxied?.body || '');
       const readArrayBuffer = () => {
         const bytes = bodyBytes || new TextEncoder().encode(proxied?.body || '');
         return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -117,7 +123,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
         statusText: proxied?.statusText || 'CodeBuddy request failed',
         headers,
         text: async () => readText(),
-        json: async () => readText() ? JSON.parse(readText()) : null,
+        json: async () => (readText() ? JSON.parse(readText()) : null),
         blob: async () => new Blob([bodyBytes || proxied?.body || ''], { type: headers.get('content-type') || '' }),
         arrayBuffer: async () => readArrayBuffer(),
         truncated: Boolean(proxied?.truncated),
@@ -150,7 +156,9 @@ export function parseEventStreamMessages(text) {
     const joined = dataLines.join('');
     try {
       messages.push(JSON.parse(joined));
-    } catch (_) { console.warn('ACP SSE JSON parse failed:', _); }
+    } catch (_) {
+      console.warn('ACP SSE JSON parse failed:', _);
+    }
   }
 
   if (messages.length === 0 && text.trim()) {
@@ -162,6 +170,30 @@ export function parseEventStreamMessages(text) {
   }
 
   return messages;
+}
+
+export class AcpRpcError extends Error {
+  constructor(method, rpcError = {}) {
+    super(rpcError.message || `ACP rpc error: ${method}`);
+    this.name = 'AcpRpcError';
+    this.method = method;
+    this.code = rpcError.code ?? null;
+    this.data = rpcError.data ?? null;
+    this.category = rpcError.data?.category || null;
+  }
+}
+
+export function isAcpAuthenticationError(error) {
+  return Boolean(
+    error &&
+      (error.category === 'auth' ||
+        error.data?.category === 'auth' ||
+        (error.code === -32000 && /authentication required/i.test(error.message || ''))),
+  );
+}
+
+function createAcpRpcError(method, rpcError) {
+  return new AcpRpcError(method, rpcError);
 }
 
 function consumeEventStreamChunk(buffer, chunk, flush = false) {
@@ -186,10 +218,12 @@ export class AcpClient {
     this.eventTarget = new EventTarget();
     this.connected = false;
     this.initialized = false;
+    this.authMethods = [];
     this.requestCounter = 0;
     this.permissionRequestIds = new Map();
     this.permissionRequestToolCallIds = new Map();
     this.questionRequestIds = new Map();
+    this.activePromptRequests = new Map();
 
     // 重连相关
     this.reconnectAttempts = 0;
@@ -276,7 +310,7 @@ export class AcpClient {
         this.emit('interruption_request', {
           sessionUpdate: 'interruption_request',
           sessionId: params.sessionId,
-          interruptionId: interruption.interruptionId || ('ir-' + interruption.toolCallId),
+          interruptionId: interruption.interruptionId || 'ir-' + interruption.toolCallId,
           reason: 'Tool requires approval',
           options: interruption.options || [],
           toolName: interruption.toolName,
@@ -322,20 +356,22 @@ export class AcpClient {
   }
 
   handleQuestionRequest(requestId, params) {
-    const toolCallId = params?.toolCallId || ('question-' + String(requestId));
+    const toolCallId = params?.toolCallId || 'question-' + String(requestId);
     const questions = (params?.schema?.questions || []).map((question, index) => ({
-      id: question.id || ('q_' + index),
+      id: question.id || 'q_' + index,
       question: question.question || '',
       header: question.header || '',
-      options: (question.options || []).map((option) => (
-        typeof option === 'string'
-          ? { label: option, value: option, description: '' }
-          : {
-              label: option.label || option.value || option.id || '',
-              value: option.value || option.id || option.label || '',
-              description: option.description || '',
-            }
-      )).filter((option) => option.value),
+      options: (question.options || [])
+        .map((option) =>
+          typeof option === 'string'
+            ? { label: option, value: option, description: '' }
+            : {
+                label: option.label || option.value || option.id || '',
+                value: option.value || option.id || option.label || '',
+                description: option.description || '',
+              },
+        )
+        .filter((option) => option.value),
       multiSelect: Boolean(question.multiSelect),
     }));
     this.questionRequestIds.set(toolCallId, requestId);
@@ -375,7 +411,7 @@ export class AcpClient {
         const payload = await response.json();
         message = payload?.error?.message || '';
       } catch (_) {}
-      throw new Error(message || ('ACP response failed: ' + response.status + ' ' + response.statusText));
+      throw new Error(message || 'ACP response failed: ' + response.status + ' ' + response.statusText);
     }
   }
 
@@ -417,6 +453,35 @@ export class AcpClient {
     await this.sendJsonRpcResult(requestId, { outcome: 'cancelled' });
     this.questionRequestIds.delete(toolCallId);
     return true;
+  }
+
+  trackActivePrompt(sessionId, cancel) {
+    const key = String(sessionId || '').trim();
+    if (!key || typeof cancel !== 'function') return () => {};
+    const handle = { cancel };
+    const handles = this.activePromptRequests.get(key) || new Set();
+    handles.add(handle);
+    this.activePromptRequests.set(key, handles);
+    return () => {
+      const current = this.activePromptRequests.get(key);
+      if (!current) return;
+      current.delete(handle);
+      if (current.size === 0) this.activePromptRequests.delete(key);
+    };
+  }
+
+  cancelActivePrompt(sessionId) {
+    const key = String(sessionId || '').trim();
+    const handles = this.activePromptRequests.get(key);
+    if (!handles?.size) return false;
+    for (const handle of Array.from(handles)) handle.cancel();
+    return true;
+  }
+
+  cancelAllActivePrompts() {
+    const handles = Array.from(this.activePromptRequests.values(), (items) => Array.from(items)).flat();
+    for (const handle of handles) handle.cancel();
+    return handles.length > 0;
   }
 
   async connect() {
@@ -579,15 +644,18 @@ export class AcpClient {
     const onError = () => this._scheduleNotificationReconnect();
 
     if (typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
-      this._sseIpcStream = window.electronAPI.openCodeBuddyStream({
-        url: `${this.apiBase}/api/v1/acp`,
-        timeoutMs: 0,
-        headers: makeHeaders({
-          Accept: 'text/event-stream',
-          'acp-connection-id': this.connectionId,
-          ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
-        }),
-      }, { onMessage, onError });
+      this._sseIpcStream = window.electronAPI.openCodeBuddyStream(
+        {
+          url: `${this.apiBase}/api/v1/acp`,
+          timeoutMs: 0,
+          headers: makeHeaders({
+            Accept: 'text/event-stream',
+            'acp-connection-id': this.connectionId,
+            ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+          }),
+        },
+        { onMessage, onError },
+      );
       return;
     }
 
@@ -602,7 +670,9 @@ export class AcpClient {
       this._sseReconnectTimer = null;
     }
     if (this._sseIpcStream) {
-      try { this._sseIpcStream.close?.(); } catch (_) {}
+      try {
+        this._sseIpcStream.close?.();
+      } catch (_) {}
       this._sseIpcStream = null;
     }
     if (this._sseAbortController) {
@@ -614,7 +684,7 @@ export class AcpClient {
 
   _scheduleNotificationReconnect() {
     if (!this.connected || this.reconnecting || this._sseReconnectTimer) return;
-    const delay = Math.min(2000 * (2 ** this._sseRetryAttempt), 60000);
+    const delay = Math.min(2000 * 2 ** this._sseRetryAttempt, 60000);
     this._sseRetryAttempt = Math.min(this._sseRetryAttempt + 1, 10);
     this._sseReconnectTimer = setTimeout(() => {
       this._sseReconnectTimer = null;
@@ -652,7 +722,9 @@ export class AcpClient {
       if (!data) continue;
       try {
         onMessage(JSON.parse(data));
-      } catch (_) { console.warn('ACP notification SSE JSON parse failed:', _); }
+      } catch (_) {
+        console.warn('ACP notification SSE JSON parse failed:', _);
+      }
     }
   }
 
@@ -688,9 +760,14 @@ export class AcpClient {
         },
       },
     });
+    this.authMethods = Array.isArray(result?.authMethods) ? result.authMethods : [];
     this.initialized = true;
     this.emit('initialized', result);
     return result;
+  }
+
+  async authenticate(methodId) {
+    return this.request('authenticate', { methodId });
   }
 
   async initializeSession(sessionId = null, cwd = '.') {
@@ -705,8 +782,10 @@ export class AcpClient {
 
   async disconnect() {
     const previousConnectionId = this.connectionId;
+    this.cancelAllActivePrompts();
     this.connected = false;
     this.initialized = false;
+    this.authMethods = [];
     this.reconnecting = false;
     this._connecting = false;
     this.connectionId = null;
@@ -739,8 +818,10 @@ export class AcpClient {
       let settled = false;
       let stream = null;
       let timeoutId = null;
+      let unregisterPrompt = () => {};
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
+        unregisterPrompt();
         stream?.close?.();
       };
       const finish = (callback, value) => {
@@ -756,46 +837,57 @@ export class AcpClient {
           finish(reject, new Error(`ACP request idle timeout: ${payload.method}`));
         }, timeoutMs);
       };
+      if (payload.method === 'session/prompt') {
+        unregisterPrompt = this.trackActivePrompt(payload.params?.sessionId, () => {
+          finish(reject, new Error('ACP request cancelled by user'));
+        });
+      }
       armTimeout();
 
       try {
-        stream = window.electronAPI.openCodeBuddyStream({
-          url: `${this.apiBase}/api/v1/acp`,
-          method: 'POST',
-          headers: makeHeaders({
-            Accept: 'application/json, text/event-stream',
-            'Content-Type': 'application/json',
-            'acp-connection-id': this.connectionId,
-            ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
-          }),
-          body: JSON.stringify(payload),
-          timeoutMs,
-          rpcId: id,
-        }, {
-          onMessage: (message) => {
-            if (settled) return;
-            armTimeout();
-            if (!message?.method && message?.id !== undefined && message?.id !== null && String(message.id) === id) {
-              if (message.error) {
-                finish(reject, new Error(message.error.message || `ACP rpc error: ${payload.method}`));
-              } else {
-                finish(resolve, message.result ?? null);
+        stream = window.electronAPI.openCodeBuddyStream(
+          {
+            url: `${this.apiBase}/api/v1/acp`,
+            method: 'POST',
+            headers: makeHeaders({
+              Accept: 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+              'acp-connection-id': this.connectionId,
+              ...(this.sessionToken ? { 'acp-session-token': this.sessionToken } : {}),
+            }),
+            body: JSON.stringify(payload),
+            timeoutMs,
+            rpcId: id,
+          },
+          {
+            onMessage: (message) => {
+              if (settled) return;
+              armTimeout();
+              if (!message?.method && message?.id !== undefined && message?.id !== null && String(message.id) === id) {
+                if (message.error) {
+                  finish(reject, createAcpRpcError(payload.method, message.error));
+                } else {
+                  finish(resolve, message.result ?? null);
+                }
+                return;
               }
-              return;
-            }
-            this.handleIncomingRpc(message);
+              this.handleIncomingRpc(message);
+            },
+            onError: (error) => {
+              finish(
+                reject,
+                new Error(typeof error === 'string' ? error : error?.message || `ACP stream failed: ${payload.method}`),
+              );
+            },
+            onEnd: (result) => {
+              if (result?.ok === false) {
+                finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
+              } else {
+                finish(resolve, null);
+              }
+            },
           },
-          onError: (error) => {
-            finish(reject, new Error(typeof error === 'string' ? error : error?.message || `ACP stream failed: ${payload.method}`));
-          },
-          onEnd: (result) => {
-            if (result?.ok === false) {
-              finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
-            } else {
-              finish(resolve, null);
-            }
-          },
-        });
+        );
       } catch (error) {
         finish(reject, error);
       }
@@ -815,6 +907,13 @@ export class AcpClient {
     }
 
     const controller = new AbortController();
+    let cancelledByUser = false;
+    const unregisterPrompt = isLongRunning
+      ? this.trackActivePrompt(params?.sessionId, () => {
+          cancelledByUser = true;
+          controller.abort();
+        })
+      : () => {};
     let timeoutId = null;
     const armTimeout = () => {
       if (timeoutId) clearTimeout(timeoutId);
@@ -853,7 +952,7 @@ export class AcpClient {
           if (!message.method && message.id !== undefined && message.id !== null && String(message.id) === id) {
             matchedResponse = true;
             if (message.error) {
-              throw new Error(message.error.message || `ACP rpc error: ${method}`);
+              throw createAcpRpcError(method, message.error);
             }
             matchedResult = message.result ?? null;
           } else {
@@ -890,18 +989,20 @@ export class AcpClient {
       const trimmed = text.trim();
       if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
         const parsed = JSON.parse(trimmed);
-        if (parsed?.error) throw new Error(parsed.error.message || `ACP rpc error: ${method}`);
+        if (parsed?.error) throw createAcpRpcError(method, parsed.error);
         return parsed?.result ?? parsed;
       }
 
       return null;
     } catch (err) {
       if (err.name === 'AbortError') {
+        if (cancelledByUser) throw new Error('ACP request cancelled by user');
         throw new Error(`ACP request ${isLongRunning ? 'idle ' : ''}timeout: ${method}`);
       }
       throw err;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
+      unregisterPrompt();
     }
   }
 }
@@ -909,7 +1010,14 @@ export class AcpClient {
 export async function fetchJson(path, init = {}) {
   const response = await requestCodeBuddy(path, init);
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let detail = '';
+    try {
+      const payload = await response.json();
+      detail = payload?.error?.message || payload?.error || payload?.message || '';
+    } catch (_) {
+      /* 非 JSON 错误响应保留 HTTP 状态 */
+    }
+    throw new Error(detail || `${response.status} ${response.statusText}`);
   }
   return response.json();
 }
@@ -927,7 +1035,10 @@ export async function authLogin(password, options = {}) {
   });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
-    try { const err = await response.json(); if (err?.error) message = err.error; } catch (_) {}
+    try {
+      const err = await response.json();
+      if (err?.error) message = err.error;
+    } catch (_) {}
     return { success: false, error: message };
   }
   const payload = await response.json();
@@ -941,7 +1052,9 @@ export async function authLogin(password, options = {}) {
   return { success: false, error: payload?.error || 'login.error.incorrect' };
 }
 
-export function authLogout() { clearAuthToken(); }
+export function authLogout() {
+  clearAuthToken();
+}
 
 // 查后端鉴权态：GET /api/v1/auth/status -> {authEnabled, authenticated}。
 // 旧版服务没有该接口时继续兼容；其余网络或服务错误必须交给界面明确恢复。

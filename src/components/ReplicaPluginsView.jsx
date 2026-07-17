@@ -325,12 +325,15 @@ export default function ReplicaPluginsView() {
         : '执行清理';
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
-      <div className="mx-auto w-full max-w-5xl px-8 py-8">
+    <div className="page-shell overflow-y-auto">
+      <div className="page-content-wide">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">插件</h1>
-          <div className="flex items-center gap-2">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">插件</h1>
+            <p className="mt-1 text-sm text-[var(--color-text-muted)]">管理扩展、技能与插件市场</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <select
               className="h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 text-xs text-[var(--color-text-secondary)] outline-none"
               value={maintenanceScope}
@@ -438,7 +441,7 @@ export default function ReplicaPluginsView() {
 
         {/* Loading skeleton */}
         {loading && pluginsList.length === 0 && (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="responsive-plugin-grid">
             {[0, 1, 2].map((i) => (
               <div
                 key={i}
@@ -478,7 +481,7 @@ export default function ReplicaPluginsView() {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="responsive-plugin-grid">
             {filtered.map((p, idx) => {
               const enabled = isEnabled(p);
               const scope = p.installScope || p.scope;
@@ -747,7 +750,7 @@ export default function ReplicaPluginsView() {
           </div>
 
           {/* 新增市场表单 */}
-          <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_2fr_auto]">
+          <div className="responsive-market-form mb-4">
             <input
               value={newMktId}
               onChange={(e) => setNewMktId(e.target.value)}

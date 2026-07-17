@@ -153,7 +153,7 @@ export function ProjectSessionTree({
             <div className="group/project flex items-center gap-0.5">
               <button
                 type="button"
-                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[13px] transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
                 data-active-highlight={showActiveProjectHighlight}
                 aria-label={`${expanded ? '折叠' : '展开'}项目 ${project.name}`}
                 aria-expanded={expanded}
@@ -223,7 +223,7 @@ export function ProjectSessionTree({
                         <>
                           <button
                             type="button"
-                            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs text-[var(--color-text-secondary)] disabled:opacity-60"
+                            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[13px] text-[var(--color-text-secondary)] disabled:opacity-60"
                             disabled={projectNavigationBusy}
                             onClick={() => onActivateThread(thread.id)}
                             title={thread.title || '新对话'}

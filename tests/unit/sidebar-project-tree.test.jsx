@@ -83,6 +83,13 @@ describe('ProjectSessionTree', () => {
     expect(projectButton.getAttribute('data-active-highlight')).toBe('false');
   });
 
+  it('matches project and conversation text size with the primary navigation', () => {
+    const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');
+    const threadButton = container.querySelector('[data-session-id="unread"] > button');
+    expect(projectButton.className).toContain('text-[13px]');
+    expect(threadButton.className).toContain('text-[13px]');
+  });
+
   it('can highlight the active project when no conversation is selected', async () => {
     await act(async () => root.render(<ProjectSessionTree {...props} activeThreadId={null} />));
     const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');

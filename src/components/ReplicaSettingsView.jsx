@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { getCliMaintenanceInfo, installCodeBuddyCli, runCliDoctor, updateCodeBuddyCli } from '../lib/cli-maintenance';
+import { getSessionModeLabel } from '../lib/session-mode-labels';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 function Toggle({ value, onChange }) {
@@ -746,7 +747,7 @@ export default function ReplicaSettingsView() {
   const currentModelName = useStore((s) => s.models.find(m => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '');
   const modeOptions = (modes || []).map((m) => ({
     value: m.id || m.modeId,
-    label: m.name || m.id || m.modeId,
+    label: getSessionModeLabel(m, m.id || m.modeId),
   }));
 
   const changeSessionSetting = async (kind, value) => {
@@ -770,9 +771,12 @@ export default function ReplicaSettingsView() {
   const selectionDisabled = selectionBusy || !sessionId || connectionState !== 'connected';
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--color-bg-primary)]">
-      <div className="mx-auto w-full max-w-2xl px-8 py-8">
-        <h1 className="mb-8 text-lg font-semibold text-[var(--color-text-primary)]">设置</h1>
+    <div className="page-shell overflow-y-auto">
+      <div className="mx-auto w-full max-w-4xl px-6 py-6">
+        <div className="mb-6">
+          <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">设置</h1>
+          <p className="mt-1 text-sm text-[var(--color-text-muted)]">管理界面、会话和 CodeBuddy CLI 行为</p>
+        </div>
 
         {loadError ? (
           <div className="mb-6 flex items-center justify-between rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-4 py-3 text-sm text-[var(--color-accent-red)]">
@@ -859,7 +863,7 @@ export default function ReplicaSettingsView() {
               modeOptions.length > 0 ? (
                 <Select value={currentMode} options={modeOptions} disabled={selectionDisabled} onChange={(value) => changeSessionSetting('mode', value)} />
               ) : (
-                <span className="text-xs text-[var(--color-text-secondary)]">{currentMode || 'Default'}</span>
+                <span className="text-xs text-[var(--color-text-secondary)]">{getSessionModeLabel(currentMode, '始终询问')}</span>
               )
             } />
             {selectionStatus ? (

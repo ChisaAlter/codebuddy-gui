@@ -562,7 +562,7 @@ async function main(signal) {
   });
   check(
     'all routes were reached by clicking sidebar controls',
-    routeResults.length === 19,
+    routeResults.length === 20,
     `routes=${routeResults.length}`,
   );
 
@@ -601,7 +601,7 @@ async function main(signal) {
     outputPath: path.join(screenshotDir, 'contact-sheet.svg'),
     columns: 3,
   });
-  check('route contact sheet saved', contactSheet.screenshots === 19, contactSheet.path);
+  check('route contact sheet saved', contactSheet.screenshots === 20, contactSheet.path);
 }
 
 async function finish(error) {
@@ -704,7 +704,7 @@ async function finish(error) {
             {
               name: 'route contact sheet',
               path: contactSheet.path,
-              analysis: 'All 19 route captures in sidebar order.',
+              analysis: 'All 20 route captures in sidebar order.',
             },
           ]
         : []),
