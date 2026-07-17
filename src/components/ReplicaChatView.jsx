@@ -104,16 +104,23 @@ function CopyButton({ text }) {
 
 function ThinkingCard({ item }) {
   const [expanded, setExpanded] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
-  // Calculate thinking duration from createdAt
+  useEffect(() => {
+    if (!item.streaming) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [item.streaming, item.createdAt]);
+
   const durationText = useMemo(() => {
     if (!item.createdAt) return '0 秒';
-    const now = Date.now();
-    const elapsed = Math.floor((now - item.createdAt) / 1000);
+    const endedAt = item.completedAt || now;
+    const elapsed = Math.max(0, Math.floor((endedAt - item.createdAt) / 1000));
     if (elapsed < 60) return `${elapsed} 秒`;
     if (elapsed < 3600) return `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`;
     return `${Math.floor(elapsed / 3600)} 时 ${Math.floor((elapsed % 3600) / 60)} 分`;
-  }, [item.createdAt]);
+  }, [item.createdAt, item.completedAt, now]);
 
   return (
     <div className="my-2">
@@ -124,7 +131,7 @@ function ThinkingCard({ item }) {
         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" className="opacity-60">
           <path d="M8 1a1 1 0 01.993.883L9 2v5h5a1 1 0 01.117 1.993L14 9H9v5a1 1 0 01-1.993.117L7 14V9H2a1 1 0 01-.117-1.993L2 7h5V2a1 1 0 011-1z" />
         </svg>
-        <span>已思考（用时 {durationText}）</span>
+        <span>{item.streaming ? '正在思考' : '已思考'}（用时 {durationText}）</span>
         <svg
           width="12"
           height="12"
@@ -971,6 +978,7 @@ export default function ReplicaChatView() {
   const cancelSession = useStore((s) => s.cancelSession);
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
   const activeThreadId = useStore((s) => s.activeThreadId);
+  const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
   const promptQueue = useStore((s) => s.promptQueue || []);
   const moveQueuedPrompt = useStore((s) => s.moveQueuedPrompt);
   const removeQueuedPrompt = useStore((s) => s.removeQueuedPrompt);
@@ -1183,8 +1191,12 @@ export default function ReplicaChatView() {
   };
 
   const isStreaming = useMemo(
-    () => connectionState === 'connected' && (timeline.some((item) => item.streaming === true) || isAwaitingResponse),
-    [connectionState, timeline, isAwaitingResponse],
+    () =>
+      connectionState === 'connected' &&
+      (['running', 'waiting'].includes(activeThreadStatus) ||
+        timeline.some((item) => item.streaming === true) ||
+        isAwaitingResponse),
+    [activeThreadStatus, connectionState, timeline, isAwaitingResponse],
   );
   const slashSuggestions = useMemo(
     () => getSlashCommandSuggestions(input, availableCommands),

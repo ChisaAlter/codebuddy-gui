@@ -77,10 +77,20 @@ function findLastByToolCallId(timeline, toolCallId) {
 }
 
 export function closeAssistantStream(timeline) {
+  const completedAt = Date.now();
   return timeline.map((item) =>
     item.type === 'message' && item.role === 'assistant'
       ? { ...item, streaming: false }
-      : item,
+      : item.type === 'thinking' && item.streaming
+        ? { ...item, streaming: false, completedAt }
+        : item,
+  );
+}
+
+function closeThinkingStream(timeline) {
+  const completedAt = Date.now();
+  return timeline.map((item) =>
+    item.type === 'thinking' && item.streaming ? { ...item, streaming: false, completedAt } : item,
   );
 }
 
@@ -199,7 +209,7 @@ function mergeUserChunk(timeline, payload) {
 }
 
 function mergeAssistantChunk(timeline, payload) {
-  const next = [...timeline];
+  const next = closeThinkingStream(timeline);
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'message', messageId);
   if (target && target.role === 'assistant') {
@@ -241,6 +251,8 @@ function mergeThinkingChunk(timeline, payload) {
     next[index] = {
       ...target,
       content: target.content + content,
+      streaming: true,
+      completedAt: null,
       meta: { ...(target.meta || {}), ...(payload || {}) },
     };
     return next;
@@ -250,6 +262,7 @@ function mergeThinkingChunk(timeline, payload) {
       type: 'thinking',
       role: 'assistant',
       content: getText(payload?.content) || payload?.message || '',
+      streaming: true,
       raw: payload,
       meta: payload,
       messageId,
@@ -259,7 +272,7 @@ function mergeThinkingChunk(timeline, payload) {
 }
 
 function mergeToolCall(timeline, payload, isUpdate = false) {
-  const next = [...timeline];
+  const next = closeThinkingStream(timeline);
   const toolCallId = payload?.toolCallId || null;
   const target = findLastByToolCallId(next, toolCallId);
   if (target) {

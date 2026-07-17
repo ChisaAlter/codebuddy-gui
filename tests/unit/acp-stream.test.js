@@ -210,7 +210,7 @@ describe('AcpClient GET SSE notification stream', () => {
     await expect(request).resolves.toBeNull();
   });
 
-  it('Electron IPC POST 流在最终 RPC 结果前派发消息块', async () => {
+  it('Electron IPC POST 流在 RPC 结果先到时仍排空后续消息块', async () => {
     let handlers;
     let openedRequest;
     let closeCalled = false;
@@ -218,19 +218,6 @@ describe('AcpClient GET SSE notification stream', () => {
       openCodeBuddyStream(request, nextHandlers) {
         openedRequest = request;
         handlers = nextHandlers;
-        queueMicrotask(() =>
-          handlers.onMessage({
-            method: 'session/update',
-            params: {
-              sessionId: 's-ipc-stream',
-              update: {
-                sessionUpdate: 'agent_thought_chunk',
-                messageId: 'thought-1',
-                content: { type: 'text', text: '正在分析' },
-              },
-            },
-          }),
-        );
         return {
           close: () => {
             closeCalled = true;
@@ -251,8 +238,21 @@ describe('AcpClient GET SSE notification stream', () => {
       return result;
     });
 
-    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: { stopReason: 'end_turn' } });
     expect(requestResolved).toBe(false);
+    expect(closeCalled).toBe(false);
+
+    handlers.onMessage({
+      method: 'session/update',
+      params: {
+        sessionId: 's-ipc-stream',
+        update: {
+          sessionUpdate: 'agent_thought_chunk',
+          messageId: 'thought-1',
+          content: { type: 'text', text: '正在分析' },
+        },
+      },
+    });
     expect(openedRequest).toMatchObject({
       url: 'http://127.0.0.1:45678/api/v1/acp',
       method: 'POST',
@@ -266,9 +266,10 @@ describe('AcpClient GET SSE notification stream', () => {
     expect(updates[0]).toMatchObject({
       update: { sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1' },
     });
+    expect(requestResolved).toBe(false);
 
-    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: null });
-    await expect(request).resolves.toBeNull();
+    handlers.onEnd({ ok: true, status: 200, statusText: 'OK' });
+    await expect(request).resolves.toEqual({ stopReason: 'end_turn' });
     expect(closeCalled).toBe(true);
   });
 

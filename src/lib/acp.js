@@ -819,6 +819,9 @@ export class AcpClient {
       let stream = null;
       let timeoutId = null;
       let unregisterPrompt = () => {};
+      let matchedResponse = false;
+      let matchedResult = null;
+      let matchedError = null;
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
         unregisterPrompt();
@@ -864,11 +867,9 @@ export class AcpClient {
               if (settled) return;
               armTimeout();
               if (!message?.method && message?.id !== undefined && message?.id !== null && String(message.id) === id) {
-                if (message.error) {
-                  finish(reject, createAcpRpcError(payload.method, message.error));
-                } else {
-                  finish(resolve, message.result ?? null);
-                }
+                matchedResponse = true;
+                matchedResult = message.result ?? null;
+                matchedError = message.error ? createAcpRpcError(payload.method, message.error) : null;
                 return;
               }
               this.handleIncomingRpc(message);
@@ -882,8 +883,10 @@ export class AcpClient {
             onEnd: (result) => {
               if (result?.ok === false) {
                 finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
+              } else if (matchedError) {
+                finish(reject, matchedError);
               } else {
-                finish(resolve, null);
+                finish(resolve, matchedResponse ? matchedResult : null);
               }
             },
           },

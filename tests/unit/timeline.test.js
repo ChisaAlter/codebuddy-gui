@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   reduceAcpEvent,
   closeAssistantStream,
@@ -20,6 +20,19 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(assistant.content).toBe('Hello');
     expect(assistant.streaming).toBe(true);
     expect(assistant.messageId).toBe('m1');
+  });
+
+  it('思考 chunk 在正文开始前保持流式，并在正文开始时记录结束时间', () => {
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValueOnce(1000).mockReturnValueOnce(1000).mockReturnValue(4000);
+
+    let next = reduceAcpEvent([], 'agent_thought_chunk', { messageId: 'thought-1', content: '' });
+    expect(next[0]).toMatchObject({ type: 'thinking', streaming: true, createdAt: 1000 });
+
+    next = reduceAcpEvent(next, 'agent_message_chunk', { messageId: 'answer-1', content: '完成' });
+    expect(next[0]).toMatchObject({ type: 'thinking', streaming: false, completedAt: 4000 });
+    expect(next[1]).toMatchObject({ type: 'message', role: 'assistant', streaming: true });
+    now.mockRestore();
   });
 
   it('同 messageId 的多次 chunk 合并 content', () => {
@@ -81,6 +94,16 @@ describe('closeAssistantStream', () => {
     const closed = closeAssistantStream(next);
     const assistant = closed.find((e) => e.role === 'assistant');
     expect(assistant.streaming).toBe(false);
+  });
+
+  it('结束响应时同时结束仍在计时的思考流', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(5000);
+    const closed = closeAssistantStream([
+      { id: 'thought', type: 'thinking', role: 'assistant', createdAt: 1000, streaming: true },
+    ]);
+
+    expect(closed[0]).toMatchObject({ streaming: false, completedAt: 5000 });
+    now.mockRestore();
   });
 
   it('非 assistant 条目不变', () => {

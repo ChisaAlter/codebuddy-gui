@@ -64,6 +64,27 @@ describe('store conversation event routing', () => {
     expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
   });
 
+  it('keeps thought chunks streaming after the initial response wait ends', () => {
+    useStore.getState().patchThreadRuntime('thread-1', { isAwaitingResponse: true });
+
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: {
+          sessionUpdate: 'agent_thought_chunk',
+          messageId: 'thought-1',
+          content: { type: 'text', text: '' },
+        },
+      },
+    });
+
+    const state = useStore.getState().threadRuntimeById['thread-1'];
+    expect(state.isAwaitingResponse).toBe(false);
+    expect(state.timeline[0]).toMatchObject({ type: 'thinking', streaming: true });
+  });
+
   it('renders extension and JSON-RPC permission notifications for one tool call only once', () => {
     const extension = {
       sessionUpdate: 'interruption_request',

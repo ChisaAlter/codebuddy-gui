@@ -1840,7 +1840,6 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
   const timeoutMs = Number.isFinite(Number(request.timeoutMs))
     ? Number(request.timeoutMs)
     : CODEBUDDY_REQUEST_TIMEOUT_MS;
-  const expectedRpcId = request.rpcId == null ? null : String(request.rpcId);
   if (!streamId) return { ok: false, error: 'missing streamId' };
   if (!/^https?:\/\/127\.0\.0\.1:\d+\//.test(url) && !/^https?:\/\/localhost:\d+\//.test(url)) {
     return { ok: false, error: 'Only localhost CodeBuddy streams are allowed' };
@@ -1905,14 +1904,9 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
     const sender = event.sender;
     (async () => {
       const emitMessages = (messages) => {
-        let matchedExpectedResponse = false;
         for (const message of messages) {
           if (!sender.isDestroyed()) sender.send('codebuddy:streamMessage', { streamId, message });
-          if (expectedRpcId !== null && !message?.method && String(message?.id) === expectedRpcId) {
-            matchedExpectedResponse = true;
-          }
         }
-        return matchedExpectedResponse;
       };
       let streamError = null;
       try {
@@ -1923,11 +1917,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
             if (buffer.trim()) {
               const parsed = parseSseMessagesFromBuffer(`${buffer}\n\n`);
               buffer = parsed.rest;
-              if (emitMessages(parsed.messages)) {
-                try {
-                  await reader.cancel();
-                } catch (_) {}
-              }
+              emitMessages(parsed.messages);
             }
             break;
           }
@@ -1935,12 +1925,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
-          if (emitMessages(parsed.messages)) {
-            try {
-              await reader.cancel();
-            } catch (_) {}
-            break;
-          }
+          emitMessages(parsed.messages);
         }
       } catch (error) {
         if (!controller.signal.aborted || timedOut)

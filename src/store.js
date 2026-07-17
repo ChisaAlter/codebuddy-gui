@@ -1362,7 +1362,14 @@ export const useStore = create((set, get) => ({
             ? 'error'
             : rawStatus || 'running';
       if (['idle', 'error', 'cancelled'].includes(normalizedStatus)) {
-        get().patchThreadRuntime(threadId, { agentPhase: null, progress: null, historyReplayActive: false });
+        const latestRuntime = get().threadRuntimeById[threadId] || runtime;
+        get().patchThreadRuntime(threadId, {
+          timeline: closeAssistantStream(latestRuntime.timeline),
+          isAwaitingResponse: false,
+          agentPhase: null,
+          progress: null,
+          historyReplayActive: false,
+        });
       }
       get().updateThreadRecord(threadId, {
         status: normalizedStatus,

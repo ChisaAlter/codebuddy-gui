@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   cancelSession: vi.fn(),
   connectionState: 'connected',
+  isAwaitingResponse: true,
+  threadStatus: 'idle',
 }));
 
 vi.mock('../../src/store', () => ({
@@ -14,7 +16,9 @@ vi.mock('../../src/store', () => ({
       activeProjectId: 'project-1',
       activeThreadId: 'thread-1',
       projectsById: { 'project-1': { id: 'project-1', name: 'Project' } },
-      threadsById: { 'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '' } },
+      threadsById: {
+        'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '', status: mocks.threadStatus },
+      },
       guiSettings: {},
       capabilities: {},
       connectionState: mocks.connectionState,
@@ -27,7 +31,7 @@ vi.mock('../../src/store', () => ({
       cancelSession: mocks.cancelSession,
       bootstrap: vi.fn(),
       restartProjectRuntime: vi.fn(),
-      isAwaitingResponse: true,
+      isAwaitingResponse: mocks.isAwaitingResponse,
       models: [{ id: 'test-model', name: 'Test model' }],
       modes: [
         { id: 'default', name: 'Always Ask' },
@@ -66,6 +70,8 @@ describe('ReplicaChatView cancellation', () => {
     Element.prototype.scrollIntoView = vi.fn();
     mocks.cancelSession.mockReset();
     mocks.connectionState = 'connected';
+    mocks.isAwaitingResponse = true;
+    mocks.threadStatus = 'idle';
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -91,6 +97,15 @@ describe('ReplicaChatView cancellation', () => {
     });
 
     expect(mocks.cancelSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Stop visible while the thread is running between streamed events', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'running';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.querySelector('button[title="停止生成"]')).toBeTruthy();
+    expect(container.querySelector('button[title="发送"]')).toBeNull();
   });
 
   it('does not show Stop while the session is disconnected', async () => {
