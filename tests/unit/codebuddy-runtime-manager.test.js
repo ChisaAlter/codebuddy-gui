@@ -8,23 +8,25 @@ const {
 } = require('../../electron/codebuddy-runtime-manager.cjs');
 
 describe('CodeBuddy runtime environment', () => {
-  it('enables the product environment that provides remote control by default', () => {
-    expect(buildCodeBuddyRuntimeEnvironment({ PATH: 'test-path' })).toEqual({
+  it('does not force ioa product environment by default', () => {
+    const env = buildCodeBuddyRuntimeEnvironment({ PATH: 'test-path' });
+    expect(env.CODEBUDDY_INTERNET_ENVIRONMENT).toBeUndefined();
+  });
+
+  it('strips empty internet environment overrides so CLI defaults apply', () => {
+    const env = buildCodeBuddyRuntimeEnvironment({
       PATH: 'test-path',
-      CODEBUDDY_INTERNET_ENVIRONMENT: 'ioa',
+      CODEBUDDY_INTERNET_ENVIRONMENT: '   ',
     });
+    expect(env.CODEBUDDY_INTERNET_ENVIRONMENT).toBeUndefined();
   });
 
   it('preserves an explicitly configured product environment', () => {
-    expect(
-      buildCodeBuddyRuntimeEnvironment({
-        PATH: 'test-path',
-        CODEBUDDY_INTERNET_ENVIRONMENT: 'custom-environment',
-      }),
-    ).toEqual({
+    const env = buildCodeBuddyRuntimeEnvironment({
       PATH: 'test-path',
       CODEBUDDY_INTERNET_ENVIRONMENT: 'custom-environment',
     });
+    expect(env.CODEBUDDY_INTERNET_ENVIRONMENT).toBe('custom-environment');
   });
 
   it('keeps CodeBuddy authentication cookies on proxied requests', () => {

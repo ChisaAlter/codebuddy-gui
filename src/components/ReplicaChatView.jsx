@@ -1185,6 +1185,9 @@ export default function ReplicaChatView() {
   const modes = useStore((s) => s.modes);
   const setModel = useStore((s) => s.setModel);
   const setMode = useStore((s) => s.setMode);
+  const setThoughtLevel = useStore((s) => s.setThoughtLevel);
+  const thoughtLevel = useStore((s) => s.thoughtLevel);
+  const thoughtLevelOptions = useStore((s) => s.thoughtLevelOptions);
   const currentModelName = useStore(
     (s) => s.models.find((m) => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '',
   );
@@ -1196,6 +1199,7 @@ export default function ReplicaChatView() {
   const [recovering, setRecovering] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showModePicker, setShowModePicker] = useState(false);
+  const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
   const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
   const sessionSelectionRequestRef = useRef(0);
@@ -1237,6 +1241,7 @@ export default function ReplicaChatView() {
     setQueueActionBusy(false);
     setShowModelPicker(false);
     setShowModePicker(false);
+    setShowEffortPicker(false);
   }, [activeProjectId, activeThreadId]);
   const modeOptions = useMemo(() => {
     const items = (Array.isArray(modes) ? modes : [])
@@ -1253,6 +1258,39 @@ export default function ReplicaChatView() {
   }, [currentMode, modes]);
   const currentModeName =
     modeOptions.find((m) => m.id === currentMode)?.name || getSessionModeLabel(currentMode, '始终询问');
+  const effortOptions = useMemo(() => {
+    const FALLBACK = [
+      { id: 'disabled', name: '关闭' },
+      { id: 'enabled', name: '默认' },
+      { id: 'low', name: 'Low' },
+      { id: 'medium', name: 'Medium' },
+      { id: 'high', name: 'High' },
+      { id: 'xhigh', name: 'Xhigh' },
+      { id: 'max', name: 'Max' },
+    ];
+    // 服务端回推的 options 已按当前模型过滤（如某些模型不支持 max/disabled）
+    const serverItems = (Array.isArray(thoughtLevelOptions) ? thoughtLevelOptions : [])
+      .map((o) => {
+        const id = o.id || o.value;
+        if (!id) return null;
+        // 给 enabled/disabled 起可读档位名，其余沿用服务端 name
+        const name = id === 'disabled' ? '关闭' : id === 'enabled' ? '默认' : o.name || id;
+        return { id, name };
+      })
+      .filter(Boolean);
+    const base = serverItems.length > 0 ? serverItems : FALLBACK;
+    // ultracode 始终作为附加项（复合模式，仅 /effort ultracode 触发，服务端 thought_level 不含此值）
+    if (!base.some((o) => o.id === 'ultracode')) base.push({ id: 'ultracode', name: 'Ultracode' });
+    return base;
+  }, [thoughtLevelOptions]);
+  const currentEffortName = useMemo(() => {
+    if (!thoughtLevel) return '默认';
+    if (thoughtLevel === 'disabled') return '关闭';
+    if (thoughtLevel === 'enabled') return '默认';
+    if (thoughtLevel === 'ultracode') return 'Ultracode';
+    const hit = effortOptions.find((o) => o.id === thoughtLevel);
+    return hit ? hit.name : thoughtLevel;
+  }, [effortOptions, thoughtLevel]);
   const promptSuggestionText = useMemo(() => getPromptSuggestionText(promptSuggestion), [promptSuggestion]);
 
   const applyPromptSuggestion = useCallback(() => {
@@ -1278,11 +1316,12 @@ export default function ReplicaChatView() {
   const canSend = connectionState === 'connected' && !accountLoginNeeded;
   const recoveryMessage =
     codeBuddyAccountAuthState === 'required'
-      ? '当前 CodeBuddy 账号尚未登录。登录将在应用内发起，完成授权后会自动恢复连接和模型列表。'
+      ? codeBuddyAccountAuthError ||
+        '云端账号登录已失效（与本地会话连接无关）。点击下方按钮在浏览器完成一次授权即可，无需反复重试发送。'
       : codeBuddyAccountAuthState === 'authenticating'
-        ? '正在通过应用内置的 CodeBuddy CLI 等待登录完成...'
+        ? '已打开登录流程，请在浏览器完成授权。完成后会自动恢复当前会话，请勿重复点击。'
         : codeBuddyAccountAuthState === 'error'
-          ? codeBuddyAccountAuthError || 'CodeBuddy 登录失败，请重试。'
+          ? codeBuddyAccountAuthError || 'CodeBuddy 登录未完成。可再次点击登录；若浏览器未弹出，请检查是否被拦截。'
           : activeProject?.runtimeError ||
             recoveryError ||
             (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
@@ -1303,19 +1342,40 @@ export default function ReplicaChatView() {
       const projectId = activeProjectId;
       const threadId = activeThreadId;
       const requestId = ++sessionSelectionRequestRef.current;
-      const label = kind === 'model' ? '模型' : '模式';
+      const label = kind === 'model' ? '模型' : kind === 'mode' ? '模式' : '思考强度';
       const isCurrent = () =>
         requestId === sessionSelectionRequestRef.current &&
         projectId === useStore.getState().activeProjectId &&
         threadId === useStore.getState().activeThreadId;
       setSessionSelectionStatus({ type: 'busy', message: '正在切换' + label + '...' });
       try {
-        const changed = kind === 'model' ? await setModel(value) : await setMode(value);
+        let changed;
+        if (kind === 'model') {
+          changed = await setModel(value);
+        } else if (kind === 'mode') {
+          changed = await setMode(value);
+        } else if (kind === 'effort') {
+          if (value === 'ultracode') {
+            // ultracode 是复合模式，仅 /effort 斜杠命令触发（无 thought_level 值）。
+            // 服务端写的是 session.meta.workflowEffortLevel，不会回推 thought_level='ultracode'，
+            // 因此发送成功后必须在本地乐观写入，否则 pill 不会变。
+            changed = await sendPrompt('/effort ultracode');
+            if (changed && isCurrent()) {
+              useStore.getState().patchThreadRuntime(threadId, { thoughtLevel: 'ultracode' });
+              useStore.setState({ thoughtLevel: 'ultracode' });
+            }
+          } else {
+            changed = await setThoughtLevel(value);
+          }
+        } else {
+          changed = false;
+        }
         if (!isCurrent()) return;
         if (changed) {
           setSessionSelectionStatus(null);
           if (kind === 'model') setShowModelPicker(false);
-          else setShowModePicker(false);
+          else if (kind === 'mode') setShowModePicker(false);
+          else setShowEffortPicker(false);
         } else {
           setSessionSelectionStatus(null);
           setChatError(consumeStoreError(label + '切换失败'));
@@ -1335,8 +1395,10 @@ export default function ReplicaChatView() {
       activeThreadStatus,
       connectionState,
       isAwaitingResponse,
+      sendPrompt,
       setMode,
       setModel,
+      setThoughtLevel,
     ],
   );
 
@@ -1902,6 +1964,11 @@ export default function ReplicaChatView() {
         models={models}
         currentModel={currentModel}
         currentModelName={currentModelName}
+        showEffortPicker={showEffortPicker}
+        setShowEffortPicker={setShowEffortPicker}
+        effortOptions={effortOptions}
+        thoughtLevel={thoughtLevel}
+        currentEffortName={currentEffortName}
         cancelBusy={cancelBusy}
         cancelActiveSession={cancelActiveSession}
         onSubmit={onSubmit}
@@ -1978,6 +2045,11 @@ const ChatComposer = React.memo(function ChatComposer({
   models,
   currentModel,
   currentModelName,
+  showEffortPicker,
+  setShowEffortPicker,
+  effortOptions,
+  thoughtLevel,
+  currentEffortName,
   cancelBusy,
   cancelActiveSession,
   onSubmit,
@@ -2267,7 +2339,7 @@ const ChatComposer = React.memo(function ChatComposer({
                 </button>
                 {showModePicker && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setShowModePicker(false)} />
+                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowModePicker(false)} />
                     <div className="absolute bottom-full left-0 mb-1 z-20 w-40 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
                       {modeOptions.map((m) => (
                         <button
@@ -2301,7 +2373,7 @@ const ChatComposer = React.memo(function ChatComposer({
                 </button>
                 {showModelPicker && (
                   <>
-                    <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
+                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowModelPicker(false)} />
                     <div
                       data-model-picker
                       className="absolute bottom-full right-0 mb-1 z-20 w-56 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
@@ -2329,6 +2401,48 @@ const ChatComposer = React.memo(function ChatComposer({
                       ) : (
                         <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
                       )}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  className="max-w-[140px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowEffortPicker(!showEffortPicker);
+                  }}
+                  title="思考强度"
+                >
+                  {currentEffortName}
+                </button>
+                {showEffortPicker && (
+                  <>
+                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowEffortPicker(false)} />
+                    <div
+                      data-effort-picker
+                      className="absolute bottom-full left-0 mb-1 z-20 w-44 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
+                    >
+                      {effortOptions.map((o) => {
+                        const level = thoughtLevel || 'enabled';
+                        return (
+                          <button
+                            key={o.id}
+                            disabled={sessionSelectionBusy || sessionResponseBusy}
+                            className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                            style={{
+                              color:
+                                o.id === level
+                                  ? 'var(--color-accent-blue)'
+                                  : 'var(--color-text-secondary)',
+                            }}
+                            onClick={() => changeSessionSetting('effort', o.id)}
+                          >
+                            {o.name}
+                          </button>
+                        );
+                      })}
                     </div>
                   </>
                 )}

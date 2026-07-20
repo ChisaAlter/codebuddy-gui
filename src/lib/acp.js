@@ -194,12 +194,15 @@ export class AcpRpcError extends Error {
 }
 
 export function isAcpAuthenticationError(error) {
-  return Boolean(
-    error &&
-      (error.category === 'auth' ||
-        error.data?.category === 'auth' ||
-        (error.code === -32000 && /authentication required/i.test(error.message || ''))),
-  );
+  if (!error) return false;
+  if (error.category === 'auth' || error.data?.category === 'auth') return true;
+  const message = String(error.message || error.errorMessage || '');
+  if (/authentication required|请.*登录|sign in to your account|auth-type:cli-external-link/i.test(message)) {
+    return true;
+  }
+  // CLI 常以 -32000 + 401 文案返回鉴权失败
+  if ((error.code === -32000 || error.code === 401) && /401|auth/i.test(message)) return true;
+  return false;
 }
 
 function createAcpRpcError(method, rpcError) {

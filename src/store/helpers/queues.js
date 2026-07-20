@@ -20,7 +20,11 @@ export function createQueueHelpers({
 
   function finishProjectNavigation(set, token, error = null) {
     if (!isProjectNavigationCurrent(token)) return;
-    set({ projectNavigationBusy: false, projectNavigationError: error });
+    set({
+      projectNavigationBusy: false,
+      projectNavigationTargetId: null,
+      projectNavigationError: error,
+    });
   }
 
   function isProjectMutationNavigation(state) {

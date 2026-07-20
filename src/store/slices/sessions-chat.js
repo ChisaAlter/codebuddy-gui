@@ -45,6 +45,7 @@ export function createSessionsChatSlice(set, get, ctx) {
     beginProjectNavigation,
     isProjectNavigationCurrent,
     finishProjectNavigation,
+    isProjectMutationNavigation,
     requestDirtyFileConfirmation,
     resetFileWorkspace,
     // pure helpers from store module
@@ -68,7 +69,7 @@ export function createSessionsChatSlice(set, get, ctx) {
   } = ctx;
 
   return {
-  applySessionConfigUpdate(configOptions = [], { preserveModel = false, preserveMode = false } = {}) {
+  applySessionConfigUpdate(configOptions = [], { preserveModel = false, preserveMode = false, preserveThoughtLevel = false } = {}) {
     const next = {};
     for (const option of configOptions) {
       if (option.id === 'model') {
@@ -81,7 +82,18 @@ export function createSessionsChatSlice(set, get, ctx) {
         const modes = normalizeModes(configOptionChoices(option));
         if (modes.length) next.modes = modes;
       }
-      if (option.id === 'thought_level') next.thoughtLevel = option.currentValue;
+      if (option.id === 'thought_level') {
+        if (!preserveThoughtLevel) next.thoughtLevel = option.currentValue;
+        const opts = configOptionChoices(option);
+        if (Array.isArray(opts) && opts.length) {
+          next.thoughtLevelOptions = opts
+            .map((o) => {
+              const id = o?.value ?? o?.id;
+              return id ? { id, name: o?.name || o?.label || id } : null;
+            })
+            .filter(Boolean);
+        }
+      }
     }
     return next;
   },
@@ -514,6 +526,10 @@ export function createSessionsChatSlice(set, get, ctx) {
       const stillActive = isScopedRequestCurrent(request, get());
 
       if (stillActive) {
+        // 会话 ACP 连接成功 ≠ 云端账号已鉴权。这里只清理“已确认失效”的错误态，
+        // 绝不能无条件写成 authenticated，否则 prompt 401 后仍显示可发送并反复误导登录。
+        const authState = get().codeBuddyAccountAuthState;
+        const clearAuthFailure = authState === 'required' || authState === 'error';
         set({
           sessionId: resolvedSessionId,
           sessionTitle: resolvedTitle,
@@ -523,9 +539,13 @@ export function createSessionsChatSlice(set, get, ctx) {
           currentMode,
           connectionState: 'connected',
           error: null,
-          codeBuddyAccountAuthState: 'authenticated',
-          codeBuddyAccountAuthUrl: null,
-          codeBuddyAccountAuthError: null,
+          ...(clearAuthFailure
+            ? {
+                codeBuddyAccountAuthState: 'unknown',
+                codeBuddyAccountAuthUrl: null,
+                codeBuddyAccountAuthError: null,
+              }
+            : {}),
         });
       }
       const completedTimeline = closeAssistantStream(threadRuntime.timeline);
@@ -588,13 +608,15 @@ export function createSessionsChatSlice(set, get, ctx) {
     } catch (error) {
       if (isAcpAuthenticationError(error)) {
         const stillActive = isScopedRequestCurrent(request, get());
+        const authMessage = error?.message || '需要登录 CodeBuddy 云端账号';
         if (stillActive) {
           set({
+            // 保留连接以便应用内 authenticate；不要用 error 覆盖鉴权引导
             error: null,
             connectionState: client.connected ? 'connected' : 'disconnected',
             codeBuddyAccountAuthState: 'required',
             codeBuddyAccountAuthUrl: null,
-            codeBuddyAccountAuthError: null,
+            codeBuddyAccountAuthError: authMessage,
             codeBuddyAccountAuthMethods: client.authMethods || [],
           });
         }
@@ -602,8 +624,9 @@ export function createSessionsChatSlice(set, get, ctx) {
           connectionState: client.connected ? 'connected' : 'disconnected',
         });
         await get().updateThreadRecord(thread.id, {
-          status: 'disconnected',
-          metadata: { ...(thread.metadata || {}), lastError: '需要登录 CodeBuddy 账号' },
+          // idle + metadata，避免侧栏一堆“断开”且无法点选
+          status: 'idle',
+          metadata: { ...(thread.metadata || {}), lastError: authMessage, authRequired: true },
         });
         return false;
       }
@@ -666,7 +689,11 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
       const initialized = await get().initializeActiveThread(thread.sessionId);
       if (!isProjectNavigationCurrent(navigation)) return false;
-      if (!initialized) throw new Error(get().error || '会话连接失败');
+      if (!initialized) {
+        // 云端鉴权缺失时 initialize 返回 false，但会话行必须已切换；展示登录恢复区即可
+        if (get().codeBuddyAccountAuthState === 'required') return true;
+        throw new Error(get().error || get().codeBuddyAccountAuthError || '会话连接失败');
+      }
       if (projectChanged) await get().refreshProjectViews();
       else await Promise.allSettled([get().refreshStats(), get().refreshTasks()]);
       return true;
@@ -1010,6 +1037,43 @@ export function createSessionsChatSlice(set, get, ctx) {
     });
   },
 
+  async setThoughtLevel(value) {
+    const state = get();
+    const threadId = state.activeThreadId;
+    const sessionId = state.sessionId;
+    if (!threadId || !sessionId || !value) return false;
+    if (threadResponseInProgress(state, threadId)) {
+      set({ error: '当前回复进行中，请等待完成或停止后再切换思考强度' });
+      return false;
+    }
+    return queueSessionSettingOperation(`${threadId}:thought_level`, async () => {
+      const target = get().threadsById[threadId];
+      if (!target || target.sessionId !== sessionId) return false;
+      if (threadResponseInProgress(get(), threadId)) {
+        if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换思考强度' });
+        return false;
+      }
+      try {
+        const client = get().getThreadClient(threadId);
+        if (!client) throw new Error('当前会话未连接');
+        await client.request('session/set_config_option', {
+          sessionId,
+          configId: 'thought_level',
+          value,
+        });
+        const thread = get().threadsById[threadId];
+        if (!thread || thread.sessionId !== sessionId) return false;
+        get().patchThreadRuntime(threadId, { thoughtLevel: value });
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ thoughtLevel: value });
+        // thought_level 是会话级运行时状态，不持久化到会话记录（新会话回归默认）
+        return true;
+      } catch (error) {
+        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        return false;
+      }
+    });
+  },
+
   async newSession() {
     const reportNewSessionError = (message) => {
       const text = String(message || '创建新会话失败').trim() || '创建新会话失败';
@@ -1041,7 +1105,8 @@ export function createSessionsChatSlice(set, get, ctx) {
         threadsById: { ...state.threadsById, [thread.id]: thread },
         threadOrderByProject: {
           ...state.threadOrderByProject,
-          [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+          // 新会话插入到最前面，便于用户立刻看到并继续工作
+          [projectId]: [thread.id, ...(state.threadOrderByProject[projectId] || [])],
         },
         activeThreadId: thread.id,
       }));
@@ -1584,7 +1649,33 @@ export function createSessionsChatSlice(set, get, ctx) {
         });
         return false;
       }
-      if (result?.stopReason === 'refusal') throw new Error(promptResultErrorMessage(result));
+      if (result?.stopReason === 'refusal') {
+        const message = promptResultErrorMessage(result);
+        const authFailed =
+          result?.category === 'auth' ||
+          /鉴权失败|authentication required|401|请.*登录|sign in|auth-type:cli-external-link/i.test(message);
+        if (authFailed) {
+          // 本地 ACP 已 connected，但云端 token 失效：只切到登录恢复，不把会话标成 error 循环
+          set({
+            codeBuddyAccountAuthState: 'required',
+            codeBuddyAccountAuthError: message,
+            error: null,
+          });
+          await get().updateThreadRecord(threadId, {
+            status: 'idle',
+            metadata: {
+              ...(get().threadsById[threadId]?.metadata || {}),
+              lastError: message,
+              authRequired: true,
+            },
+          });
+        }
+        const refusalError = new Error(message);
+        // 鉴权拒绝时恢复草稿，避免用户以为消息已发出却无回复
+        refusalError.promptAccepted = !authFailed;
+        refusalError.category = authFailed ? 'auth' : 'refusal';
+        throw refusalError;
+      }
 
       const graceDeadline = Date.now() + FINAL_RESPONSE_GRACE_MS;
       while (runIsCurrent() && !hasFinalResponse() && Date.now() < graceDeadline) {

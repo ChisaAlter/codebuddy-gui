@@ -63,8 +63,9 @@ export function ProjectSessionTree({
     const close = (event) => {
       if (!event.target.closest?.('[data-thread-context-menu]')) setContextMenu(null);
     };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    // pointerdown 在捕获阶段关菜单，不与会话行激活抢 click
+    document.addEventListener('pointerdown', close, true);
+    return () => document.removeEventListener('pointerdown', close, true);
   }, [contextMenu]);
 
   React.useEffect(() => {
@@ -142,10 +143,16 @@ export function ProjectSessionTree({
         const mutating = projectNavigationBusy && String(projectNavigationTargetId || '').includes(projectId);
         return (
           <div key={projectId} data-project-id={projectId}>
-            <div className="group/project flex items-center gap-0.5">
+            <div
+              className="group/project flex items-center gap-0.5"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onOpenProjectMenu(event, project);
+              }}
+            >
               <button
                 type="button"
-                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[15px] font-medium transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-sm font-medium transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
                 data-active-highlight={showActiveProjectHighlight}
                 aria-label={`${expanded ? '折叠' : '展开'}项目 ${project.name}`}
                 aria-expanded={expanded}
@@ -159,14 +166,18 @@ export function ProjectSessionTree({
               </button>
               <button
                 type="button"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] opacity-0 transition-opacity hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] group-hover/project:opacity-100 focus:opacity-100"
-                aria-label={`项目操作 ${project.name}`}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] opacity-0 transition-opacity hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] group-hover/project:opacity-100 focus:opacity-100 disabled:cursor-wait disabled:opacity-50"
+                aria-label={`在 ${project.name} 中新建会话`}
+                title={`在 ${project.name} 中新建会话`}
+                disabled={mutating}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onOpenProjectMenu(event, project);
+                  onCreateProjectThread(projectId);
                 }}
               >
-                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3" /><circle cx="8" cy="8" r="1.3" /><circle cx="13" cy="8" r="1.3" /></svg>
+                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M8 2v12M2 8h12" />
+                </svg>
               </button>
             </div>
 
@@ -178,24 +189,45 @@ export function ProjectSessionTree({
                     className="w-full py-1 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
                     aria-label={`在 ${project.name} 中新建会话`}
                     onClick={() => onCreateProjectThread(projectId)}
-                  >+ 新建会话</button>
+                  >新建会话</button>
                 ) : displayedThreads.map((thread) => {
                   const isActive = thread.id === activeThreadId;
                   const switching = projectNavigationBusy && projectNavigationTargetId === `thread:${thread.id}`;
                   const isRenaming = renamingId === thread.id;
+                  const activate = () => {
+                    // 全局 busy 时仍允许切换目标会话；仅跳过“已在切换自己”
+                    if (switching) return;
+                    Promise.resolve(onActivateThread(thread.id)).catch((error) => {
+                      console.error('[session-tree] activateThread failed', thread.id, error);
+                    });
+                  };
                   return (
                     <div
                       key={thread.id}
                       data-session-row
                       data-session-id={thread.id}
-                      className={`group/session relative flex min-h-7 items-center rounded-md ${isActive ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
+                      role="button"
+                      tabIndex={isRenaming ? -1 : 0}
+                      className={`group/session relative flex min-h-8 cursor-pointer items-center rounded-md px-2 transition-colors ${isActive ? 'bg-[var(--color-accent-primary-dim)] text-[var(--color-text-primary)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
+                      onClick={(event) => {
+                        if (isRenaming) return;
+                        if (event.target.closest?.('button, input, a, [data-session-action]')) return;
+                        activate();
+                      }}
+                      onKeyDown={(event) => {
+                        if (isRenaming) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          activate();
+                        }
+                      }}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         setContextMenu({ thread, x: event.clientX, y: event.clientY });
                       }}
                     >
                       {isRenaming ? (
-                        <div className="min-w-0 flex-1 px-1.5 py-1">
+                        <div className="min-w-0 flex-1 py-1">
                           <input
                             autoFocus
                             value={renameValue}
@@ -207,21 +239,19 @@ export function ProjectSessionTree({
                               if (event.key === 'Enter') submitRename(thread.id);
                               if (event.key === 'Escape' && !renameBusy) setRenamingId(null);
                             }}
+                            onClick={(event) => event.stopPropagation()}
                           />
                           {renameError ? <div className="pt-1 text-[10px] text-[var(--color-accent-red)]">{renameError}</div> : null}
                         </div>
                       ) : (
                         <>
-                          <button
-                            type="button"
-                            className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2 text-left text-[14px] text-[var(--color-text-secondary)] disabled:opacity-60"
-                            disabled={projectNavigationBusy}
-                            onClick={() => onActivateThread(thread.id)}
+                          <div
+                            className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2 text-left text-sm text-[var(--color-text-secondary)]"
                             title={thread.title || '新对话'}
                           >
-                            <span className={`truncate ${isActive ? 'text-[var(--color-text-primary)]' : ''}`}>{thread.title || '新对话'}</span>
-                          </button>
-                          <div className="mr-1 flex h-6 shrink-0 items-center gap-0.5">
+                            <span className={`truncate ${isActive ? 'font-medium text-[var(--color-text-primary)]' : ''}`}>{thread.title || '新对话'}</span>
+                          </div>
+                          <div className="mr-0.5 flex h-6 shrink-0 items-center gap-0.5" data-session-action>
                             <div className="hidden items-center gap-0.5 group-hover/session:flex group-focus-within/session:flex">
                               <button
                                 type="button"

@@ -480,7 +480,7 @@ function StatusBar() {
           <path d="M2 2h4v12H2V2zm8 0h4v12h-4V2z" />
         </svg>
       </button>
-      <div className="flex-1 flex items-center gap-2 min-w-0">
+      <div className="flex-1 flex items-center gap-2 min-w-0 text-sm">
         <span className="truncate text-[var(--color-text-secondary)]">{ROUTE_TITLES[route] || route}</span>
         {sessionTitle ? (
           <>
@@ -521,7 +521,7 @@ function StatusBar() {
         ) : null}
         <button
           type="button"
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+          className="flex h-7 items-center justify-center rounded-md px-2.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
           disabled={newSessionBusy || projectNavigationBusy}
           onClick={async () => {
             if (newSessionBusy || projectNavigationBusy) return;
@@ -543,9 +543,7 @@ function StatusBar() {
           {newSessionBusy || projectNavigationBusy ? (
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
           ) : (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M8 2v12M2 8h12" />
-            </svg>
+            '新对话'
           )}
         </button>
         <WindowControls />

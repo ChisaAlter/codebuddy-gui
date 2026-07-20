@@ -271,7 +271,15 @@ function threadResponseInProgress(state, threadId) {
 function threadSelectionProtection(state, threadId) {
   const runtime = threadId ? state.threadRuntimeById[threadId] || emptyThreadRuntime() : null;
   const preserveReplaySelection = Boolean(runtime?.historyReplayActive);
-  return { preserveModel: preserveReplaySelection, preserveMode: preserveReplaySelection };
+  // ultracode 是 UI 侧复合模式（/effort ultracode 写的是 session.meta.workflowEffortLevel，
+  // 服务端 thought_level 字段仍是进入前的档位）。任何 config_option_update（切模式/模型触发）
+  // 都会把本地 ultracode 覆盖回旧档位，因此当前为 ultracode 时保护 thoughtLevel。
+  const preserveThoughtLevel = runtime?.thoughtLevel === 'ultracode';
+  return {
+    preserveModel: preserveReplaySelection,
+    preserveMode: preserveReplaySelection,
+    preserveThoughtLevel,
+  };
 }
 
 function selectionMatchKey(value) {
@@ -318,14 +326,50 @@ function cancelPendingTimelineActions(timeline) {
   });
 }
 function promptResultErrorMessage(result) {
-  const raw = String(result?.errorMessage || '').trim();
-  if (!raw) return '模型未能完成本轮回复';
+  const candidates = [
+    result?.errorMessage,
+    result?.error?.message,
+    result?.message,
+    result?.error,
+    result?.data?.message,
+    result?.data?.errorMessage,
+  ];
+  let raw = '';
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim()) {
+      raw = item.trim();
+      break;
+    }
+    if (item && typeof item === 'object') {
+      const nested = item.message || item.errorMessage || item.error?.message;
+      if (typeof nested === 'string' && nested.trim()) {
+        raw = nested.trim();
+        break;
+      }
+    }
+  }
+  const stopReason = String(result?.stopReason || '').toLowerCase();
+  const looksLikeAuth =
+    result?.category === 'auth' ||
+    /authentication required|401|请.*登录|sign in|auth-type|token-type/i.test(raw || '');
+  const isAuthRefusal = result?.category === 'auth' || (stopReason === 'refusal' && (!raw || looksLikeAuth));
+  if (!raw) {
+    // CodeBuddy CLI 在鉴权失败时常只回 stopReason=refusal，不带 errorMessage
+    if (isAuthRefusal || stopReason === 'refusal') {
+      return 'CodeBuddy 云端账号未登录或登录已失效。请在应用内完成一次登录（浏览器授权），完成后会话会自动恢复。';
+    }
+    return '模型未能完成本轮回复';
+  }
   try {
     const parsed = JSON.parse(raw);
-    return parsed?.message || parsed?.error?.message || raw;
+    raw = parsed?.message || parsed?.error?.message || raw;
   } catch (_) {
-    return raw;
+    /* keep raw */
   }
+  if (/authentication required|401|请.*登录|sign in|auth-type|token-type/i.test(raw) || result?.category === 'auth') {
+    return 'CodeBuddy 云端账号未登录或登录已失效。请在应用内完成一次登录（浏览器授权），完成后会话会自动恢复。';
+  }
+  return raw;
 }
 
 function normalizeSessions(payload) {
@@ -494,6 +538,7 @@ export const useStore = create((set, get) => {
     beginProjectNavigation,
     isProjectNavigationCurrent,
     finishProjectNavigation,
+    isProjectMutationNavigation,
     requestDirtyFileConfirmation,
     resetFileWorkspace,
     serializePromptQueue,
@@ -1664,9 +1709,12 @@ export const useStore = create((set, get) => {
       if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
 
       const authMethods = Array.isArray(client.authMethods) ? client.authMethods : [];
-      const preferredMethodIds = ['iOA', 'internal', 'external', 'selfhosted'];
+      // 公有云默认 cli-external-link → methodId=external；勿优先 iOA，否则企业内网登录页对公有云用户无效
+      const preferredMethodIds = ['external', 'cli-external-link', 'iOA', 'internal', 'selfhosted'];
       const methodId =
-        preferredMethodIds.find((id) => authMethods.some((method) => method?.id === id)) || authMethods[0]?.id || 'iOA';
+        preferredMethodIds.find((id) => authMethods.some((method) => method?.id === id)) ||
+        authMethods[0]?.id ||
+        'external';
       const result = await client.authenticate(methodId);
       if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
       const userinfo = result?._meta?.['codebuddy.ai/userinfo'] || result?.userinfo || null;
@@ -1677,6 +1725,17 @@ export const useStore = create((set, get) => {
         codeBuddyAccountUser: userinfo,
         codeBuddyAccountAuthMethods: authMethods,
       });
+      // 清掉会话上的鉴权失败标记，避免恢复后仍显示旧 lastError
+      const thread = get().threadsById[threadId];
+      if (thread?.metadata?.authRequired || thread?.metadata?.lastError) {
+        await get().updateThreadRecord(threadId, {
+          metadata: {
+            ...(thread.metadata || {}),
+            authRequired: false,
+            lastError: null,
+          },
+        });
+      }
       await conversations.disposeAll();
       const restarted = projectId
         ? await get().restartProjectRuntime(projectId, { deferInitializationUntilAuth: true })

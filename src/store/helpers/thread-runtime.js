@@ -21,6 +21,8 @@ export function emptyThreadRuntime() {
     modes: [],
     currentModel: null,
     currentMode: 'default',
+    thoughtLevel: null,
+    thoughtLevelOptions: [],
     capabilities: {},
   };
 }
@@ -47,6 +49,8 @@ export const ACTIVE_THREAD_RUNTIME_KEYS = [
   'modes',
   'currentModel',
   'currentMode',
+  'thoughtLevel',
+  'thoughtLevelOptions',
   'capabilities',
 ];
 

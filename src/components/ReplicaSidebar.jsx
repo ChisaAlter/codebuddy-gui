@@ -285,25 +285,37 @@ export default function ReplicaSidebar() {
     setProjectActionError('');
   }, [activeProjectId, activeThreadId]);
 
-  // 点击外部关菜单
+  // 点击外部关菜单：捕获阶段 pointerdown，避免挡住会话行激活
   React.useEffect(() => {
     if (projectMenuOpenId === null) return;
     const onDoc = (e) => {
       if (!e.target.closest?.('[data-project-menu]')) setProjectMenuOpenId(null);
     };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    document.addEventListener('pointerdown', onDoc, true);
+    return () => document.removeEventListener('pointerdown', onDoc, true);
   }, [projectMenuOpenId]);
 
   const activateSidebarThread = async (threadId) => {
     setRoute('chat');
-    return activateThread(threadId);
+    try {
+      return await activateThread(threadId);
+    } catch (error) {
+      // 防御：激活失败时不抛到 React 事件，避免侧栏点击表现为“无反应”
+      console.error('[sidebar] activateThread failed', threadId, error);
+      return false;
+    }
   };
 
   const createProjectThread = async (projectId) => {
     setRoute('chat');
     const state = useStore.getState();
-    if (state.activeProjectId !== projectId) return activateProject(projectId);
+    // 新建会话前先确保项目在侧栏中展开，便于立刻看到新会话
+    const project = state.projectsById[projectId];
+    if (project?.preferences?.sidebarExpanded === false) {
+      await setProjectSidebarExpanded(projectId, true);
+    }
+    const nextState = useStore.getState();
+    if (nextState.activeProjectId !== projectId) return activateProject(projectId);
     return newSession();
   };
 
@@ -374,7 +386,7 @@ export default function ReplicaSidebar() {
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
-              className="flex min-h-9 w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+              className="flex min-h-9 w-full items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
               disabled={newSessionBusy || projectNavigationBusy}
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
@@ -384,11 +396,7 @@ export default function ReplicaSidebar() {
             >
               {newSessionBusy || projectNavigationBusy ? (
                 <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M8 2v12M2 8h12" />
-                </svg>
-              )}
+              ) : null}
               {projectNavigationBusy ? '切换中...' : newSessionBusy ? '正在创建...' : '新对话'}
             </button>
           </div>
@@ -429,9 +437,8 @@ export default function ReplicaSidebar() {
               onDeleteThread={deleteSidebarThread}
               onCreateProjectThread={createProjectThread}
               onOpenProjectMenu={(event, project) => {
-                if (projectNavigationBusy || projectActionBusy) return;
                 setProjectMenuPosition({ x: event.clientX, y: event.clientY });
-                setProjectMenuOpenId(projectMenuOpenId === project.id ? null : project.id);
+                setProjectMenuOpenId(project.id);
               }}
             />
             {projectNavigationError ? (

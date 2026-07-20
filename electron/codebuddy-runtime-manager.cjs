@@ -5,10 +5,13 @@ const { resolveCodeBuddySpawnSpec } = require('./codebuddy-cli-path.cjs');
 const CLI_UNAVAILABLE_MESSAGE = '未找到 CodeBuddy CLI。请先安装 CodeBuddy，并确认在命令行中可以直接运行 codebuddy。';
 
 function buildCodeBuddyRuntimeEnvironment(source = process.env) {
-  const base = {
-    ...source,
-    CODEBUDDY_INTERNET_ENVIRONMENT: source.CODEBUDDY_INTERNET_ENVIRONMENT || 'ioa',
-  };
+  // 不要默认强行注入 ioa：会覆盖 CLI 默认云端产品配置，导致已登录 token 以
+  // auth-type:cli-external-link、token-type:undefined 形式被拒（401），GUI 反复要求登录。
+  // 仅当用户/环境已显式设置 CODEBUDDY_INTERNET_ENVIRONMENT 时才透传。
+  const base = { ...source };
+  const internetEnv = String(source.CODEBUDDY_INTERNET_ENVIRONMENT || '').trim();
+  if (internetEnv) base.CODEBUDDY_INTERNET_ENVIRONMENT = internetEnv;
+  else delete base.CODEBUDDY_INTERNET_ENVIRONMENT;
   // Reuse CLI path resolution so packaged GUI inherits npm global PATH extras.
   return resolveCodeBuddySpawnSpec(['--serve'], base).env || base;
 }

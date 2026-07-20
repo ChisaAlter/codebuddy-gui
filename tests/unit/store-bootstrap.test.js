@@ -281,6 +281,7 @@ describe('store bootstrap coordination', () => {
     });
 
     await expect(useStore.getState().authenticateCodeBuddyAccount()).resolves.toBe(true);
+    // 公有云优先 external；fixture 仅提供 iOA 时回退到 iOA
     expect(authenticate).toHaveBeenCalledWith('iOA');
     expect(restartProjectRuntime).toHaveBeenCalledWith('project-1', { deferInitializationUntilAuth: true });
     expect(bootstrap).toHaveBeenCalledTimes(1);
@@ -288,6 +289,30 @@ describe('store bootstrap coordination', () => {
       codeBuddyAccountAuthState: 'authenticated',
       codeBuddyAccountUser: { userId: 'user-1' },
     });
+  });
+
+  it('prefers external cloud login when multiple auth methods exist', async () => {
+    const authenticate = vi.fn().mockResolvedValue({
+      _meta: { 'codebuddy.ai/userinfo': { userId: 'user-2' } },
+    });
+    const client = {
+      connected: true,
+      initialized: true,
+      authMethods: [
+        { id: 'iOA', name: 'Login with iOA' },
+        { id: 'external', name: 'Login via external browser' },
+      ],
+      authenticate,
+    };
+    useStore.setState({
+      restartProjectRuntime: vi.fn().mockResolvedValue(true),
+      bootstrap: vi.fn().mockResolvedValue(true),
+      getThreadClient: vi.fn().mockReturnValue(client),
+      codeBuddyAccountAuthState: 'required',
+      updateThreadRecord: vi.fn().mockResolvedValue(true),
+    });
+    await expect(useStore.getState().authenticateCodeBuddyAccount()).resolves.toBe(true);
+    expect(authenticate).toHaveBeenCalledWith('external');
   });
 });
 

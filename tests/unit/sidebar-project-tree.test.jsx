@@ -83,15 +83,22 @@ describe('ProjectSessionTree', () => {
     expect(projectButton.getAttribute('data-active-highlight')).toBe('false');
   });
 
-  it('uses larger project and conversation titles without tree guides', () => {
+  it('uses readable project and conversation titles without tree guides', () => {
     const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');
-    const threadButton = container.querySelector('[data-session-id="unread"] > button');
+    const threadTitle = container.querySelector('[data-session-id="unread"] .truncate');
     const sessionContainer = container.querySelector('[data-session-id="running"]')?.parentElement;
-    expect(projectButton.className).toContain('text-[15px]');
-    expect(threadButton.className).toContain('text-[14px]');
+    expect(projectButton.className).toContain('text-sm');
+    expect(threadTitle?.textContent).toBe('Unread task');
     expect(projectButton.innerHTML).not.toContain('M6 3l5 5-5 5');
     expect(sessionContainer?.className || '').not.toContain('border-l');
     expect(sessionContainer?.className || '').toContain('pl-7');
+  });
+
+  it('activates a conversation when the session row is clicked', async () => {
+    const row = container.querySelector('[data-session-id="running"]');
+    expect(row).toBeTruthy();
+    await act(async () => row.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(props.onActivateThread).toHaveBeenCalledWith('running');
   });
 
   it('can highlight the active project when no conversation is selected', async () => {
