@@ -7,12 +7,15 @@ const mocks = vi.hoisted(() => ({
   connectionState: 'connected',
   isAwaitingResponse: true,
   threadStatus: 'idle',
+  timeline: [],
+  promptStartedAt: null,
+  activePromptRunId: null,
 }));
 
 vi.mock('../../src/store', () => ({
   useStore(selector) {
     return selector({
-      timeline: [],
+      timeline: mocks.timeline,
       activeProjectId: 'project-1',
       activeThreadId: 'thread-1',
       projectsById: { 'project-1': { id: 'project-1', name: 'Project' } },
@@ -29,9 +32,13 @@ vi.mock('../../src/store', () => ({
       availableCommands: [],
       sendPrompt: vi.fn(),
       cancelSession: mocks.cancelSession,
+      respondToInterruption: vi.fn(),
       bootstrap: vi.fn(),
       restartProjectRuntime: vi.fn(),
       isAwaitingResponse: mocks.isAwaitingResponse,
+      promptStartedAt: mocks.promptStartedAt,
+      activePromptRunId: mocks.activePromptRunId,
+      historyReplayActive: false,
       models: [{ id: 'test-model', name: 'Test model' }],
       modes: [
         { id: 'default', name: 'Always Ask' },
@@ -52,7 +59,10 @@ vi.mock('../../src/store', () => ({
 }));
 
 import { useStore } from '../../src/store';
-import ReplicaChatView from '../../src/components/ReplicaChatView';
+import ReplicaChatView, {
+  formatThinkingDuration,
+  getResponseActivityLabel,
+} from '../../src/components/ReplicaChatView';
 
 useStore.getState = () => ({
   activeProjectId: 'project-1',
@@ -72,6 +82,9 @@ describe('ReplicaChatView cancellation', () => {
     mocks.connectionState = 'connected';
     mocks.isAwaitingResponse = true;
     mocks.threadStatus = 'idle';
+    mocks.timeline = [];
+    mocks.promptStartedAt = null;
+    mocks.activePromptRunId = null;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -108,6 +121,20 @@ describe('ReplicaChatView cancellation', () => {
     expect(container.querySelector('button[title="发送"]')).toBeNull();
   });
 
+  it('does not let a stale streaming timeline entry replace Send with Stop in an idle thread', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'idle';
+    mocks.activePromptRunId = null;
+    mocks.timeline = [
+      { id: 'stale-assistant', type: 'message', role: 'assistant', content: 'Old stream', streaming: true },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.querySelector('button[title="停止生成"]')).toBeNull();
+    expect(container.querySelector('button[title="发送"]')).toBeTruthy();
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+  });
+
   it('does not show Stop while the session is disconnected', async () => {
     mocks.connectionState = 'error';
     await act(async () => root.render(React.createElement(ReplicaChatView)));
@@ -117,6 +144,7 @@ describe('ReplicaChatView cancellation', () => {
   });
 
   it('shows Chinese permission modes and anchors the model picker inside the window', async () => {
+    mocks.isAwaitingResponse = false;
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
     const findButton = (label) =>
@@ -150,5 +178,243 @@ describe('ReplicaChatView cancellation', () => {
     expect(modelPicker).toBeTruthy();
     expect(modelPicker.className).toContain('right-0');
     expect(modelPicker.className).not.toContain('left-0');
+  });
+
+  it('disables model and mode changes while a response is running', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.threadStatus = 'running';
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const findButton = (label) =>
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent.trim() === label);
+    expect(findButton('始终询问').disabled).toBe(true);
+    expect(findButton('Test model').disabled).toBe(true);
+  });
+
+  it('pauses automatic following when the reader scrolls upward and resumes from the latest button', async () => {
+    mocks.timeline = [
+      { id: 'assistant-1', type: 'message', role: 'assistant', content: 'Streaming', streaming: true },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const initialScrollCalls = Element.prototype.scrollIntoView.mock.calls.length;
+    const scrollContainer = container.querySelector('.overflow-y-auto');
+    Object.defineProperties(scrollContainer, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    await act(async () => {
+      scrollContainer.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
+    });
+    expect(container.querySelector('button[title="跳转到最新内容"]')).toBeTruthy();
+
+    mocks.timeline = [
+      ...mocks.timeline,
+      { id: 'assistant-2', type: 'message', role: 'assistant', content: 'More', streaming: true },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(initialScrollCalls);
+
+    await act(async () => {
+      container.querySelector('button[title="跳转到最新内容"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(initialScrollCalls + 1);
+    expect(container.querySelector('button[title="跳转到最新内容"]')).toBeNull();
+  });
+
+  it('keeps tool records manually collapsible without status updates reopening them', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      { id: 'user-1', type: 'message', role: 'user', content: '检查项目' },
+      { id: 'tool-1', type: 'tool_call', role: 'assistant', status: 'running', title: 'Read files' },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const findExecutionButton = () =>
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('执行记录'));
+    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      findExecutionButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+
+    mocks.timeline = [
+      mocks.timeline[0],
+      { ...mocks.timeline[1], status: 'completed' },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+
+    mocks.timeline = [
+      ...mocks.timeline,
+      { id: 'final-1', type: 'message', role: 'assistant', content: '最终回答' },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      findExecutionButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('shows a live response activity indicator before the first model chunk arrives', async () => {
+    mocks.isAwaitingResponse = true;
+    mocks.promptStartedAt = Date.now() - 5000;
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const indicator = container.querySelector('[data-response-activity]');
+    expect(indicator).toBeTruthy();
+    expect(indicator.textContent).toContain('正在等待模型响应');
+    expect(indicator.textContent).toContain('秒');
+    expect(indicator.querySelectorAll('.response-activity-dot')).toHaveLength(3);
+  });
+
+  it('distinguishes thinking, tool execution, answer generation, waiting, and cancellation phases', () => {
+    const base = {
+      connectionState: 'connected',
+      historyReplayActive: false,
+      activeThreadStatus: 'running',
+      isAwaitingResponse: false,
+      activePromptRunId: 'run-1',
+      timeline: [],
+    };
+    expect(
+      getResponseActivityLabel({
+        ...base,
+        timeline: [{ type: 'thinking', streaming: true }],
+      }),
+    ).toBe('正在思考');
+    expect(
+      getResponseActivityLabel({
+        ...base,
+        timeline: [{ type: 'tool_call', status: 'running' }],
+      }),
+    ).toBe('正在执行工具');
+    expect(
+      getResponseActivityLabel({
+        ...base,
+        timeline: [{ type: 'message', role: 'assistant', streaming: true }],
+      }),
+    ).toBe('正在生成回答');
+    expect(getResponseActivityLabel({ ...base, activeThreadStatus: 'waiting' })).toBe('正在等待你的操作');
+    expect(getResponseActivityLabel({ ...base, activeThreadStatus: 'cancelling' })).toBe('正在停止任务');
+  });
+
+  it('ignores stale streaming and tool entries when the current thread is idle', () => {
+    expect(
+      getResponseActivityLabel({
+        connectionState: 'connected',
+        historyReplayActive: false,
+        activeThreadStatus: 'idle',
+        isAwaitingResponse: false,
+        activePromptRunId: null,
+        timeline: [
+          { type: 'thinking', streaming: true },
+          { type: 'tool_call', status: 'running' },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it('derives activity from the current prompt turn instead of an older unfinished tool', () => {
+    expect(
+      getResponseActivityLabel({
+        connectionState: 'connected',
+        historyReplayActive: false,
+        activeThreadStatus: 'running',
+        isAwaitingResponse: false,
+        activePromptRunId: 'run-current',
+        promptStartedAt: 2000,
+        timeline: [
+          { type: 'message', role: 'user', createdAt: 1000, content: '旧问题' },
+          { type: 'tool_call', status: 'running', createdAt: 1100 },
+          { type: 'message', role: 'user', createdAt: 2000, content: '新问题' },
+          { type: 'message', role: 'assistant', streaming: true, createdAt: 2100, content: '新回答' },
+        ],
+      }),
+    ).toBe('正在生成回答');
+  });
+
+  it('hides checkpoint identifiers behind one compact internal-progress summary', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      { id: 'user-compact', type: 'message', role: 'user', content: '继续' },
+      { id: 'tool-compact', type: 'tool_call', role: 'assistant', status: 'completed', title: 'Edit file' },
+      {
+        id: 'checkpoint-compact',
+        type: 'checkpoint',
+        role: 'assistant',
+        status: 'completed',
+        content: '352ef271-15b4-4bcd-94b5-c057e5faa7ad',
+      },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const executionButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent.includes('执行记录'),
+    );
+    expect(executionButton.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('352ef271-15b4-4bcd-94b5-c057e5faa7ad');
+
+    await act(async () => executionButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.textContent).toContain('已合并 1 条内部进度');
+    expect(container.textContent).not.toContain('352ef271-15b4-4bcd-94b5-c057e5faa7ad');
+  });
+  it('renders resolved permissions as a compact row without protocol identifiers', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      { id: 'user-permission', type: 'message', role: 'user', content: '检查项目' },
+      {
+        id: 'permission-resolved',
+        type: 'interruption',
+        role: 'assistant',
+        status: 'resolved',
+        meta: {
+          interruptionId: 'ir-secret-identifier',
+          toolCallId: 'tool-secret-identifier',
+          toolName: 'Bash',
+          toolTitle: '运行命令',
+          toolInput: { command: 'npm test', description: '运行测试' },
+          resolution: 'allowAll',
+        },
+      },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.textContent).toContain('权限');
+    expect(container.textContent).toContain('运行命令 · 运行测试');
+    expect(container.textContent).toContain('已始终允许');
+    expect(container.textContent).not.toContain('ir-secret-identifier');
+    expect(container.textContent).not.toContain('tool-secret-identifier');
+    expect(container.querySelector('pre')).toBeNull();
+  });
+
+  it('renders standard Markdown tables as readable HTML tables', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      {
+        id: 'assistant-table',
+        type: 'message',
+        role: 'assistant',
+        content: '| 模块 | 职责 |\n|------|------|\n| 主进程 | 窗口与 IPC |\n| 渲染进程 | React UI |',
+      },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    const table = container.querySelector('.markdown-table-wrap table');
+    expect(table).toBeTruthy();
+    expect(Array.from(table.querySelectorAll('th')).map((cell) => cell.textContent)).toEqual(['模块', '职责']);
+    expect(Array.from(table.querySelectorAll('td')).map((cell) => cell.textContent)).toEqual([
+      '主进程',
+      '窗口与 IPC',
+      '渲染进程',
+      'React UI',
+    ]);
+  });
+  it('does not render a completed sub-second thought as zero seconds', () => {
+    expect(formatThinkingDuration(1000, 1500, false)).toBe('<1 秒');
+    expect(formatThinkingDuration(1000, 5500, false)).toBe('4 秒');
   });
 });

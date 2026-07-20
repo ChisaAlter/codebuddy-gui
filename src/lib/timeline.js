@@ -1,38 +1,37 @@
-// 消息级 content-hash 去重：SSE 通知流和 POST 内联 SSE 可能推送同一 chunk。
+// 历史回放使用 offset 作为稳定事件身份。实时 POST/GET 双流去重在 AcpClient 传输层完成，
+// 这里不能再按文本去重，否则模型合法输出连续相同文本时会丢字。
 const MAX_DEDUPE_SCOPES = 100;
-const MAX_MESSAGES_PER_SCOPE = 1000;
-const _seenContentByScope = new Map();
+const MAX_EVENTS_PER_SCOPE = 2000;
+const _seenHistoryEventsByScope = new Map();
 
 export function resetSeenContent(scope) {
   if (scope === undefined || scope === null) {
-    _seenContentByScope.clear();
+    _seenHistoryEventsByScope.clear();
     return;
   }
-  _seenContentByScope.delete(String(scope));
+  _seenHistoryEventsByScope.delete(String(scope));
 }
 
-function seenContentForScope(scope) {
+function seenHistoryEventsForScope(scope) {
   const key = String(scope || 'global');
-  let seen = _seenContentByScope.get(key);
+  let seen = _seenHistoryEventsByScope.get(key);
   if (seen) return seen;
-  if (_seenContentByScope.size >= MAX_DEDUPE_SCOPES) {
-    _seenContentByScope.delete(_seenContentByScope.keys().next().value);
+  if (_seenHistoryEventsByScope.size >= MAX_DEDUPE_SCOPES) {
+    _seenHistoryEventsByScope.delete(_seenHistoryEventsByScope.keys().next().value);
   }
-  seen = new Map();
-  _seenContentByScope.set(key, seen);
+  seen = new Set();
+  _seenHistoryEventsByScope.set(key, seen);
   return seen;
 }
 
-function isDuplicateChunk(scope, messageId, content) {
-  if (!messageId) return false;
-  const hash = JSON.stringify(content);
-  const seen = seenContentForScope(scope);
-  const last = seen.get(messageId);
-  if (last === hash) return true;
-  if (!seen.has(messageId) && seen.size >= MAX_MESSAGES_PER_SCOPE) {
-    seen.delete(seen.keys().next().value);
-  }
-  seen.set(messageId, hash);
+function isDuplicateHistoryChunk(scope, payload, messageId) {
+  const history = payload?._meta?.['codebuddy.ai'];
+  if (history?.mode !== 'history' || history.offset === undefined || !messageId) return false;
+  const key = `${messageId}:${history.offset}:${payload?.sessionUpdate || payload?.type || ''}`;
+  const seen = seenHistoryEventsForScope(scope);
+  if (seen.has(key)) return true;
+  if (seen.size >= MAX_EVENTS_PER_SCOPE) seen.delete(seen.values().next().value);
+  seen.add(key);
   return false;
 }
 
@@ -69,7 +68,8 @@ export function createTimelineEntry(partial = {}) {
     role: partial.role || 'assistant',
     content: getText(partial.content),
     streaming: Boolean(partial.streaming),
-    createdAt: partial.createdAt || Date.now(),
+    createdAt: partial.createdAt ?? Date.now(),
+    completedAt: partial.completedAt ?? null,
     raw: partial.raw || null,
     meta: partial.meta || {},
     messageId: partial.messageId || null,
@@ -101,6 +101,16 @@ function findLastByToolCallId(timeline, toolCallId) {
   return null;
 }
 
+function findLocalUserHistoryTarget(timeline, content) {
+  if (!content) return null;
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.type !== 'message' || item.role !== 'user' || item.messageId) continue;
+    if (item.content === content || item.content.startsWith(content)) return item;
+  }
+  return null;
+}
+
 export function closeAssistantStream(timeline) {
   const completedAt = Date.now();
   return timeline.map((item) =>
@@ -119,7 +129,7 @@ function closeThinkingStream(timeline) {
   );
 }
 
-export function pushUserMessage(timeline, content) {
+export function pushUserMessage(timeline, content, createdAt = Date.now()) {
   return [
     ...timeline,
     createTimelineEntry({
@@ -127,6 +137,7 @@ export function pushUserMessage(timeline, content) {
       role: 'user',
       content,
       streaming: false,
+      createdAt,
     }),
   ];
 }
@@ -155,35 +166,62 @@ const EXECUTION_EVENT_TYPES = new Set([
   'question_answered',
 ]);
 
+function isExecutionEvent(item) {
+  if (EXECUTION_EVENT_TYPES.has(item?.type)) return true;
+  if (item?.type !== 'artifact') return false;
+  const payload = item.meta || item.raw || {};
+  const artifact = payload.artifact && typeof payload.artifact === 'object' ? payload.artifact : payload;
+  return Array.isArray(artifact.tasks);
+}
+
 export function groupTimelineForDisplay(timeline) {
   const grouped = [];
-  let executionItems = [];
+  let turn = [];
 
-  const flushExecutionItems = () => {
-    if (!executionItems.length) return;
-    const first = executionItems[0];
-    grouped.push({
-      id: `execution-${first.id || grouped.length}`,
-      type: 'execution_group',
-      role: 'system',
-      createdAt: first.createdAt,
-      items: executionItems,
-    });
-    executionItems = [];
+  const flushTurn = () => {
+    if (!turn.length) return;
+    let index = 0;
+    while (index < turn.length) {
+      const item = turn[index];
+      if (!isExecutionEvent(item)) {
+        grouped.push(item);
+        index += 1;
+        continue;
+      }
+
+      const cluster = [];
+      const clusterStart = index;
+      while (index < turn.length && isExecutionEvent(turn[index])) {
+        cluster.push(turn[index]);
+        index += 1;
+      }
+      const finalAnswerCompleted = turn.slice(index).some(
+        (candidate) =>
+          candidate?.type === 'message' &&
+          candidate?.role === 'assistant' &&
+          String(candidate.content || '').trim().length > 0 &&
+          candidate.streaming !== true,
+      );
+      const first = cluster[0];
+      grouped.push({
+        id: `execution-${first.id || grouped.length}-${clusterStart}`,
+        type: 'execution_group',
+        role: 'system',
+        createdAt: first.createdAt,
+        items: cluster,
+        autoCollapse: finalAnswerCompleted,
+      });
+    }
+    turn = [];
   };
 
   for (const item of Array.isArray(timeline) ? timeline : []) {
-    if (EXECUTION_EVENT_TYPES.has(item?.type)) {
-      executionItems.push(item);
-      continue;
-    }
-    flushExecutionItems();
-    grouped.push(item);
+    if (item?.type === 'message' && item?.role === 'user' && turn.length) flushTurn();
+    turn.push(item);
   }
-  flushExecutionItems();
+  flushTurn();
   return grouped;
 }
-
 export function executionGroupSummary(items) {
   const entries = Array.isArray(items) ? items : [];
   const toolCount = entries.filter((item) => item?.type === 'tool_call').length;
@@ -206,11 +244,26 @@ export function executionGroupSummary(items) {
 function mergeUserChunk(timeline, payload, dedupeScope) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
-  const target = findLastByMessageId(next, 'message', messageId);
+  const historyMode = payload?._meta?.['codebuddy.ai']?.mode === 'history';
+  const content = getText(payload?.content);
+  let target = findLastByMessageId(next, 'message', messageId);
+  if (!target && historyMode) {
+    target = findLocalUserHistoryTarget(next, content);
+    if (target) {
+      const index = next.lastIndexOf(target);
+      next[index] = {
+        ...target,
+        messageId,
+        raw: payload,
+        meta: { ...(target.meta || {}), ...(payload || {}), localHistoryContentComplete: true },
+      };
+      return next;
+    }
+  }
   if (target && target.role === 'user') {
-    const content = getText(payload?.content);
+    if (historyMode && target.meta?.localHistoryContentComplete) return next;
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
+    if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
     const index = next.lastIndexOf(target);
     next[index] = {
       ...target,
@@ -240,8 +293,28 @@ function mergeAssistantChunk(timeline, payload, dedupeScope) {
   if (target && target.role === 'assistant') {
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
+    if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
     const index = next.lastIndexOf(target);
+    const executionFollowedTarget = next
+      .slice(index + 1)
+      .some(
+        (item) =>
+          isExecutionEvent(item) || item?.type === 'interruption' || item?.type === 'question',
+      );
+    if (executionFollowedTarget && content) {
+      next.push(
+        createTimelineEntry({
+          type: 'message',
+          role: 'assistant',
+          content,
+          streaming: true,
+          raw: payload,
+          meta: payload,
+          messageId,
+        }),
+      );
+      return next;
+    }
     next[index] = {
       ...target,
       content: target.content + content,
@@ -264,15 +337,37 @@ function mergeAssistantChunk(timeline, payload, dedupeScope) {
   return next;
 }
 
-function mergeThinkingChunk(timeline, payload, dedupeScope) {
+function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = null) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
   const target = findLastByMessageId(next, 'thinking', messageId);
   if (target) {
     const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
-    if (isDuplicateChunk(dedupeScope, messageId, payload?.content)) return next;
+    if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
     const index = next.lastIndexOf(target);
+    const executionFollowedTarget = next
+      .slice(index + 1)
+      .some(
+        (item) =>
+          isExecutionEvent(item) || item?.type === 'interruption' || item?.type === 'question',
+      );
+    if (executionFollowedTarget && content) {
+      const resumedAt = Date.now();
+      next.push(
+        createTimelineEntry({
+          type: 'thinking',
+          role: 'assistant',
+          content,
+          streaming: true,
+          createdAt: resumedAt,
+          raw: payload,
+          meta: payload,
+          messageId,
+        }),
+      );
+      return next;
+    }
     next[index] = {
       ...target,
       content: target.content + content,
@@ -282,12 +377,19 @@ function mergeThinkingChunk(timeline, payload, dedupeScope) {
     };
     return next;
   }
+  const receivedAt = Date.now();
+  const normalizedStartedAt = Number(thinkingStartedAt);
+  const createdAt =
+    Number.isFinite(normalizedStartedAt) && normalizedStartedAt > 0 && normalizedStartedAt <= receivedAt
+      ? normalizedStartedAt
+      : receivedAt;
   next.push(
     createTimelineEntry({
       type: 'thinking',
       role: 'assistant',
       content: getText(payload?.content) || payload?.message || '',
       streaming: true,
+      createdAt,
       raw: payload,
       meta: payload,
       messageId,
@@ -336,7 +438,7 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
   return next;
 }
 
-export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'global') {
+export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'global', context = {}) {
   if (eventType === 'message') {
     if (payload?.messageId && payload?.content) {
       return mergeAssistantChunk(timeline, payload, dedupeScope);
@@ -345,7 +447,7 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
   }
 
   if (eventType === 'agent_thought_chunk' || payload?.sessionUpdate === 'agent_thought_chunk') {
-    return mergeThinkingChunk(timeline, payload, dedupeScope);
+    return mergeThinkingChunk(timeline, payload, dedupeScope, context.thinkingStartedAt);
   }
 
   if (eventType === 'agent_message_chunk' || payload?.sessionUpdate === 'agent_message_chunk') {
@@ -365,7 +467,7 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
   }
 
   if (eventType === 'thinking' || payload?.type === 'thinking' || payload?.sessionUpdate === 'thinking') {
-    return mergeThinkingChunk(timeline, payload, dedupeScope);
+    return mergeThinkingChunk(timeline, payload, dedupeScope, context.thinkingStartedAt);
   }
 
   if (eventType === 'interruption_request' || payload?.sessionUpdate === 'interruption_request' || payload?.type === 'interruption') {
@@ -472,6 +574,8 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
   }
 
   if (eventType === 'initialized') return timeline; // 系统内部事件，不渲染到对话
+
+  if (eventType === 'session_end' || payload?.sessionUpdate === 'session_end') return timeline;
 
   if (eventType === 'status_change' || eventType === 'model_update' || eventType === 'mode_update' || eventType === 'current_mode_update') {
     return pushSystemEvent(timeline, eventType, payload);

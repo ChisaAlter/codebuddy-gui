@@ -21,21 +21,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Production build failed with exit code $LASTEXITCODE" }
   }
 
-  $sourceName = "CodeBuddy GUI Setup $version.exe"
-  $sourceInstaller = Join-Path 'dist' $sourceName
-  $sourceBlockmap = "$sourceInstaller.blockmap"
   $assetName = "CodeBuddy-GUI-Setup-$version.exe"
   $assetInstaller = Join-Path 'dist' $assetName
   $assetBlockmap = "$assetInstaller.blockmap"
   $latestMetadata = Join-Path 'dist' 'latest.yml'
 
-  foreach ($requiredPath in @($sourceInstaller, $sourceBlockmap, $latestMetadata)) {
+  foreach ($requiredPath in @($assetInstaller, $assetBlockmap, $latestMetadata)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
       throw "Required release artifact is missing: $requiredPath"
     }
   }
 
-  $signature = Get-AuthenticodeSignature -LiteralPath $sourceInstaller
+  $signature = Get-AuthenticodeSignature -LiteralPath $assetInstaller
   $signerCertificate = $signature.SignerCertificate
   $selfSigned = $null -ne $signerCertificate -and $signerCertificate.Subject -eq $signerCertificate.Issuer
   $subjectMismatch = $signature.Status -eq 'Valid' -and -not [string]::IsNullOrWhiteSpace($ExpectedSignerSubject) -and $signerCertificate.Subject -notlike "*$ExpectedSignerSubject*"
@@ -51,8 +48,6 @@ try {
     throw "Installer is not ready for a signed release: $reason. Configure CSC_LINK/CSC_KEY_PASSWORD or rerun with -AllowUnsigned for an explicit preview release."
   }
 
-  Copy-Item -LiteralPath $sourceInstaller -Destination $assetInstaller -Force
-  Copy-Item -LiteralPath $sourceBlockmap -Destination $assetBlockmap -Force
 
   $metadata = Get-Content -Raw -LiteralPath $latestMetadata
   if ($metadata -notmatch [regex]::Escape($assetName)) {

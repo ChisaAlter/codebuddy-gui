@@ -2,6 +2,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   reduceAcpEvent,
   closeAssistantStream,
+  createTimelineEntry,
   executionGroupSummary,
   groupTimelineForDisplay,
   pushUserMessage,
@@ -36,6 +37,31 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(next[0]).toMatchObject({ type: 'thinking', streaming: false, completedAt: 4000 });
     expect(next[1]).toMatchObject({ type: 'message', role: 'assistant', streaming: true });
     now.mockRestore();
+  });
+
+  it('使用 prompt 发出时间作为思考计时起点', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(7000);
+    const next = reduceAcpEvent(
+      [],
+      'agent_thought_chunk',
+      { messageId: 'thought-1', content: '分析中' },
+      'thread-1',
+      { thinkingStartedAt: 2000 },
+    );
+
+    expect(next[0]).toMatchObject({ type: 'thinking', createdAt: 2000, streaming: true });
+    now.mockRestore();
+  });
+
+  it('保留已持久化的思考结束时间', () => {
+    const restored = createTimelineEntry({
+      type: 'thinking',
+      createdAt: 1000,
+      completedAt: 4321,
+      streaming: false,
+    });
+
+    expect(restored.completedAt).toBe(4321);
   });
 
   it('同 messageId 的多次 chunk 合并 content', () => {
@@ -89,29 +115,51 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(next[0].content).toBe('历史问题');
   });
 
-  it('相同 messageId 的去重状态按线程隔离', () => {
-    let threadA = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'A' }, 'thread-a');
-    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
+  it('工具调用之后同 messageId 的正文创建新的底部消息段', () => {
+    let next = pushUserMessage([], '检查项目');
+    next = reduceAcpEvent(next, 'agent_message_chunk', { messageId: 'm1', content: '开始检查' });
+    next = reduceAcpEvent(next, 'tool_call', { toolCallId: 'tool-1', status: 'completed', title: 'Read file' });
+    next = reduceAcpEvent(next, 'agent_message_chunk', { messageId: 'm1', content: '最终总结' });
 
-    let threadB = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'B' }, 'thread-b');
-    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
-
-    expect(threadA[0].content).toBe('A!');
-    expect(threadB[0].content).toBe('B!');
+    expect(next.map((item) => item.type)).toEqual(['message', 'message', 'tool_call', 'message']);
+    expect(next.filter((item) => item.type === 'message' && item.role === 'assistant').map((item) => item.content)).toEqual([
+      '开始检查',
+      '最终总结',
+    ]);
   });
 
-  it('重置一个线程不会清空其他线程的去重状态', () => {
-    let threadA = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'A' }, 'thread-a');
-    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
-    let threadB = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'shared', content: 'B' }, 'thread-b');
-    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
+  it('工具调用之后同 messageId 的后续思考仍创建 thinking 段', () => {
+    let next = reduceAcpEvent([], 'agent_thought_chunk', { messageId: 'thought-1', content: '先检查' });
+    next = reduceAcpEvent(next, 'tool_call', { toolCallId: 'tool-1', status: 'completed', title: 'Read file' });
+    next = reduceAcpEvent(next, 'agent_thought_chunk', { messageId: 'thought-1', content: '继续分析' });
 
-    resetSeenContent('thread-a');
-    threadA = reduceAcpEvent(threadA, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-a');
-    threadB = reduceAcpEvent(threadB, 'agent_message_chunk', { messageId: 'shared', content: '!' }, 'thread-b');
+    expect(next.map((item) => item.type)).toEqual(['thinking', 'tool_call', 'thinking']);
+    expect(next[2]).toMatchObject({ role: 'assistant', content: '继续分析', streaming: true });
+  });
 
-    expect(threadA[0].content).toBe('A!!');
-    expect(threadB[0].content).toBe('B!');
+  it('保留模型合法输出的连续相同文本 chunk', () => {
+    let next = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'repeat', content: '哈' });
+    next = reduceAcpEvent(next, 'agent_message_chunk', { messageId: 'repeat', content: '哈' });
+
+    expect(next[0].content).toBe('哈哈');
+  });
+
+  it('历史回放把本地用户消息规范化为服务端 messageId 而不重复追加', () => {
+    let next = pushUserMessage([], '了解项目');
+    next = reduceAcpEvent(
+      next,
+      'user_message_chunk',
+      {
+        sessionUpdate: 'user_message_chunk',
+        messageId: 'history-user',
+        content: { type: 'text', text: '了解项目' },
+        _meta: { 'codebuddy.ai': { mode: 'history', offset: 7 } },
+      },
+      'thread-a',
+    );
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({ role: 'user', messageId: 'history-user', content: '了解项目' });
   });
 });
 
@@ -170,8 +218,70 @@ describe('execution timeline grouping', () => {
     ]);
 
     expect(grouped).toHaveLength(3);
-    expect(grouped[1]).toMatchObject({ type: 'execution_group' });
+    expect(grouped[1]).toMatchObject({ type: 'execution_group', autoCollapse: false });
     expect(grouped[1].items.map((item) => item.id)).toEqual(['write', 'checkpoint', 'run']);
+  });
+
+  it('collapses every execution group in a turn only after the final answer starts', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '分析项目' },
+      { id: 'tool-1', type: 'tool_call', status: 'completed', title: 'Read files' },
+      { id: 'progress', type: 'message', role: 'assistant', content: '继续检查测试。' },
+      { id: 'tool-2', type: 'tool_call', status: 'completed', title: 'Run tests' },
+      { id: 'final', type: 'message', role: 'assistant', content: '这是最终结论。' },
+    ]);
+
+    const executionGroups = grouped.filter((item) => item.type === 'execution_group');
+    expect(executionGroups).toHaveLength(2);
+    expect(executionGroups[0].items.map((item) => item.id)).toEqual(['tool-1']);
+    expect(executionGroups[1].items.map((item) => item.id)).toEqual(['tool-2']);
+    expect(grouped.findIndex((item) => item.id === 'progress')).toBeLessThan(
+      grouped.findIndex((item) => item.items?.some((candidate) => candidate.id === 'tool-2')),
+    );
+    expect(executionGroups.every((item) => item.autoCollapse)).toBe(true);
+  });
+
+  it('folds task-list artifacts into the same execution record instead of rendering repeated cards', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '检查项目' },
+      {
+        id: 'tasks',
+        type: 'artifact',
+        meta: { artifact: { title: 'Tasks', tasks: [{ title: '运行测试', status: 'completed' }] } },
+      },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Run tests' },
+      { id: 'final', type: 'message', role: 'assistant', content: '检查完成', streaming: false },
+    ]);
+
+    const executionGroups = grouped.filter((item) => item.type === 'execution_group');
+    expect(executionGroups).toHaveLength(1);
+    expect(executionGroups[0].items.map((item) => item.id)).toEqual(['tasks', 'tool']);
+    expect(grouped.some((item) => item.type === 'artifact')).toBe(false);
+  });
+
+  it('keeps completed tools expanded while the turn has no final answer', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '分析项目' },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Read files' },
+    ]);
+
+    expect(grouped.find((item) => item.type === 'execution_group')?.autoCollapse).toBe(false);
+  });
+
+  it('does not auto-collapse tools while the possible final answer is still streaming', () => {
+    const active = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '分析项目' },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Read files' },
+      { id: 'answer', type: 'message', role: 'assistant', content: '正在总结', streaming: true },
+    ]);
+    const completed = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '分析项目' },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Read files' },
+      { id: 'answer', type: 'message', role: 'assistant', content: '总结完成', streaming: false },
+    ]);
+
+    expect(active.find((item) => item.type === 'execution_group')?.autoCollapse).toBe(false);
+    expect(completed.find((item) => item.type === 'execution_group')?.autoCollapse).toBe(true);
   });
 
   it('summarizes completed and failed execution records in user-facing language', () => {

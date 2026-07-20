@@ -64,6 +64,7 @@ import {
   loadGuiSettings,
   normalizeGuiSettings,
   saveGuiSettings,
+  SETTINGS_CACHE_KEY,
   stripGuiSettings,
 } from './lib/gui-settings';
 import { visibleProjectThreads } from './lib/session-sidebar';
@@ -321,6 +322,9 @@ function emptyThreadRuntime() {
     usage: null,
     availableCommands: [],
     isAwaitingResponse: false,
+    promptStartedAt: null,
+    activePromptRunId: null,
+    promptDispatched: false,
     promptQueue: [],
     pendingAttachments: [],
     promptSuggestion: null,
@@ -344,6 +348,9 @@ const ACTIVE_THREAD_RUNTIME_KEYS = [
   'usage',
   'availableCommands',
   'isAwaitingResponse',
+  'promptStartedAt',
+  'activePromptRunId',
+  'promptDispatched',
   'promptQueue',
   'pendingAttachments',
   'promptSuggestion',
@@ -357,6 +364,129 @@ const ACTIVE_THREAD_RUNTIME_KEYS = [
   'currentMode',
   'capabilities',
 ];
+
+const RESPONSE_BUSY_STATUSES = new Set(['running', 'waiting', 'cancelling']);
+const PROMPT_CONTENT_SESSION_UPDATES = new Set([
+  'agent_message_chunk',
+  'agent_thought_chunk',
+  'tool_call',
+  'tool_call_update',
+]);
+const FINAL_RESPONSE_GRACE_MS = 250;
+
+function responseTerminalRuntimePatch(patch = {}) {
+  return {
+    activePromptRunId: null,
+    promptDispatched: false,
+    isAwaitingResponse: false,
+    promptStartedAt: null,
+    historyReplayActive: false,
+    agentPhase: null,
+    progress: null,
+    ...patch,
+  };
+}
+function threadResponseInProgress(state, threadId) {
+  const thread = state.threadsById[threadId];
+  const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
+  return Boolean(RESPONSE_BUSY_STATUSES.has(thread?.status) || runtime.isAwaitingResponse || runtime.activePromptRunId);
+}
+
+function threadSelectionProtection(state, threadId) {
+  const runtime = threadId ? state.threadRuntimeById[threadId] || emptyThreadRuntime() : null;
+  const preserveReplaySelection = Boolean(runtime?.historyReplayActive);
+  return { preserveModel: preserveReplaySelection, preserveMode: preserveReplaySelection };
+}
+
+function selectionMatchKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^custom-local:/, '');
+}
+
+function resolveAvailableSelection(choices, selectionId) {
+  if (!selectionId) return null;
+  const normalized = Array.isArray(choices) ? choices : [];
+  if (normalized.length === 0) return selectionId;
+  const exact = normalized.find((item) => (item.id || item.modelId || item.modeId) === selectionId);
+  if (exact) return exact.id || exact.modelId || exact.modeId;
+  const selectionKey = selectionMatchKey(selectionId);
+  const alias = normalized.find((item) => {
+    const id = item.id || item.modelId || item.modeId;
+    return selectionMatchKey(id) === selectionKey || selectionMatchKey(item.name || item.label) === selectionKey;
+  });
+  return alias ? alias.id || alias.modelId || alias.modeId : null;
+}
+
+
+function waitForMilliseconds(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function promptTurnEntries(timeline, promptEntryId, promptStartedAt) {
+  const entries = Array.isArray(timeline) ? timeline : [];
+  let promptIndex = entries.findIndex((item) => item.id === promptEntryId);
+  if (promptIndex < 0) {
+    promptIndex = entries.findIndex(
+      (item) => item.type === 'message' && item.role === 'user' && item.createdAt >= promptStartedAt,
+    );
+  }
+  return promptIndex < 0 ? null : entries.slice(promptIndex + 1);
+}
+
+export function hasCompletePromptResponse(timeline, promptEntryId, promptStartedAt) {
+  const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
+  if (!turnEntries) return false;
+  let lastExecutionIndex = -1;
+  for (let index = 0; index < turnEntries.length; index += 1) {
+    if (turnEntries[index]?.type === 'tool_call') lastExecutionIndex = index;
+  }
+  return turnEntries.some(
+    (item, index) =>
+      index > lastExecutionIndex &&
+      item?.type === 'message' &&
+      item?.role === 'assistant' &&
+      String(item.content || '').trim().length > 0,
+  );
+}
+
+function hasPromptRunActivity(timeline, promptEntryId, promptStartedAt) {
+  const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
+  if (!turnEntries) return false;
+  return turnEntries.some((item) => {
+    if (item?.type === 'message' && item?.role === 'assistant') return true;
+    return ['thinking', 'tool_call', 'interruption', 'question'].includes(item?.type);
+  });
+}
+
+function isMethodNotFoundError(error) {
+  return error?.code === -32601 || /method not found/i.test(String(error?.message || ''));
+}
+
+function cancelPendingTimelineActions(timeline) {
+  const cancelledAt = Date.now();
+  return (Array.isArray(timeline) ? timeline : []).map((item) => {
+    const pendingInterruption = item?.type === 'interruption' && !['resolved', 'expired', 'cancelled'].includes(item.status);
+    const pendingQuestion = item?.type === 'question' && !['answered', 'expired', 'cancelled'].includes(item.status);
+    if (!pendingInterruption && !pendingQuestion) return item;
+    return {
+      ...item,
+      status: 'cancelled',
+      meta: { ...(item.meta || {}), cancelledAt },
+    };
+  });
+}
+function promptResultErrorMessage(result) {
+  const raw = String(result?.errorMessage || '').trim();
+  if (!raw) return '模型未能完成本轮回复';
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.message || parsed?.error?.message || raw;
+  } catch (_) {
+    return raw;
+  }
+}
 
 function normalizeSessions(payload) {
   const data = payload?.data ?? payload ?? {};
@@ -430,7 +560,7 @@ function settingsCacheSnapshot(settings) {
 
 function persistSettingsCache(settings) {
   try {
-    localStorage.setItem('codebuddy-gui-settings', JSON.stringify(settingsCacheSnapshot(settings)));
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(settingsCacheSnapshot(settings)));
   } catch (_) {}
 }
 
@@ -627,6 +757,8 @@ export const useStore = create((set, get) => ({
   // 发消息后等 agent 首 SSE 块期间：UI 需立即显"思考中"态（发送键变终止键）
   // 收到 agent_message_chunk/agent_thought_chunk/tool_call 等真内容事件时清
   isAwaitingResponse: false,
+  promptStartedAt: null,
+  activePromptRunId: null,
   sidebarCollapsed: false,
   changesCount: 0,
   leftTab: 'chat',
@@ -746,7 +878,9 @@ export const useStore = create((set, get) => ({
   appendThreadTimelineEvent(threadId, eventType, payload) {
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId),
+      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId, {
+        thinkingStartedAt: runtime.historyReplayActive ? null : runtime.promptStartedAt,
+      }),
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false
@@ -1188,16 +1322,16 @@ export const useStore = create((set, get) => ({
     get().scheduleWorkspaceStatePersist();
   },
 
-  applySessionConfigUpdate(configOptions = []) {
+  applySessionConfigUpdate(configOptions = [], { preserveModel = false, preserveMode = false } = {}) {
     const next = {};
     for (const option of configOptions) {
       if (option.id === 'model') {
-        next.currentModel = option.currentValue;
+        if (!preserveModel) next.currentModel = option.currentValue;
         const models = normalizeModels(configOptionChoices(option));
         if (models.length) next.models = models;
       }
       if (option.id === 'mode') {
-        next.currentMode = option.currentValue;
+        if (!preserveMode) next.currentMode = option.currentValue;
         const modes = normalizeModes(configOptionChoices(option));
         if (modes.length) next.modes = modes;
       }
@@ -1211,7 +1345,8 @@ export const useStore = create((set, get) => ({
     if (!su) return;
 
     if (su === 'config_option_update') {
-      const patch = get().applySessionConfigUpdate(update.configOptions || []);
+      const selectionProtection = threadSelectionProtection(get(), get().activeThreadId);
+      const patch = get().applySessionConfigUpdate(update.configOptions || [], selectionProtection);
       set(patch);
       get().updateActiveThread({
         ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
@@ -1258,6 +1393,8 @@ export const useStore = create((set, get) => ({
     if (!su) return;
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const metadata = update._meta && typeof update._meta === 'object' ? update._meta : {};
+    const contentEvent = ['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'].includes(su);
+    if (contentEvent && get().threadsById[threadId]?.status === 'cancelled') return;
     const runtimePatch = {};
     if (Object.prototype.hasOwnProperty.call(metadata, 'codebuddy.ai/promptSuggestion')) {
       runtimePatch.promptSuggestion = metadata['codebuddy.ai/promptSuggestion'] || null;
@@ -1308,7 +1445,8 @@ export const useStore = create((set, get) => ({
     }
 
     if (su === 'config_option_update') {
-      const patch = get().applySessionConfigUpdate(update.configOptions || []);
+      const selectionProtection = threadSelectionProtection(get(), threadId);
+      const patch = get().applySessionConfigUpdate(update.configOptions || [], selectionProtection);
       get().patchThreadRuntime(threadId, patch);
       get().updateThreadRecord(threadId, {
         ...(patch.currentModel ? { modelId: patch.currentModel } : {}),
@@ -1363,13 +1501,17 @@ export const useStore = create((set, get) => ({
             : rawStatus || 'running';
       if (['idle', 'error', 'cancelled'].includes(normalizedStatus)) {
         const latestRuntime = get().threadRuntimeById[threadId] || runtime;
-        get().patchThreadRuntime(threadId, {
-          timeline: closeAssistantStream(latestRuntime.timeline),
-          isAwaitingResponse: false,
-          agentPhase: null,
-          progress: null,
-          historyReplayActive: false,
-        });
+        const client = conversations.peek(threadId) || get().getThreadClient(threadId);
+        const sessionId = get().threadsById[threadId]?.sessionId || latestRuntime.sessionId;
+        const requestStillActive = Boolean(
+          latestRuntime.activePromptRunId && client?.hasActivePrompt?.(sessionId),
+        );
+        if (!requestStillActive) {
+          get().patchThreadRuntime(
+            threadId,
+            responseTerminalRuntimePatch({ timeline: closeAssistantStream(latestRuntime.timeline) }),
+          );
+        }
       }
       get().updateThreadRecord(threadId, {
         status: normalizedStatus,
@@ -1408,19 +1550,35 @@ export const useStore = create((set, get) => ({
     }
     if (type === 'reconnect_failed') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      get().patchThreadRuntime(threadId, {
-        connectionState: 'error',
-        timeline: closeAssistantStream(runtime.timeline),
-        isAwaitingResponse: false,
-        agentPhase: null,
-        progress: null,
-        historyReplayActive: false,
-      });
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({
+          connectionState: 'error',
+          timeline: closeAssistantStream(runtime.timeline),
+        }),
+      );
       get().updateThreadRecord(threadId, { status: 'error', unread: get().activeThreadId !== threadId });
       return;
     }
     if (type === 'session/update') {
-      get().handleThreadSessionUpdate(threadId, (detail || {}).update || {});
+      const update = (detail || {}).update || {};
+      const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const promptRunId = detail?._client?.promptRunId || null;
+      const sessionUpdate = update.sessionUpdate || update.session_update || update.type;
+      const promptContentEvent = PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
+      if (promptContentEvent && promptRunId && promptRunId !== runtime.activePromptRunId) return;
+      if (promptContentEvent && !promptRunId && runtime.activePromptRunId && !runtime.historyReplayActive) return;
+      if (
+        promptContentEvent &&
+        !promptRunId &&
+        !runtime.activePromptRunId &&
+        !runtime.isAwaitingResponse &&
+        !runtime.historyReplayActive &&
+        !['connecting', 'running', 'waiting'].includes(thread?.status)
+      ) {
+        return;
+      }
+      get().handleThreadSessionUpdate(threadId, update);
       return;
     }
     if (type === 'initialized') {
@@ -1488,20 +1646,24 @@ export const useStore = create((set, get) => ({
     }
     if (type === 'model_update') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const { preserveModel } = threadSelectionProtection(get(), threadId);
+      const currentModel = preserveModel ? runtime.currentModel : detail?.currentModelId || runtime.currentModel;
       get().patchThreadRuntime(threadId, {
         models: normalizeModels(detail?.availableModels || runtime.models),
-        currentModel: detail?.currentModelId || runtime.currentModel,
+        currentModel,
       });
-      get().updateThreadRecord(threadId, { modelId: detail?.currentModelId || runtime.currentModel });
+      if (!preserveModel) get().updateThreadRecord(threadId, { modelId: currentModel });
       return;
     }
     if (type === 'mode_update' || type === 'current_mode_update') {
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const { preserveMode } = threadSelectionProtection(get(), threadId);
+      const currentMode = preserveMode ? runtime.currentMode : detail?.currentModeId || runtime.currentMode;
       get().patchThreadRuntime(threadId, {
         ...(type === 'mode_update' ? { modes: normalizeModes(detail?.availableModes || runtime.modes) } : {}),
-        currentMode: detail?.currentModeId || runtime.currentMode,
+        currentMode,
       });
-      get().updateThreadRecord(threadId, { modeId: detail?.currentModeId || runtime.currentMode });
+      if (!preserveMode) get().updateThreadRecord(threadId, { modeId: currentMode });
       return;
     }
     if (type === 'promptSuggestion') {
@@ -1584,20 +1746,23 @@ export const useStore = create((set, get) => ({
         init?.agentCapabilities?.availableModels ||
         configPatch.models ||
         threadRuntime.models;
+      const normalizedModels = normalizeModels(availableModels);
+      const persistedModel = thread.modelId || threadRuntime.currentModel;
       const currentModel =
+        resolveAvailableSelection(normalizedModels, persistedModel) ||
         loaded?.models?.currentModelId ||
         init?.models?.currentModelId ||
-        configPatch.currentModel ||
-        thread.modelId ||
-        threadRuntime.currentModel;
+        configPatch.currentModel;
       const availableModes =
         loaded?.modes?.availableModes || init?.modes?.availableModes || configPatch.modes || threadRuntime.modes;
+      const normalizedModes = normalizeModes(availableModes);
+      const persistedMode = thread.modeId || threadRuntime.currentMode;
       const currentMode =
+        resolveAvailableSelection(normalizedModes, persistedMode) ||
         loaded?.modes?.currentModeId ||
         init?.modes?.currentModeId ||
         configPatch.currentMode ||
-        thread.modeId ||
-        threadRuntime.currentMode;
+        'default';
       const resolvedSessionId = loaded?.sessionId || (recoveryError ? null : requestedSessionId) || null;
       const resolvedTitle = loaded?.title || loaded?.name || thread.title || '新对话';
       const stillActive = isScopedRequestCurrent(request, get());
@@ -1607,8 +1772,8 @@ export const useStore = create((set, get) => ({
           sessionId: resolvedSessionId,
           sessionTitle: resolvedTitle,
           currentModel,
-          models: normalizeModels(availableModels),
-          modes: normalizeModes(availableModes),
+          models: normalizedModels,
+          modes: normalizedModes,
           currentMode,
           connectionState: 'connected',
           error: null,
@@ -1617,14 +1782,22 @@ export const useStore = create((set, get) => ({
           codeBuddyAccountAuthError: null,
         });
       }
+      const completedTimeline = closeAssistantStream(threadRuntime.timeline);
       get().patchThreadRuntime(thread.id, {
         sessionId: resolvedSessionId,
         connectionState: 'connected',
         currentModel,
-        models: normalizeModels(availableModels),
-        modes: normalizeModes(availableModes),
+        models: normalizedModels,
+        modes: normalizedModes,
         currentMode,
         capabilities: init?.agentCapabilities || threadRuntime.capabilities || {},
+        timeline: completedTimeline,
+        isAwaitingResponse: false,
+        promptStartedAt: null,
+        activePromptRunId: null,
+        historyReplayActive: false,
+        agentPhase: null,
+        progress: null,
       });
       await get().updateThreadRecord(thread.id, {
         sessionId: resolvedSessionId,
@@ -1633,6 +1806,7 @@ export const useStore = create((set, get) => ({
         modeId: currentMode || 'default',
         status: 'idle',
         unread: false,
+        timeline: completedTimeline.slice(-300),
         metadata: recoveryError
           ? {
               ...(thread.metadata || {}),
@@ -1643,9 +1817,6 @@ export const useStore = create((set, get) => ({
             }
           : { ...(thread.metadata || {}), lastError: null },
       });
-      if ((get().threadRuntimeById[thread.id]?.promptQueue || []).length > 0) {
-        setTimeout(() => get().drainThreadPromptQueue(thread.id), 0);
-      }
       if (recoveryError) {
         const currentTimeline = get().threadRuntimeById[thread.id]?.timeline || [];
         const warning = `原会话恢复失败，已创建新会话继续工作。${recoveryError}`;
@@ -2032,9 +2203,17 @@ export const useStore = create((set, get) => ({
     const threadId = state.activeThreadId;
     const sessionId = state.sessionId;
     if (!threadId || !sessionId || !modelId) return false;
+    if (threadResponseInProgress(state, threadId)) {
+      set({ error: '当前回复进行中，请等待完成或停止后再切换模型' });
+      return false;
+    }
     return queueSessionSettingOperation(`${threadId}:model`, async () => {
       const target = get().threadsById[threadId];
       if (!target || target.sessionId !== sessionId) return false;
+      if (threadResponseInProgress(get(), threadId)) {
+        if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换模型' });
+        return false;
+      }
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
@@ -2057,9 +2236,17 @@ export const useStore = create((set, get) => ({
     const threadId = state.activeThreadId;
     const sessionId = state.sessionId;
     if (!threadId || !sessionId || !modeId) return false;
+    if (threadResponseInProgress(state, threadId)) {
+      set({ error: '当前回复进行中，请等待完成或停止后再切换模式' });
+      return false;
+    }
     return queueSessionSettingOperation(`${threadId}:mode`, async () => {
       const target = get().threadsById[threadId];
       if (!target || target.sessionId !== sessionId) return false;
+      if (threadResponseInProgress(get(), threadId)) {
+        if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换模式' });
+        return false;
+      }
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
@@ -2538,6 +2725,9 @@ export const useStore = create((set, get) => ({
           permissionRequests: [],
           questions: [],
           isAwaitingResponse: false,
+          promptStartedAt: null,
+          activePromptRunId: null,
+          promptDispatched: false,
           teamState: null,
           agentPhase: null,
           progress: null,
@@ -3159,9 +3349,17 @@ export const useStore = create((set, get) => ({
         const configPatch = get().applySessionConfigUpdate(loaded?.configOptions || []);
         const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models);
         const modes = normalizeModes(loaded?.modes?.availableModes || currentRuntime.modes);
-        const currentModel = loaded?.models?.currentModelId || configPatch.currentModel || currentRuntime.currentModel;
+        const persistedModel = currentRuntime.currentModel || currentThread.modelId;
+        const currentModel =
+          resolveAvailableSelection(models, persistedModel) ||
+          loaded?.models?.currentModelId ||
+          configPatch.currentModel;
+        const persistedMode = currentRuntime.currentMode || currentThread.modeId;
         const currentMode =
-          loaded?.modes?.currentModeId || configPatch.currentMode || currentRuntime.currentMode || 'default';
+          resolveAvailableSelection(modes, persistedMode) ||
+          loaded?.modes?.currentModeId ||
+          configPatch.currentMode ||
+          'default';
         const title = loaded?.title || loaded?.name || '新对话';
         get().patchThreadRuntime(threadId, {
           connectionState: 'connected',
@@ -3294,7 +3492,13 @@ export const useStore = create((set, get) => ({
     set({ error: null });
     return runUniqueSessionAction(threadId + ':interruption:' + interruptionId, async () => {
       const thread = get().threadsById[threadId];
-      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      if (
+        !thread ||
+        thread.projectId !== projectId ||
+        thread.sessionId !== sessionId ||
+        !['running', 'waiting'].includes(thread.status)
+      )
+        return false;
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const target = runtime.timeline.find(
         (item) => item.type === 'interruption' && sessionActionItemMatches(item, interruptionId),
@@ -3386,7 +3590,13 @@ export const useStore = create((set, get) => ({
     set({ error: null });
     return runUniqueSessionAction(threadId + ':question:' + toolCallId, async () => {
       const thread = get().threadsById[threadId];
-      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      if (
+        !thread ||
+        thread.projectId !== projectId ||
+        thread.sessionId !== sessionId ||
+        !['running', 'waiting'].includes(thread.status)
+      )
+        return false;
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
@@ -3415,7 +3625,13 @@ export const useStore = create((set, get) => ({
     set({ error: null });
     return runUniqueSessionAction(threadId + ':question:' + toolCallId, async () => {
       const thread = get().threadsById[threadId];
-      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
+      if (
+        !thread ||
+        thread.projectId !== projectId ||
+        thread.sessionId !== sessionId ||
+        !['running', 'waiting'].includes(thread.status)
+      )
+        return false;
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
@@ -3673,7 +3889,7 @@ export const useStore = create((set, get) => ({
 
   loadSettingsFromStorage() {
     try {
-      const raw = localStorage.getItem('codebuddy-gui-settings');
+      const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
       if (raw) {
         const parsed = settingsCacheSnapshot(JSON.parse(raw));
         persistSettingsCache(parsed);
@@ -4349,33 +4565,78 @@ export const useStore = create((set, get) => ({
     const state = get();
     const projectId = state.activeProjectId;
     const threadId = state.activeThreadId;
-    const sessionId = state.sessionId;
-    if (!projectId || !threadId || !sessionId) return false;
+    const thread = state.threadsById[threadId];
+    const runtime = state.threadRuntimeById[threadId] || emptyThreadRuntime();
+    const sessionId = thread?.sessionId || runtime.sessionId || state.sessionId;
+    if (!projectId || !threadId || !sessionId || !thread) return false;
     set({ error: null });
     return runUniqueSessionAction(`${threadId}:cancel:${sessionId}`, async () => {
-      const thread = get().threadsById[threadId];
-      if (!thread || thread.projectId !== projectId || thread.sessionId !== sessionId) return false;
-      try {
-        const client = get().getThreadClient(threadId);
-        if (!client) throw new Error('当前会话未连接');
-        client.cancelActivePrompt?.(sessionId);
-        const currentThread = get().threadsById[threadId];
-        if (!currentThread || currentThread.sessionId !== sessionId) return true;
-        const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-        const timeline = reduceAcpEvent(closeAssistantStream(runtime.timeline), 'status_change', {
-          status: 'cancelled',
-          role: 'system',
-        }, threadId);
-        get().patchThreadRuntime(threadId, { isAwaitingResponse: false, timeline });
-        await get().updateThreadRecord(threadId, { status: 'cancelled', timeline: timeline.slice(-300) });
-        return true;
-      } catch (error) {
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+      const currentThread = get().threadsById[threadId];
+      const currentRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      if (!currentThread || currentThread.projectId !== projectId) return false;
+      const currentSessionId = currentThread.sessionId || currentRuntime.sessionId || get().sessionId;
+      if (currentSessionId !== sessionId) return false;
+      const client = get().getThreadClient(threadId);
+      if (!client) {
+        set({ error: '当前会话未连接' });
         return false;
       }
+
+      const hadPlannedRun = Boolean(currentRuntime.activePromptRunId);
+      const hadActiveRequest = Boolean(client.hasActivePrompt?.(sessionId));
+      const waitingForInput = currentThread.status === 'waiting';
+      const responseBusy = RESPONSE_BUSY_STATUSES.has(currentThread.status);
+      if (!hadPlannedRun && !hadActiveRequest && !waitingForInput && !responseBusy) return false;
+      const preflightOnly =
+        hadPlannedRun && !currentRuntime.promptDispatched && !hadActiveRequest && currentThread.status === 'running';
+      const backendMayBeRunning = !preflightOnly && (currentRuntime.promptDispatched || hadActiveRequest || responseBusy);
+
+      get().patchThreadRuntime(threadId, responseTerminalRuntimePatch());
+      await get().updateThreadRecord(threadId, { status: 'cancelling' });
+
+      client.cancelActivePrompt?.(sessionId);
+      let backendCancelWarning = null;
+      if (backendMayBeRunning && client.notify && client.sessionCancelSupported !== false) {
+        try {
+          await client.notify('session/cancel', { sessionId });
+          client.sessionCancelSupported = true;
+        } catch (error) {
+          if (isMethodNotFoundError(error)) {
+            client.sessionCancelSupported = false;
+          } else {
+            backendCancelWarning = `后端取消确认失败，已关闭本地请求流: ${error?.message || '未知错误'}`;
+          }
+        }
+      }
+
+      client.invalidateInteractiveRequests?.('session-cancelled');
+      const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const cancelledTimeline = cancelPendingTimelineActions(closeAssistantStream(latestRuntime.timeline));
+      const timeline = reduceAcpEvent(cancelledTimeline, 'status_change', {
+        status: 'cancelled',
+        role: 'system',
+      }, threadId);
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({
+          permissionRequests: [],
+          questions: [],
+          timeline,
+        }),
+      );
+      await get().updateThreadRecord(threadId, {
+        status: 'cancelled',
+        timeline: timeline.slice(-300),
+        metadata: {
+          ...(get().threadsById[threadId]?.metadata || {}),
+          lastError: null,
+          cancelWarning: backendCancelWarning,
+        },
+      });
+      if (get().activeThreadId === threadId) set({ error: null });
+      return true;
     });
   },
-
   setThreadPromptQueue(threadId, promptQueue, patch = {}) {
     const serializedQueue = serializePromptQueue(promptQueue);
     set((state) => {
@@ -4414,7 +4675,7 @@ export const useStore = create((set, get) => ({
     const draftText = String(text || '');
     const content = String(text || '').trim() || (attachments.length ? '请查看附件。' : '');
     if (!content) return false;
-    if (thread.status === 'running' || runtime.isAwaitingResponse || runtime.promptQueue.length > 0) {
+    if (RESPONSE_BUSY_STATUSES.has(thread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptQueue.length > 0) {
       return queuePromptQueueOperation(threadId, async () => {
         const latestThread = get().threadsById[threadId];
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -4438,7 +4699,7 @@ export const useStore = create((set, get) => ({
           get().setThreadPromptQueue(threadId, latestRuntime.promptQueue, { draft: draftText });
           return false;
         }
-        if (latestThread.status !== 'running' && !latestRuntime.isAwaitingResponse) {
+        if (!RESPONSE_BUSY_STATUSES.has(latestThread.status) && !latestRuntime.isAwaitingResponse) {
           setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
         }
         return { queued: true, id: queuedPrompt.id };
@@ -4470,19 +4731,60 @@ export const useStore = create((set, get) => ({
       set({ error: '当前会话尚未完成连接' });
       return false;
     }
+    const project = get().projectsById[thread.projectId];
     const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
-    const timeline = pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`);
+    const promptStartedAt = Date.now();
+    const activePromptRunId = `run-${promptStartedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const timeline = pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`, promptStartedAt);
+    const promptEntryId = timeline[timeline.length - 1]?.id || null;
     get().patchThreadRuntime(threadId, {
       timeline,
       isAwaitingResponse: true,
+      promptStartedAt,
+      activePromptRunId,
+      promptDispatched: false,
     });
     await get().updateThreadRecord(threadId, {
       status: 'running',
       draft: '',
       unread: false,
       timeline: timeline.slice(-300),
+      metadata: { ...(thread.metadata || {}), lastError: null },
     });
+
+    const runIsCurrent = () => {
+      const latestThread = get().threadsById[threadId];
+      const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const latestSessionId = latestThread?.sessionId || latestRuntime.sessionId;
+      return latestRuntime.activePromptRunId === activePromptRunId && latestSessionId === requestSessionId;
+    };
+
+    const hasFinalResponse = () =>
+      hasCompletePromptResponse(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
+    const recoverPromptHistory = async () => {
+      if (!runIsCurrent()) return false;
+      get().patchThreadRuntime(threadId, { historyReplayActive: true });
+      resetSeenContent(threadId);
+      try {
+        await client.request(
+          'session/load',
+          {
+            sessionId: requestSessionId,
+            cwd: project?.workspacePath || '.',
+            mcpServers: [],
+          },
+          { promptRunId: activePromptRunId, historyReplay: true },
+        );
+      } finally {
+        const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        if (latestRuntime.activePromptRunId === activePromptRunId) {
+          get().patchThreadRuntime(threadId, { historyReplayActive: false });
+        }
+      }
+      return hasFinalResponse();
+    };
     try {
+      if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) return false;
       const prompt = [{ type: 'text', text: content }];
       for (const attachment of attachments) {
         if (attachment.kind === 'image') {
@@ -4493,25 +4795,95 @@ export const useStore = create((set, get) => ({
           prompt.push({ type: 'text', text: `文件: ${attachment.name}\n路径: ${attachment.path}\n\n${clipped}` });
         }
       }
-      await client.request('session/prompt', {
-        sessionId: requestSessionId,
-        prompt,
-      });
-      const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
-      if (get().threadsById[threadId]?.status === 'cancelled') {
-        get().patchThreadRuntime(threadId, {
-          timeline: closeAssistantStream(completedRuntime.timeline),
-          isAwaitingResponse: false,
+      get().patchThreadRuntime(threadId, { promptDispatched: true });
+      let result;
+      try {
+        result = await client.request(
+          'session/prompt',
+          {
+            sessionId: requestSessionId,
+            prompt,
+          },
+          { promptRunId: activePromptRunId },
+        );
+      } catch (requestError) {
+        if (!runIsCurrent()) return false;
+        const transportAccepted = requestError.promptAccepted === true;
+        const activityBeforeRecovery = hasPromptRunActivity(
+          get().threadRuntimeById[threadId]?.timeline,
+          promptEntryId,
+          promptStartedAt,
+        );
+        let recovered = false;
+        try {
+          recovered = await recoverPromptHistory();
+        } catch (recoveryError) {
+          if (hasFinalResponse()) {
+            recovered = true;
+          } else {
+            const promptAccepted =
+              transportAccepted ||
+              activityBeforeRecovery ||
+              hasPromptRunActivity(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
+            if (promptAccepted) {
+              recoveryError.promptAccepted = true;
+              throw recoveryError;
+            }
+            requestError.promptAccepted = false;
+            requestError.recoveryError = recoveryError?.message || null;
+            throw requestError;
+          }
+        }
+        if (!recovered) {
+          requestError.promptAccepted =
+            transportAccepted ||
+            activityBeforeRecovery ||
+            hasPromptRunActivity(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
+          throw requestError;
+        }
+        result = { stopReason: 'recovered' };
+      }
+      if (!runIsCurrent()) return false;
+
+      if (result?.stopReason === 'cancelled') {
+        const cancelledRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+        const cancelledTimeline = closeAssistantStream(cancelledRuntime.timeline);
+        get().patchThreadRuntime(
+          threadId,
+          responseTerminalRuntimePatch({ timeline: cancelledTimeline }),
+        );
+        await get().updateThreadRecord(threadId, {
+          status: 'cancelled',
+          timeline: cancelledTimeline.slice(-300),
         });
         return false;
       }
-      get().patchThreadRuntime(threadId, {
-        timeline: closeAssistantStream(completedRuntime.timeline),
-        isAwaitingResponse: false,
-      });
+      if (result?.stopReason === 'refusal') throw new Error(promptResultErrorMessage(result));
+
+      const graceDeadline = Date.now() + FINAL_RESPONSE_GRACE_MS;
+      while (runIsCurrent() && !hasFinalResponse() && Date.now() < graceDeadline) {
+        await waitForMilliseconds(25);
+      }
+
+      if (runIsCurrent() && !hasFinalResponse()) await recoverPromptHistory();
+      if (!runIsCurrent()) return false;
+      if (!hasFinalResponse()) {
+        const incompleteError = new Error('回复已结束，但最终正文未送达；自动历史恢复也未找到完整回答。');
+        incompleteError.promptAccepted = true;
+        throw incompleteError;
+      }
+
+      const completedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+      const completedTimeline = closeAssistantStream(completedRuntime.timeline);
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({ timeline: completedTimeline }),
+      );
       await get().updateThreadRecord(threadId, {
         status: 'idle',
         unread: get().activeThreadId !== threadId,
+        timeline: completedTimeline.slice(-300),
+        metadata: { ...(get().threadsById[threadId]?.metadata || {}), lastError: null },
       });
       if ((get().threadRuntimeById[threadId]?.promptQueue || []).length > 0) {
         setTimeout(() => get().drainThreadPromptQueue(threadId), 0);
@@ -4523,44 +4895,54 @@ export const useStore = create((set, get) => ({
       const failedRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const currentThread = get().threadsById[threadId] || thread;
       const userCancelled =
-        currentThread.status === 'cancelled' ||
+        ['cancelled', 'cancelling'].includes(currentThread.status) ||
         /cancelled|canceled|aborted by user|用户取消|已取消/i.test(error.message || '');
       if (userCancelled) {
-        get().patchThreadRuntime(threadId, {
-          timeline: closeAssistantStream(failedRuntime.timeline),
-          isAwaitingResponse: false,
-        });
+        if (failedRuntime.activePromptRunId === activePromptRunId) {
+          get().patchThreadRuntime(
+            threadId,
+            responseTerminalRuntimePatch({ timeline: closeAssistantStream(failedRuntime.timeline) }),
+          );
+        }
         return false;
       }
-      const failedDraft = String(draftText || '').trim();
-      const currentDraft = String(currentThread.draft || '').trim();
-      const restoredDraft =
-        failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
-      const restoredAttachments = [...attachments, ...(failedRuntime.pendingAttachments || [])].filter(
-        (item, index, items) =>
-          items.findIndex(
-            (candidate) => candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind,
-          ) === index,
-      );
+      if (!runIsCurrent()) return false;
 
-      get().patchThreadRuntime(threadId, {
-        timeline: closeAssistantStream(
-          reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
-        ),
-        isAwaitingResponse: false,
-        pendingAttachments: restoredAttachments,
-      });
+      const restoreInput = error.promptAccepted !== true;
+      const failedDraft = restoreInput ? String(draftText || '').trim() : '';
+      const currentDraft = String(currentThread.draft || '').trim();
+      const restoredDraft = failedDraft && currentDraft ? `${failedDraft}\n\n${currentDraft}` : failedDraft || currentDraft;
+      const restoredAttachments = restoreInput
+        ? [...attachments, ...(failedRuntime.pendingAttachments || [])].filter(
+            (item, index, items) =>
+              items.findIndex(
+                (candidate) =>
+                  candidate.path === item.path && candidate.name === item.name && candidate.kind === item.kind,
+              ) === index,
+          )
+        : failedRuntime.pendingAttachments || [];
+      const failedTimeline = closeAssistantStream(
+        reduceAcpEvent(failedRuntime.timeline, 'error', { message: error.message, type: 'error' }, threadId),
+      );
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({
+          timeline: failedTimeline,
+          pendingAttachments: restoredAttachments,
+        }),
+      );
       await get().updateThreadRecord(threadId, {
         status: 'error',
         unread: get().activeThreadId !== threadId,
         draft: restoredDraft,
+        timeline: failedTimeline.slice(-300),
         metadata: { ...(currentThread.metadata || {}), lastError: error.message },
       });
+      if (get().activeThreadId === threadId) set({ error: error.message });
       get().notifyThreadResult(threadId, 'error');
       return false;
     }
   },
-
   async drainThreadPromptQueue(threadId) {
     const prepared = await queuePromptQueueOperation(threadId, async () => {
       const thread = get().threadsById[threadId];
@@ -4568,7 +4950,7 @@ export const useStore = create((set, get) => ({
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
       const [next, ...rest] = runtime.promptQueue;
       if (!thread || !client || !next) return null;
-      if (thread.status === 'running' || runtime.isAwaitingResponse) return null;
+      if (RESPONSE_BUSY_STATUSES.has(thread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId) return null;
 
       let attachments = Array.isArray(next.attachments) ? next.attachments : [];
       const requiresReload = attachments.some(

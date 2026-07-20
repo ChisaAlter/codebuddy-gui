@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
@@ -9,6 +10,18 @@ import {
 } from '../lib/chat-commands';
 import { getSessionModeLabel } from '../lib/session-mode-labels';
 import { executionGroupSummary, groupTimelineForDisplay } from '../lib/timeline';
+
+function MarkdownTable(props) {
+  const { node, ...tableProps } = props;
+  void node;
+  return (
+    <div className="markdown-table-wrap">
+      <table {...tableProps} />
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS = { table: MarkdownTable };
 
 function getDayLabel(ts) {
   const d = new Date(typeof ts === 'number' ? ts : Date.now());
@@ -72,7 +85,7 @@ function CopyButton({ text }) {
 
   return (
     <button
-      className="ml-2 flex-shrink-0 rounded p-1 opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+      className="ml-2 flex-shrink-0 rounded p-1 opacity-0 transition-opacity hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 group-hover:opacity-100 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
       onClick={handleCopy}
       title={title}
       aria-label={title}
@@ -102,6 +115,107 @@ function CopyButton({ text }) {
   );
 }
 
+export function formatThinkingDuration(createdAt, endedAt, streaming) {
+  if (!createdAt) return '0 秒';
+  const elapsedMs = Math.max(0, endedAt - createdAt);
+  if (!streaming && elapsedMs < 1000) return '<1 秒';
+  const elapsed = Math.floor(elapsedMs / 1000);
+  if (elapsed < 60) return `${elapsed} 秒`;
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`;
+  return `${Math.floor(elapsed / 3600)} 时 ${Math.floor((elapsed % 3600) / 60)} 分`;
+}
+
+export function getResponseActivityLabel({
+  connectionState,
+  historyReplayActive,
+  activeThreadStatus,
+  isAwaitingResponse,
+  activePromptRunId,
+  promptStartedAt,
+  timeline,
+}) {
+  if (connectionState !== 'connected') return null;
+  if (historyReplayActive) return '正在加载会话记录';
+  if (activeThreadStatus === 'cancelling') return '正在停止任务';
+  if (activeThreadStatus === 'waiting') return '正在等待你的操作';
+  const responseActive =
+    activeThreadStatus === 'running' || Boolean(isAwaitingResponse) || Boolean(activePromptRunId);
+  if (!responseActive) return null;
+  if (isAwaitingResponse) return '正在等待模型响应';
+
+  const entries = Array.isArray(timeline) ? timeline : [];
+  const normalizedStartedAt = Number(promptStartedAt);
+  let turnStart = -1;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const item = entries[index];
+    if (item?.type !== 'message' || item?.role !== 'user') continue;
+    const createdAt = Number(item.createdAt);
+    if (
+      !Number.isFinite(normalizedStartedAt) ||
+      normalizedStartedAt <= 0 ||
+      !Number.isFinite(createdAt) ||
+      createdAt >= normalizedStartedAt
+    ) {
+      turnStart = index;
+      break;
+    }
+  }
+  const currentTurn = entries.slice(turnStart + 1);
+  const activeEntry = [...currentTurn].reverse().find((item) => {
+    if (item?.streaming) return true;
+    return (
+      item?.type === 'tool_call' &&
+      !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes(item?.status)
+    );
+  });
+  if (activeEntry?.type === 'thinking') return '正在思考';
+  if (activeEntry?.type === 'tool_call') return '正在执行工具';
+  if (activeEntry?.type === 'message' && activeEntry?.role === 'assistant') return '正在生成回答';
+  if (activePromptRunId || activeThreadStatus === 'running') return '正在处理任务';
+  return null;
+}
+
+function ResponseActivityIndicator({ label, startedAt }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!label) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [label, startedAt]);
+
+  if (!label) return null;
+  const normalizedStartedAt = Number(startedAt);
+  const elapsed =
+    Number.isFinite(normalizedStartedAt) && normalizedStartedAt > 0
+      ? formatThinkingDuration(normalizedStartedAt, now, true)
+      : null;
+  return (
+    <div
+      className="response-activity-indicator my-3 flex items-center justify-center gap-2 text-xs text-[var(--color-text-muted)]"
+      data-response-activity
+    >
+      <span className="sr-only" role="status" aria-live="polite">
+        {label}
+      </span>
+      <span className="contents" aria-hidden="true">
+        <span className="flex items-end gap-1">
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              className="response-activity-dot h-1.5 w-1.5 rounded-full bg-[var(--color-accent-blue)]"
+              style={{ animationDelay: `${index * 140}ms` }}
+            />
+          ))}
+        </span>
+        <span>{label}</span>
+        {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
+      </span>
+    </div>
+  );
+}
+
 function ThinkingCard({ item }) {
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -114,13 +228,9 @@ function ThinkingCard({ item }) {
   }, [item.streaming, item.createdAt]);
 
   const durationText = useMemo(() => {
-    if (!item.createdAt) return '0 秒';
     const endedAt = item.completedAt || now;
-    const elapsed = Math.max(0, Math.floor((endedAt - item.createdAt) / 1000));
-    if (elapsed < 60) return `${elapsed} 秒`;
-    if (elapsed < 3600) return `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`;
-    return `${Math.floor(elapsed / 3600)} 时 ${Math.floor((elapsed % 3600) / 60)} 分`;
-  }, [item.createdAt, item.completedAt, now]);
+    return formatThinkingDuration(item.createdAt, endedAt, item.streaming);
+  }, [item.createdAt, item.completedAt, item.streaming, now]);
 
   return (
     <div className="my-2">
@@ -228,13 +338,21 @@ function ToolCallBlock({ item }) {
   );
 }
 
-function ExecutionGroup({ items }) {
+function ExecutionGroup({ items, autoCollapse = false }) {
   const summary = executionGroupSummary(items);
-  const [expanded, setExpanded] = useState(summary.tone !== 'success');
+  const toolItems = items.filter((item) => item?.type === 'tool_call');
+  const internalEventCount = Math.max(0, items.length - toolItems.length);
+  const latestTool = [...toolItems].reverse().find(Boolean);
+  const latestToolTitle = latestTool?.title || latestTool?.name || latestTool?.toolName || '';
+  const detail = summary.tone === 'running' && latestToolTitle ? `${summary.detail} · ${latestToolTitle}` : summary.detail;
+  const autoCollapseAppliedRef = useRef(autoCollapse);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    if (summary.tone !== 'success') setExpanded(true);
-  }, [summary.tone]);
+    if (!autoCollapse || autoCollapseAppliedRef.current) return;
+    autoCollapseAppliedRef.current = true;
+    setExpanded(false);
+  }, [autoCollapse]);
 
   const statusClass =
     summary.tone === 'error'
@@ -261,7 +379,7 @@ function ExecutionGroup({ items }) {
           <path d="M2 4h12M2 8h8M2 12h10" />
         </svg>
         <span className="font-medium text-[var(--color-text-primary)]">执行记录</span>
-        <span className="truncate text-[var(--color-text-muted)]">{summary.detail}</span>
+        <span className="truncate text-[var(--color-text-muted)]">{detail}</span>
         <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusClass}`}>
           {summary.status}
         </span>
@@ -277,9 +395,16 @@ function ExecutionGroup({ items }) {
       </button>
       {expanded ? (
         <div className="border-t border-[var(--color-border-muted)] pb-1 pt-1">
-          {items.map((item, index) => (
-            <TimelineItem key={item.id || index} item={item} />
-          ))}
+          {toolItems.length ? (
+            toolItems.map((item, index) => <TimelineItem key={item.id || index} item={item} />)
+          ) : (
+            <div className="px-1 py-2 text-xs text-[var(--color-text-muted)]">本轮没有可展示的工具调用</div>
+          )}
+          {internalEventCount > 0 ? (
+            <div className="px-1 py-2 text-[11px] text-[var(--color-text-muted)]">
+              已合并 {internalEventCount} 条内部进度（检查点、任务或目标状态）
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -422,6 +547,12 @@ function ArtifactTimelineCard({ item }) {
   );
 }
 
+function consumeStoreError(fallback) {
+  const state = useStore.getState();
+  const message = state.error || fallback;
+  if (state.error) state.clearError();
+  return message;
+}
 function ActivityTimelineCard({ item }) {
   const payload = item.meta || item.raw || {};
   const source =
@@ -548,17 +679,18 @@ function TeamStatusPanel({ teamState }) {
 
 function InterruptionCard({ item }) {
   const respondToInterruption = useStore((s) => s.respondToInterruption);
+  const payload = item.meta || item.raw || {};
   const interruptionId =
-    item.meta?.interruptionId ||
-    item.meta?.toolCallId ||
-    item.raw?.interruptionId ||
-    item.raw?.toolCallId ||
-    item.toolCallId;
-  const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId || null;
-  const permissionOptions = item.meta?.options || item.raw?.options || [];
+    payload.interruptionId || payload.toolCallId || item.raw?.interruptionId || item.raw?.toolCallId || item.toolCallId;
+  const toolCallId = payload.toolCallId || item.raw?.toolCallId || item.toolCallId || null;
+  const permissionOptions = payload.options || item.raw?.options || [];
+  const toolInput = payload.toolInput && typeof payload.toolInput === 'object' ? payload.toolInput : {};
+  const toolName = payload.toolTitle || payload.toolName || item.title || '工具操作';
+  const description = toolInput.description || payload.toolDescription || '';
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
   const expired = item.status === 'expired';
   const resolved = item.status === 'resolved';
-  const resolution = item.meta?.resolution;
+  const resolution = payload.resolution;
   const resolutionLabels = {
     allow: '已允许',
     allowAll: '已始终允许',
@@ -584,35 +716,62 @@ function InterruptionCard({ item }) {
     }
   };
 
+  if (resolved || expired) {
+    const statusLabel = expired ? '已失效' : resolutionLabels[resolution] || '已处理';
+    return (
+      <div className="my-2 flex min-w-0 items-center gap-2 border-y border-[var(--color-border-muted)] py-2 text-xs">
+        <svg
+          className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent-yellow)]"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" />
+        </svg>
+        <span className="shrink-0 font-medium text-[var(--color-text-primary)]">权限</span>
+        <span className="truncate text-[var(--color-text-muted)]" title={[toolName, description].filter(Boolean).join(' · ')}>
+          {toolName}
+          {description ? ` · ${description}` : ''}
+        </span>
+        <span
+          className={
+            'ml-auto shrink-0 font-medium ' +
+            (expired
+              ? 'text-[var(--color-text-muted)]'
+              : resolutionDenied
+                ? 'text-[var(--color-accent-red)]'
+                : 'text-[var(--color-accent-green)]')
+          }
+        >
+          {statusLabel}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
-      className="my-2 rounded-xl px-4 py-3"
+      className="my-2 rounded-lg px-4 py-3"
       style={{
         border: '1px solid var(--color-accent-yellow, rgba(245,158,11,0.35))',
         background: 'var(--color-warning-bg, rgba(245,158,11,0.08))',
       }}
     >
-      <div className="mb-2 flex items-center gap-2">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-yellow)">
+      <div className="mb-1 flex items-center gap-2">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-yellow)" aria-hidden="true">
           <path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" />
         </svg>
-        <div className="text-sm font-medium text-[var(--color-text-primary)]">权限请求</div>
+        <div className="text-sm font-medium text-[var(--color-text-primary)]">需要权限 · {toolName}</div>
       </div>
-      <pre className="mb-3 max-h-24 overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--color-text-secondary)]">
-        {JSON.stringify(item.meta || item.raw, null, 2)}
-      </pre>
-      {expired ? (
-        <div className="text-xs font-medium text-[var(--color-text-muted)]">请求已失效，请重新发起对话</div>
-      ) : resolved ? (
-        <div
-          className={
-            'text-xs font-medium ' +
-            (resolutionDenied ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-accent-green)]')
-          }
-        >
-          {resolutionLabels[resolution] || '已处理'}
-        </div>
-      ) : interruptionId ? (
+      <div className="mb-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+        {description || '该工具需要你的确认后才能继续。'}
+      </div>
+      {command ? (
+        <pre className="mb-3 max-h-20 overflow-x-auto whitespace-pre-wrap break-words rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)]">
+          {command}
+        </pre>
+      ) : null}
+      {interruptionId ? (
         <div className="flex flex-wrap gap-2">
           <button
             disabled={busy}
@@ -661,7 +820,6 @@ function InterruptionCard({ item }) {
     </div>
   );
 }
-
 function QuestionCard({ item }) {
   const submitQuestionAnswers = useStore((s) => s.submitQuestionAnswers);
   const cancelQuestionAnswers = useStore((s) => s.cancelQuestionAnswers);
@@ -864,9 +1022,20 @@ function DateSeparator({ label }) {
   );
 }
 
-function TimelineItem({ item }) {
+const PROTOCOL_EVENT_LABELS = {
+  config_option_update: '配置更新',
+  session_info_update: '会话信息',
+  available_commands_update: '命令更新',
+  initialized: '已初始化',
+  status_change: '状态变更',
+  model_update: '模型更新',
+  mode_update: '模式更新',
+  current_mode_update: '模式更新',
+};
+
+const TimelineItem = React.memo(function TimelineItem({ item }) {
   if (item.type === 'execution_group') {
-    return <ExecutionGroup items={item.items || []} />;
+    return <ExecutionGroup items={item.items || []} autoCollapse={item.autoCollapse} />;
   }
 
   if (item.type === 'error') {
@@ -899,20 +1068,11 @@ function TimelineItem({ item }) {
     return <QuestionCard item={item} />;
   }
 
-  if (
-    item.type === 'config_option_update' ||
-    item.type === 'session_info_update' ||
-    item.type === 'available_commands_update' ||
-    item.type === 'initialized' ||
-    item.type === 'status_change' ||
-    item.type === 'model_update' ||
-    item.type === 'mode_update' ||
-    item.type === 'current_mode_update'
-  ) {
+  if (PROTOCOL_EVENT_LABELS[item.type]) {
     return (
       <div className="flex items-center gap-3 my-4">
         <div className="flex-1 h-px bg-[var(--color-border-muted)]" />
-        <span className="text-xs text-[var(--color-text-muted)] flex-shrink-0">{item.type}</span>
+        <span className="text-xs text-[var(--color-text-muted)] flex-shrink-0">{PROTOCOL_EVENT_LABELS[item.type]}</span>
         <div className="flex-1 h-px bg-[var(--color-border-muted)]" />
       </div>
     );
@@ -932,7 +1092,15 @@ function TimelineItem({ item }) {
     return (
       <div className="group my-3">
         <div className="text-sm leading-relaxed text-[var(--color-text-primary)] prose max-w-none">
-          {item.content ? <ReactMarkdown>{item.content}</ReactMarkdown> : item.streaming ? '...' : ''}
+          {item.content ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+              {item.content}
+            </ReactMarkdown>
+          ) : item.streaming ? (
+            '...'
+          ) : (
+            ''
+          )}
         </div>
         {item.content && <CopyButton text={item.content} />}
       </div>
@@ -940,11 +1108,12 @@ function TimelineItem({ item }) {
   }
 
   return null;
-}
+});
 
 export default function ReplicaChatView() {
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const textareaRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
@@ -977,6 +1146,8 @@ export default function ReplicaChatView() {
   const sendPrompt = useStore((s) => s.sendPrompt);
   const cancelSession = useStore((s) => s.cancelSession);
   const isAwaitingResponse = useStore((s) => s.isAwaitingResponse);
+  const promptStartedAt = useStore((s) => s.promptStartedAt);
+  const activePromptRunId = useStore((s) => s.activePromptRunId);
   const activeThreadId = useStore((s) => s.activeThreadId);
   const activeThreadStatus = useStore((s) => s.threadsById[s.activeThreadId]?.status || 'idle');
   const promptQueue = useStore((s) => s.promptQueue || []);
@@ -1095,41 +1266,60 @@ export default function ReplicaChatView() {
             recoveryError ||
             (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
 
-  const changeSessionSetting = async (kind, value) => {
-    if (sessionSelectionInFlightRef.current || connectionState !== 'connected' || !activeThreadId || !value) return;
-    const operation = {};
-    sessionSelectionInFlightRef.current = operation;
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
-    const requestId = ++sessionSelectionRequestRef.current;
-    const label = kind === 'model' ? '模型' : '模式';
-    const isCurrent = () =>
-      requestId === sessionSelectionRequestRef.current &&
-      projectId === useStore.getState().activeProjectId &&
-      threadId === useStore.getState().activeThreadId;
-    setSessionSelectionStatus({ type: 'busy', message: '正在切换' + label + '...' });
-    try {
-      const changed = kind === 'model' ? await setModel(value) : await setMode(value);
-      if (!isCurrent()) return;
-      if (changed) {
-        setSessionSelectionStatus(null);
-        if (kind === 'model') setShowModelPicker(false);
-        else setShowModePicker(false);
-      } else {
-        setSessionSelectionStatus(null);
-        setChatError(useStore.getState().error || label + '切换失败');
+  const changeSessionSetting = useCallback(
+    async (kind, value) => {
+      if (
+        sessionSelectionInFlightRef.current ||
+        connectionState !== 'connected' ||
+        !activeThreadId ||
+        !value ||
+        ['running', 'waiting', 'cancelling'].includes(activeThreadStatus) ||
+        isAwaitingResponse
+      )
+        return;
+      const operation = {};
+      sessionSelectionInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const requestId = ++sessionSelectionRequestRef.current;
+      const label = kind === 'model' ? '模型' : '模式';
+      const isCurrent = () =>
+        requestId === sessionSelectionRequestRef.current &&
+        projectId === useStore.getState().activeProjectId &&
+        threadId === useStore.getState().activeThreadId;
+      setSessionSelectionStatus({ type: 'busy', message: '正在切换' + label + '...' });
+      try {
+        const changed = kind === 'model' ? await setModel(value) : await setMode(value);
+        if (!isCurrent()) return;
+        if (changed) {
+          setSessionSelectionStatus(null);
+          if (kind === 'model') setShowModelPicker(false);
+          else setShowModePicker(false);
+        } else {
+          setSessionSelectionStatus(null);
+          setChatError(consumeStoreError(label + '切换失败'));
+        }
+      } catch (error) {
+        if (isCurrent()) {
+          setSessionSelectionStatus(null);
+          setChatError(error?.message || label + '切换失败');
+        }
+      } finally {
+        if (sessionSelectionInFlightRef.current === operation) sessionSelectionInFlightRef.current = null;
       }
-    } catch (error) {
-      if (isCurrent()) {
-        setSessionSelectionStatus(null);
-        setChatError(error?.message || label + '切换失败');
-      }
-    } finally {
-      if (sessionSelectionInFlightRef.current === operation) sessionSelectionInFlightRef.current = null;
-    }
-  };
+    },
+    [
+      activeProjectId,
+      activeThreadId,
+      activeThreadStatus,
+      connectionState,
+      isAwaitingResponse,
+      setMode,
+      setModel,
+    ],
+  );
 
-  const cancelActiveSession = async () => {
+  const cancelActiveSession = useCallback(async () => {
     if (cancelInFlightRef.current || !activeThreadId) return;
     const operation = {};
     cancelInFlightRef.current = operation;
@@ -1144,16 +1334,16 @@ export default function ReplicaChatView() {
     setChatError(null);
     try {
       const cancelled = await cancelSession();
-      if (isCurrent() && !cancelled) setChatError(useStore.getState().error || '停止生成失败，请重试。');
+      if (isCurrent() && !cancelled) setChatError(consumeStoreError('停止生成失败，请重试。'));
     } catch (cancelError) {
-      if (isCurrent()) setChatError(cancelError?.message || '停止生成失败，请重试。');
+      if (isCurrent()) setChatError(consumeStoreError(cancelError?.message || '停止生成失败，请重试。'));
     } finally {
       if (cancelInFlightRef.current === operation) {
         cancelInFlightRef.current = null;
         if (isCurrent()) setCancelBusy(false);
       }
     }
-  };
+  }, [activeProjectId, activeThreadId, cancelSession]);
 
   const recoverConnection = async () => {
     if (!activeProjectId || recoveryInFlightRef.current) return;
@@ -1193,10 +1383,33 @@ export default function ReplicaChatView() {
   const isStreaming = useMemo(
     () =>
       connectionState === 'connected' &&
-      (['running', 'waiting'].includes(activeThreadStatus) ||
-        timeline.some((item) => item.streaming === true) ||
-        isAwaitingResponse),
-    [activeThreadStatus, connectionState, timeline, isAwaitingResponse],
+      (['running', 'waiting', 'cancelling'].includes(activeThreadStatus) ||
+        isAwaitingResponse ||
+        Boolean(activePromptRunId)),
+    [activeThreadStatus, connectionState, isAwaitingResponse, activePromptRunId],
+  );
+  const sessionResponseBusy =
+    ['running', 'waiting', 'cancelling'].includes(activeThreadStatus) || isAwaitingResponse || activePromptRunId;
+  const responseActivityLabel = useMemo(
+    () =>
+      getResponseActivityLabel({
+        connectionState,
+        historyReplayActive,
+        activeThreadStatus,
+        isAwaitingResponse,
+        activePromptRunId,
+        promptStartedAt,
+        timeline,
+      }),
+    [
+      connectionState,
+      historyReplayActive,
+      activeThreadStatus,
+      isAwaitingResponse,
+      activePromptRunId,
+      promptStartedAt,
+      timeline,
+    ],
   );
   const slashSuggestions = useMemo(
     () => getSlashCommandSuggestions(input, availableCommands),
@@ -1217,23 +1430,35 @@ export default function ReplicaChatView() {
     [setInput],
   );
 
-  // Auto-scroll to bottom when timeline changes (new messages arrive)
+  // Keep following only while the reader remains at the bottom.
   useEffect(() => {
-    if (messagesEndRef.current && isStreaming) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (messagesEndRef.current && isStreaming && shouldAutoScrollRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
     }
   }, [timeline, isStreaming]);
 
-  // Track scroll position for "scroll to bottom" button
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
-    if (el) {
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-      setShowScrollBtn(!isNearBottom);
-    }
+    if (!el) return;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    shouldAutoScrollRef.current = isNearBottom;
+    setShowScrollBtn(!isNearBottom);
   }, []);
 
-  const onSubmit = async () => {
+  const handleWheel = useCallback((event) => {
+    const el = scrollContainerRef.current;
+    if (event.deltaY >= 0 || !el || el.scrollHeight <= el.clientHeight + 1) return;
+    shouldAutoScrollRef.current = false;
+    setShowScrollBtn(true);
+  }, []);
+
+  const jumpToLatest = useCallback(() => {
+    shouldAutoScrollRef.current = true;
+    setShowScrollBtn(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, []);
+
+  const onSubmit = useCallback(async () => {
     const value = input.trim();
     if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
     if (!canSend) {
@@ -1250,10 +1475,11 @@ export default function ReplicaChatView() {
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }, 0);
     setChatError(null);
+    shouldAutoScrollRef.current = true;
     try {
       const sent = await sendPrompt(value);
       if (isCurrent() && !sent) {
-        setChatError('发送失败，草稿和附件已恢复，可重新连接后再次发送。');
+        setChatError(consumeStoreError('发送失败，草稿和附件已恢复，可重新连接后再次发送。'));
       }
     } catch (err) {
       if (isCurrent()) setChatError('发送消息失败: ' + (err.message || '未知错误'));
@@ -1261,9 +1487,9 @@ export default function ReplicaChatView() {
       clearTimeout(releaseTimer);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }
-  };
+  }, [activeProjectId, activeThreadId, canSend, input, pendingAttachments.length, sendPrompt]);
 
-  const resumePromptQueue = async () => {
+  const resumePromptQueue = useCallback(async () => {
     if (queueActionInFlightRef.current || !activeThreadId || !canSend || isStreaming) return;
     const operation = {};
     queueActionInFlightRef.current = operation;
@@ -1279,7 +1505,7 @@ export default function ReplicaChatView() {
     try {
       const resumed = await drainThreadPromptQueue(threadId);
       if (!isCurrent()) return;
-      if (!resumed) setChatError(useStore.getState().error || '待发送队列暂时无法继续，请检查会话连接后重试。');
+      if (!resumed) setChatError(consumeStoreError('待发送队列暂时无法继续，请检查会话连接后重试。'));
     } catch (error) {
       if (isCurrent()) setChatError(error?.message || '继续发送队列失败');
     } finally {
@@ -1288,182 +1514,200 @@ export default function ReplicaChatView() {
         if (isCurrent()) setQueueActionBusy(false);
       }
     }
-  };
+  }, [activeProjectId, activeThreadId, canSend, drainThreadPromptQueue, isStreaming]);
 
-  const movePromptInQueue = async (promptId, direction) => {
-    if (queueActionInFlightRef.current || !activeThreadId) return;
-    const operation = {};
-    queueActionInFlightRef.current = operation;
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
-    const requestId = ++queueActionRequestRef.current;
-    const isCurrent = () =>
-      requestId === queueActionRequestRef.current &&
-      projectId === useStore.getState().activeProjectId &&
-      threadId === useStore.getState().activeThreadId;
-    setQueueActionBusy(true);
-    setChatError(null);
-    try {
-      const moved = await moveQueuedPrompt(threadId, promptId, direction);
-      if (isCurrent() && !moved) setChatError(useStore.getState().error || '调整待发送顺序失败，请重试。');
-    } catch (error) {
-      if (isCurrent()) setChatError(error?.message || '调整待发送顺序失败');
-    } finally {
-      if (queueActionInFlightRef.current === operation) {
-        queueActionInFlightRef.current = null;
-        if (isCurrent()) setQueueActionBusy(false);
+  const movePromptInQueue = useCallback(
+    async (promptId, direction) => {
+      if (queueActionInFlightRef.current || !activeThreadId) return;
+      const operation = {};
+      queueActionInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const requestId = ++queueActionRequestRef.current;
+      const isCurrent = () =>
+        requestId === queueActionRequestRef.current &&
+        projectId === useStore.getState().activeProjectId &&
+        threadId === useStore.getState().activeThreadId;
+      setQueueActionBusy(true);
+      setChatError(null);
+      try {
+        const moved = await moveQueuedPrompt(threadId, promptId, direction);
+        if (isCurrent() && !moved) setChatError(consumeStoreError('调整待发送顺序失败，请重试。'));
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || '调整待发送顺序失败');
+      } finally {
+        if (queueActionInFlightRef.current === operation) {
+          queueActionInFlightRef.current = null;
+          if (isCurrent()) setQueueActionBusy(false);
+        }
       }
-    }
-  };
+    },
+    [activeProjectId, activeThreadId, moveQueuedPrompt],
+  );
 
-  const removePromptFromQueue = async (promptId) => {
-    if (queueActionInFlightRef.current || !activeThreadId) return;
-    const operation = {};
-    queueActionInFlightRef.current = operation;
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
-    const requestId = ++queueActionRequestRef.current;
-    const isCurrent = () =>
-      requestId === queueActionRequestRef.current &&
-      projectId === useStore.getState().activeProjectId &&
-      threadId === useStore.getState().activeThreadId;
-    setQueueActionBusy(true);
-    setChatError(null);
-    try {
-      const removed = await removeQueuedPrompt(threadId, promptId);
-      if (isCurrent() && !removed) setChatError(useStore.getState().error || '移除待发送提示失败，请重试。');
-    } catch (error) {
-      if (isCurrent()) setChatError(error?.message || '移除待发送提示失败');
-    } finally {
-      if (queueActionInFlightRef.current === operation) {
-        queueActionInFlightRef.current = null;
-        if (isCurrent()) setQueueActionBusy(false);
+  const removePromptFromQueue = useCallback(
+    async (promptId) => {
+      if (queueActionInFlightRef.current || !activeThreadId) return;
+      const operation = {};
+      queueActionInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const requestId = ++queueActionRequestRef.current;
+      const isCurrent = () =>
+        requestId === queueActionRequestRef.current &&
+        projectId === useStore.getState().activeProjectId &&
+        threadId === useStore.getState().activeThreadId;
+      setQueueActionBusy(true);
+      setChatError(null);
+      try {
+        const removed = await removeQueuedPrompt(threadId, promptId);
+        if (isCurrent() && !removed) setChatError(consumeStoreError('移除待发送提示失败，请重试。'));
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || '移除待发送提示失败');
+      } finally {
+        if (queueActionInFlightRef.current === operation) {
+          queueActionInFlightRef.current = null;
+          if (isCurrent()) setQueueActionBusy(false);
+        }
       }
-    }
-  };
+    },
+    [activeProjectId, activeThreadId, removeQueuedPrompt],
+  );
 
-  const handlePaste = async (event) => {
-    if (!pasteImageEnabled) return;
-    const files = Array.from(event.clipboardData?.items || [])
-      .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter(Boolean);
-    if (!files.length) return;
-    if (!event.clipboardData?.getData('text/plain')) event.preventDefault();
-    if (pasteImageInFlightRef.current) return;
-    const operation = {};
-    pasteImageInFlightRef.current = operation;
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
-    const isCurrent = () =>
-      projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
-    setChatError(null);
-    try {
-      for (const file of files) {
-        if (file.size > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
-        const dataBase64 = await readClipboardImage(file);
-        if (!isCurrent()) return;
-        const added = await addClipboardImageAttachment({
-          name: file.name || 'clipboard-image',
-          mimeType: file.type,
-          size: file.size,
-          dataBase64,
-        });
-        if (!isCurrent()) return;
-        if (!added.length) throw new Error(useStore.getState().error || '粘贴图片失败');
+  const handlePaste = useCallback(
+    async (event) => {
+      if (!pasteImageEnabled) return;
+      const files = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (!files.length) return;
+      if (!event.clipboardData?.getData('text/plain')) event.preventDefault();
+      if (pasteImageInFlightRef.current) return;
+      const operation = {};
+      pasteImageInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const isCurrent = () =>
+        projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
+      setChatError(null);
+      try {
+        for (const file of files) {
+          if (file.size > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+          const dataBase64 = await readClipboardImage(file);
+          if (!isCurrent()) return;
+          const added = await addClipboardImageAttachment({
+            name: file.name || 'clipboard-image',
+            mimeType: file.type,
+            size: file.size,
+            dataBase64,
+          });
+          if (!isCurrent()) return;
+          if (!added.length) throw new Error(useStore.getState().error || '粘贴图片失败');
+        }
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || '粘贴图片失败');
+      } finally {
+        if (pasteImageInFlightRef.current === operation) pasteImageInFlightRef.current = null;
       }
-    } catch (error) {
-      if (isCurrent()) setChatError(error?.message || '粘贴图片失败');
-    } finally {
-      if (pasteImageInFlightRef.current === operation) pasteImageInFlightRef.current = null;
-    }
-  };
+    },
+    [activeProjectId, activeThreadId, addClipboardImageAttachment, pasteImageEnabled],
+  );
 
   const hasDraggedFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
 
-  const handleDragEnter = (event) => {
+  const handleDragEnter = useCallback((event) => {
     if (!hasDraggedFiles(event)) return;
     event.preventDefault();
     setDraggingAttachments(true);
-  };
+  }, []);
 
-  const handleDragOver = (event) => {
-    if (!hasDraggedFiles(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-    if (!draggingAttachments) setDraggingAttachments(true);
-  };
+  const handleDragOver = useCallback(
+    (event) => {
+      if (!hasDraggedFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      if (!draggingAttachments) setDraggingAttachments(true);
+    },
+    [draggingAttachments],
+  );
 
-  const handleDragLeave = (event) => {
+  const handleDragLeave = useCallback((event) => {
     if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
     setDraggingAttachments(false);
-  };
+  }, []);
 
-  const handleDrop = async (event) => {
-    if (!hasDraggedFiles(event)) return;
-    event.preventDefault();
-    setDraggingAttachments(false);
-    if (dropAttachmentsInFlightRef.current) return;
-    const files = Array.from(event.dataTransfer?.files || []);
-    if (!files.length) return;
-    const operation = {};
-    dropAttachmentsInFlightRef.current = operation;
-    const projectId = activeProjectId;
-    const threadId = activeThreadId;
-    const isCurrent = () =>
-      projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
-    setDroppingAttachments(true);
-    setChatError(null);
-    try {
-      const result = await addDroppedAttachments(files);
-      if (isCurrent() && result?.error) setChatError(result.error);
-    } catch (error) {
-      if (isCurrent()) setChatError(error?.message || '读取拖放附件失败');
-    } finally {
-      if (dropAttachmentsInFlightRef.current === operation) {
-        dropAttachmentsInFlightRef.current = null;
-        if (isCurrent()) setDroppingAttachments(false);
+  const handleDrop = useCallback(
+    async (event) => {
+      if (!hasDraggedFiles(event)) return;
+      event.preventDefault();
+      setDraggingAttachments(false);
+      if (dropAttachmentsInFlightRef.current) return;
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (!files.length) return;
+      const operation = {};
+      dropAttachmentsInFlightRef.current = operation;
+      const projectId = activeProjectId;
+      const threadId = activeThreadId;
+      const isCurrent = () =>
+        projectId === useStore.getState().activeProjectId && threadId === useStore.getState().activeThreadId;
+      setDroppingAttachments(true);
+      setChatError(null);
+      try {
+        const result = await addDroppedAttachments(files);
+        if (isCurrent() && result?.error) setChatError(result.error);
+      } catch (error) {
+        if (isCurrent()) setChatError(error?.message || '读取拖放附件失败');
+      } finally {
+        if (dropAttachmentsInFlightRef.current === operation) {
+          dropAttachmentsInFlightRef.current = null;
+          if (isCurrent()) setDroppingAttachments(false);
+        }
       }
-    }
-  };
+    },
+    [activeProjectId, activeThreadId, addDroppedAttachments],
+  );
 
-  const handleKeyDown = (e) => {
-    if (e.nativeEvent?.isComposing || e.isComposing) return;
-    const commandAction = slashCommandKeyboardAction(e.key, slashSuggestions.length > 0);
-    if (commandAction === 'next') {
-      e.preventDefault();
-      setSelectedSlashCommandIndex((index) => (index + 1) % slashSuggestions.length);
-      return;
-    }
-    if (commandAction === 'previous') {
-      e.preventDefault();
-      setSelectedSlashCommandIndex((index) => (index - 1 + slashSuggestions.length) % slashSuggestions.length);
-      return;
-    }
-    if (commandAction === 'select') {
-      e.preventDefault();
-      selectSlashCommand(slashSuggestions[selectedSlashCommandIndex]);
-      return;
-    }
-    if (commandAction === 'dismiss') {
-      e.preventDefault();
-      setInput('');
-      return;
-    }
-    if (commandAction === 'submit' && !e.shiftKey) {
-      e.preventDefault();
-      onSubmit();
-    }
-  };
+  const handleKeyDown = useCallback(
+    (e) => {
+      if (e.nativeEvent?.isComposing || e.isComposing) return;
+      const commandAction = slashCommandKeyboardAction(e.key, slashSuggestions.length > 0);
+      if (commandAction === 'next') {
+        e.preventDefault();
+        setSelectedSlashCommandIndex((index) => (index + 1) % slashSuggestions.length);
+        return;
+      }
+      if (commandAction === 'previous') {
+        e.preventDefault();
+        setSelectedSlashCommandIndex((index) => (index - 1 + slashSuggestions.length) % slashSuggestions.length);
+        return;
+      }
+      if (commandAction === 'select') {
+        e.preventDefault();
+        selectSlashCommand(slashSuggestions[selectedSlashCommandIndex]);
+        return;
+      }
+      if (commandAction === 'dismiss') {
+        e.preventDefault();
+        setInput('');
+        return;
+      }
+      if (commandAction === 'submit' && !e.shiftKey) {
+        e.preventDefault();
+        onSubmit();
+      }
+    },
+    [onSubmit, selectSlashCommand, selectedSlashCommandIndex, setInput, slashSuggestions],
+  );
 
-  // Group by date
+  // Group by date without cloning timeline items (keeps React.memo identity stable).
   const timelineWithDates = useMemo(() => {
     let lastDay = '';
     return groupTimelineForDisplay(timeline).map((item, index) => {
       const day = getDayLabel(item.createdAt);
       const showDate = day !== lastDay && index > 0;
       lastDay = day;
-      return { ...item, showDate };
+      return { item, showDate };
     });
   }, [timeline]);
   const recoveryNotice = connectionNeedsRecovery ? (
@@ -1496,7 +1740,12 @@ export default function ReplicaChatView() {
   return (
     <div className="page-shell">
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
+      <div
+        className="flex-1 overflow-y-auto"
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+      >
         <div className="mx-auto max-w-[820px] px-6 py-6">
           <SessionActivityStatus
             historyReplayActive={historyReplayActive}
@@ -1522,13 +1771,14 @@ export default function ReplicaChatView() {
                 <div className="mb-4 text-sm text-[var(--color-text-secondary)]">今天有什么可以帮到你？</div>
                 <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
                   {['幻灯片生成', '深度研究', '文档处理', '数据分析'].map((tag) => (
-                    <span
+                    <button
                       key={tag}
-                      className="rounded-full bg-[var(--color-bg-secondary)] border border-[var(--color-border-muted)] px-3 py-1 text-[var(--color-text-secondary)] cursor-pointer hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)] transition-colors"
+                      type="button"
+                      className="rounded-full bg-[var(--color-bg-secondary)] border border-[var(--color-border-muted)] px-3 py-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)] transition-colors"
                       onClick={() => setInput(`帮我做一个${tag}任务`)}
                     >
                       {tag}
-                    </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1536,9 +1786,9 @@ export default function ReplicaChatView() {
           ) : (
             <div>
               <div className="text-xs text-[var(--color-text-muted)] text-center py-2">回答由 AI 生成，仅供参考</div>
-              {timelineWithDates.map((item, idx) => (
+              {timelineWithDates.map(({ item, showDate }, idx) => (
                 <React.Fragment key={item.id || idx}>
-                  {item.showDate && <DateSeparator label={getDayLabel(item.createdAt)} />}
+                  {showDate && <DateSeparator label={getDayLabel(item.createdAt)} />}
                   <TimelineItem item={item} />
                 </React.Fragment>
               ))}
@@ -1564,374 +1814,461 @@ export default function ReplicaChatView() {
               </button>
             </div>
           )}
+          <ResponseActivityIndicator label={responseActivityLabel} startedAt={promptStartedAt} />
           <div ref={messagesEndRef} />
-          {showScrollBtn && (
-            <div className="sticky bottom-4 flex justify-center">
-              <button
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] shadow-lg hover:bg-[var(--color-bg-hover)] transition-all z-30"
-                onClick={() => {
-                  messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-                }}
-                title="滚动到最新"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M4 6l4 4 4-4" />
-                </svg>
-              </button>
-            </div>
-          )}
+
         </div>
       </div>
 
-      {/* Input area */}
-      <div className="chat-composer-wrap shrink-0">
-        <div className="mx-auto max-w-[820px]">
-          {promptSuggestionEnabled && promptSuggestionText ? (
-            <div className="mb-2 flex items-start gap-2 rounded-md border border-[rgba(59,130,246,0.3)] bg-[rgba(59,130,246,0.08)] px-3 py-2">
-              <svg
-                className="mt-0.5 shrink-0 text-[var(--color-accent-blue)]"
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                aria-hidden="true"
-              >
-                <path d="M8 1.5l1.1 3.1L12 6l-2.9 1.4L8 10.5 6.9 7.4 4 6l2.9-1.4L8 1.5zM12.5 10l.6 1.6 1.4.7-1.4.7-.6 1.5-.6-1.5-1.4-.7 1.4-.7.6-1.6z" />
+      {showScrollBtn ? (
+        <div className="relative z-30 h-0">
+          <button
+            type="button"
+            className="absolute bottom-3 left-1/2 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-lg transition-colors hover:bg-[var(--color-bg-hover)]"
+            onClick={jumpToLatest}
+            title="跳转到最新内容"
+            aria-label="跳转到最新内容"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </button>
+        </div>
+      ) : null}
+
+      <ChatComposer
+        textareaRef={textareaRef}
+        promptSuggestionEnabled={promptSuggestionEnabled}
+        promptSuggestionText={promptSuggestionText}
+        applyPromptSuggestion={applyPromptSuggestion}
+        dismissPromptSuggestion={dismissPromptSuggestion}
+        pendingAttachments={pendingAttachments}
+        removePendingAttachment={removePendingAttachment}
+        promptQueue={promptQueue}
+        queueActionBusy={queueActionBusy}
+        canSend={canSend}
+        isStreaming={isStreaming}
+        resumePromptQueue={resumePromptQueue}
+        movePromptInQueue={movePromptInQueue}
+        removePromptFromQueue={removePromptFromQueue}
+        draggingAttachments={draggingAttachments}
+        droppingAttachments={droppingAttachments}
+        handleDragEnter={handleDragEnter}
+        handleDragOver={handleDragOver}
+        handleDragLeave={handleDragLeave}
+        handleDrop={handleDrop}
+        slashSuggestions={slashSuggestions}
+        selectedSlashCommandIndex={selectedSlashCommandIndex}
+        setSelectedSlashCommandIndex={setSelectedSlashCommandIndex}
+        selectSlashCommand={selectSlashCommand}
+        input={input}
+        setInput={setInput}
+        handlePaste={handlePaste}
+        handleKeyDown={handleKeyDown}
+        chooseAttachments={chooseAttachments}
+        capabilities={capabilities}
+        sessionSelectionBusy={sessionSelectionBusy}
+        connectionState={connectionState}
+        sessionResponseBusy={sessionResponseBusy}
+        showModePicker={showModePicker}
+        setShowModePicker={setShowModePicker}
+        modeOptions={modeOptions}
+        currentMode={currentMode}
+        currentModeName={currentModeName}
+        changeSessionSetting={changeSessionSetting}
+        showModelPicker={showModelPicker}
+        setShowModelPicker={setShowModelPicker}
+        models={models}
+        currentModel={currentModel}
+        currentModelName={currentModelName}
+        cancelBusy={cancelBusy}
+        cancelActiveSession={cancelActiveSession}
+        onSubmit={onSubmit}
+        showTokensCounter={showTokensCounter}
+        usage={usage}
+      />
+    </div>
+  );
+}
+
+const ChatComposer = React.memo(function ChatComposer({
+  textareaRef,
+  promptSuggestionEnabled,
+  promptSuggestionText,
+  applyPromptSuggestion,
+  dismissPromptSuggestion,
+  pendingAttachments,
+  removePendingAttachment,
+  promptQueue,
+  queueActionBusy,
+  canSend,
+  isStreaming,
+  resumePromptQueue,
+  movePromptInQueue,
+  removePromptFromQueue,
+  draggingAttachments,
+  droppingAttachments,
+  handleDragEnter,
+  handleDragOver,
+  handleDragLeave,
+  handleDrop,
+  slashSuggestions,
+  selectedSlashCommandIndex,
+  setSelectedSlashCommandIndex,
+  selectSlashCommand,
+  input,
+  setInput,
+  handlePaste,
+  handleKeyDown,
+  chooseAttachments,
+  capabilities,
+  sessionSelectionBusy,
+  connectionState,
+  sessionResponseBusy,
+  showModePicker,
+  setShowModePicker,
+  modeOptions,
+  currentMode,
+  currentModeName,
+  changeSessionSetting,
+  showModelPicker,
+  setShowModelPicker,
+  models,
+  currentModel,
+  currentModelName,
+  cancelBusy,
+  cancelActiveSession,
+  onSubmit,
+  showTokensCounter,
+  usage,
+}) {
+  return (
+    <div className="chat-composer-wrap shrink-0">
+      <div className="mx-auto max-w-[820px]">
+        {promptSuggestionEnabled && promptSuggestionText ? (
+          <div className="mb-2 flex items-start gap-2 rounded-md border border-[rgba(59,130,246,0.3)] bg-[rgba(59,130,246,0.08)] px-3 py-2">
+            <svg
+              className="mt-0.5 shrink-0 text-[var(--color-accent-blue)]"
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              aria-hidden="true"
+            >
+              <path d="M8 1.5l1.1 3.1L12 6l-2.9 1.4L8 10.5 6.9 7.4 4 6l2.9-1.4L8 1.5zM12.5 10l.6 1.6 1.4.7-1.4.7-.6 1.5-.6-1.5-1.4-.7 1.4-.7.6-1.6z" />
+            </svg>
+            <button
+              type="button"
+              className="min-w-0 flex-1 text-left"
+              onClick={applyPromptSuggestion}
+              title={promptSuggestionText}
+            >
+              <span className="block text-[10px] font-medium uppercase text-[var(--color-accent-blue)]">
+                CodeBuddy 建议
+              </span>
+              <span className="mt-0.5 line-clamp-3 block whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
+                {promptSuggestionText}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="shrink-0 rounded px-2 py-1 text-xs font-medium text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)]"
+              onClick={applyPromptSuggestion}
+            >
+              使用建议
+            </button>
+            <button
+              type="button"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+              onClick={dismissPromptSuggestion}
+              title="关闭建议"
+              aria-label="关闭建议"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M3 3l10 10M13 3L3 13" />
               </svg>
-              <button
-                type="button"
-                className="min-w-0 flex-1 text-left"
-                onClick={applyPromptSuggestion}
-                title={promptSuggestionText}
+            </button>
+          </div>
+        ) : null}
+        {pendingAttachments.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {pendingAttachments.map((attachment) => (
+              <div
+                key={attachment.path}
+                className="flex max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
               >
-                <span className="block text-[10px] font-medium uppercase text-[var(--color-accent-blue)]">
-                  CodeBuddy 建议
+                <span>{attachment.kind === 'image' ? '图片' : '文件'}</span>
+                <span className="max-w-[220px] truncate" title={attachment.path}>
+                  {attachment.name}
                 </span>
-                <span className="mt-0.5 line-clamp-3 block whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
-                  {promptSuggestionText}
-                </span>
-              </button>
+                <button
+                  className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                  onClick={() => removePendingAttachment(attachment.path)}
+                  title="移除附件"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {promptQueue.length > 0 ? (
+          <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+                待发送 {promptQueue.length}
+              </div>
               <button
-                type="button"
-                className="shrink-0 rounded px-2 py-1 text-xs font-medium text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)]"
-                onClick={applyPromptSuggestion}
+                className="rounded px-2 py-0.5 text-[10px] text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)] disabled:cursor-wait disabled:opacity-50"
+                disabled={queueActionBusy || !canSend || isStreaming}
+                onClick={resumePromptQueue}
+                title={
+                  !canSend ? '等待会话连接' : isStreaming ? '当前消息完成后会自动继续' : '发送队列中的下一条消息'
+                }
               >
-                使用建议
-              </button>
-              <button
-                type="button"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                onClick={dismissPromptSuggestion}
-                title="关闭建议"
-                aria-label="关闭建议"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M3 3l10 10M13 3L3 13" />
-                </svg>
+                {queueActionBusy ? '处理中...' : '继续发送'}
               </button>
             </div>
-          ) : null}
-          {pendingAttachments.length > 0 ? (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {pendingAttachments.map((attachment) => (
-                <div
-                  key={attachment.path}
-                  className="flex max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
-                >
-                  <span>{attachment.kind === 'image' ? '图片' : '文件'}</span>
-                  <span className="max-w-[220px] truncate" title={attachment.path}>
-                    {attachment.name}
+            <div className="space-y-1">
+              {promptQueue.map((item, index) => (
+                <div key={item.id} className="flex items-center gap-2 text-xs">
+                  <span className="text-[var(--color-text-muted)]">{index + 1}</span>
+                  <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]" title={item.text}>
+                    {item.text}
                   </span>
                   <button
-                    className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-                    onClick={() => removePendingAttachment(attachment.path)}
-                    title="移除附件"
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
+                    disabled={queueActionBusy || index === 0}
+                    onClick={() => movePromptInQueue(item.id, 'up')}
+                    title="上移"
+                    aria-label="上移待发送提示"
                   >
-                    ×
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M4 10l4-4 4 4" />
+                    </svg>
+                  </button>
+                  <button
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
+                    disabled={queueActionBusy || index === promptQueue.length - 1}
+                    onClick={() => movePromptInQueue(item.id, 'down')}
+                    title="下移"
+                    aria-label="下移待发送提示"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M4 6l4 4 4-4" />
+                    </svg>
+                  </button>
+                  <button
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
+                    disabled={queueActionBusy}
+                    onClick={() => removePromptFromQueue(item.id)}
+                    title="移除待发送提示"
+                    aria-label="移除待发送提示"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M3 3l10 10M13 3L3 13" />
+                    </svg>
                   </button>
                 </div>
               ))}
             </div>
-          ) : null}
-          {promptQueue.length > 0 ? (
-            <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
-                  待发送 {promptQueue.length}
-                </div>
-                <button
-                  className="rounded px-2 py-0.5 text-[10px] text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)] disabled:cursor-wait disabled:opacity-50"
-                  disabled={queueActionBusy || !canSend || isStreaming}
-                  onClick={resumePromptQueue}
-                  title={
-                    !canSend ? '等待会话连接' : isStreaming ? '当前消息完成后会自动继续' : '发送队列中的下一条消息'
-                  }
-                >
-                  {queueActionBusy ? '处理中...' : '继续发送'}
-                </button>
-              </div>
-              <div className="space-y-1">
-                {promptQueue.map((item, index) => (
-                  <div key={item.id} className="flex items-center gap-2 text-xs">
-                    <span className="text-[var(--color-text-muted)]">{index + 1}</span>
-                    <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]" title={item.text}>
-                      {item.text}
-                    </span>
-                    <button
-                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
-                      disabled={queueActionBusy || index === 0}
-                      onClick={() => movePromptInQueue(item.id, 'up')}
-                      title="上移"
-                      aria-label="上移待发送提示"
-                    >
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                      >
-                        <path d="M4 10l4-4 4 4" />
-                      </svg>
-                    </button>
-                    <button
-                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
-                      disabled={queueActionBusy || index === promptQueue.length - 1}
-                      onClick={() => movePromptInQueue(item.id, 'down')}
-                      title="下移"
-                      aria-label="下移待发送提示"
-                    >
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                      >
-                        <path d="M4 6l4 4 4-4" />
-                      </svg>
-                    </button>
-                    <button
-                      className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
-                      disabled={queueActionBusy}
-                      onClick={() => removePromptFromQueue(item.id)}
-                      title="移除待发送提示"
-                      aria-label="移除待发送提示"
-                    >
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                      >
-                        <path d="M3 3l10 10M13 3L3 13" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
+          </div>
+        ) : null}
+        <div
+          className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-all ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-active)]'}`}
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {draggingAttachments || droppingAttachments ? (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg bg-[var(--color-bg-secondary)]/95 text-sm font-medium text-[var(--color-accent-blue)]">
+              {droppingAttachments ? '正在读取附件...' : '释放以添加附件'}
             </div>
           ) : null}
-          <div
-            className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-all ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-active)]'}`}
-            onDragEnter={handleDragEnter}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {draggingAttachments || droppingAttachments ? (
-              <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg bg-[var(--color-bg-secondary)]/95 text-sm font-medium text-[var(--color-accent-blue)]">
-                {droppingAttachments ? '正在读取附件...' : '释放以添加附件'}
-              </div>
-            ) : null}
-            {slashSuggestions.length > 0 ? (
-              <div
-                data-slash-command-menu
-                className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
-              >
-                {slashSuggestions.map((command, index) => (
-                  <button
-                    key={command.name}
-                    data-slash-command-name={command.name}
-                    className={`flex w-full items-start gap-3 px-3 py-2 text-left ${index === selectedSlashCommandIndex ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
-                    onMouseEnter={() => setSelectedSlashCommandIndex(index)}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      selectSlashCommand(command);
-                    }}
-                  >
-                    <span className="shrink-0 font-mono text-xs text-[var(--color-accent-blue)]">/{command.name}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="line-clamp-2 block text-xs text-[var(--color-text-secondary)]">
-                        {command.description || ''}
-                      </span>
-                      {command.input?.hint ? (
-                        <span className="mt-0.5 block font-mono text-[10px] text-[var(--color-text-muted)]">
-                          {command.input.hint}
-                        </span>
-                      ) : null}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            <textarea
-              ref={textareaRef}
-              rows={2}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={handlePaste}
-              onKeyDown={handleKeyDown}
-              placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
-              className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
-            />
-            <div className="flex items-center justify-between px-3 pb-3">
-              <div className="flex items-center gap-1">
+          {slashSuggestions.length > 0 ? (
+            <div
+              data-slash-command-menu
+              className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-64 overflow-y-auto rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
+            >
+              {slashSuggestions.map((command, index) => (
                 <button
-                  type="button"
-                  className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                  onClick={chooseAttachments}
-                  disabled={droppingAttachments}
-                  title={
-                    capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image
-                      ? '添加文本文件或图片'
-                      : '添加文本文件（当前运行时未声明图片输入能力）'
-                  }
-                  aria-label="添加附件"
+                  key={command.name}
+                  data-slash-command-name={command.name}
+                  className={`flex w-full items-start gap-3 px-3 py-2 text-left ${index === selectedSlashCommandIndex ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
+                  onMouseEnter={() => setSelectedSlashCommandIndex(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectSlashCommand(command);
+                  }}
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
-                  </svg>
+                  <span className="shrink-0 font-mono text-xs text-[var(--color-accent-blue)]">/{command.name}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="line-clamp-2 block text-xs text-[var(--color-text-secondary)]">
+                      {command.description || ''}
+                    </span>
+                    {command.input?.hint ? (
+                      <span className="mt-0.5 block font-mono text-[10px] text-[var(--color-text-muted)]">
+                        {command.input.hint}
+                      </span>
+                    ) : null}
+                  </span>
                 </button>
-                <div className="relative">
-                  <button
-                    className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
-                    disabled={sessionSelectionBusy || connectionState !== 'connected'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowModePicker(!showModePicker);
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path d="M8 2c-1.5 0-3 .5-4 1.5l1.5 1.5C6.5 4.5 7.5 4 8 4c2 0 4 1.5 4 4h-1.5l2 2.5 2-2.5H13c0-2.5-2-4-5-4z" />
-                      <path d="M8 14c1.5 0 3-.5 4-1.5L10.5 11C9.5 11.5 8.5 12 8 12c-2 0-4-1.5-4-4h1.5l-2-2.5-2 2.5H3c0 2.5 2 4 5 4z" />
-                    </svg>
-                    {currentModeName}
-                  </button>
-                  {showModePicker && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setShowModePicker(false)} />
-                      <div className="absolute bottom-full left-0 mb-1 z-20 w-40 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
-                        {modeOptions.map((m) => (
-                          <button
-                            key={m.id}
-                            disabled={sessionSelectionBusy}
-                            className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                            style={{
-                              color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
-                            }}
-                            onClick={() => changeSessionSetting('mode', m.id)}
-                          >
-                            {m.name}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="relative">
-                  <button
-                    className="max-w-[180px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                    disabled={sessionSelectionBusy || connectionState !== 'connected'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowModelPicker(!showModelPicker);
-                    }}
-                  >
-                    {currentModelName || currentModel || '选择模型'}
-                  </button>
-                  {showModelPicker && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
-                      <div
-                        data-model-picker
-                        className="absolute bottom-full right-0 mb-1 z-20 w-56 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
-                      >
-                        {models.length > 0 ? (
-                          models.map((m) => {
-                            const modelId = m.id || m.modelId || m.name;
-                            return (
-                              <button
-                                key={modelId}
-                                disabled={sessionSelectionBusy}
-                                className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                                style={{
-                                  color:
-                                    modelId === currentModel
-                                      ? 'var(--color-accent-blue)'
-                                      : 'var(--color-text-secondary)',
-                                }}
-                                onClick={() => changeSessionSetting('model', modelId)}
-                              >
-                                {m.name || m.id || m.modelId}
-                              </button>
-                            );
-                          })
-                        ) : (
-                          <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
-                {isStreaming ? (
-                  <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
-                    style={{ background: 'var(--color-accent-red)' }}
-                    disabled={cancelBusy}
-                    onClick={cancelActiveSession}
-                    title={cancelBusy ? '正在停止生成' : '停止生成'}
-                  >
-                    {cancelBusy ? (
-                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
-                    ) : (
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <rect x="3" y="3" width="10" height="10" rx="1" />
-                      </svg>
-                    )}
-                  </button>
-                ) : (
-                  <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40"
-                    style={{ background: 'var(--color-accent-blue)' }}
-                    onClick={onSubmit}
-                    disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
-                    title={!canSend ? '等待会话连接' : '发送'}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
-                    </svg>
-                  </button>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            ref={textareaRef}
+            rows={2}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={handlePaste}
+            onKeyDown={handleKeyDown}
+            placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+          />
+          <div className="flex items-center justify-between px-3 pb-3">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+                onClick={chooseAttachments}
+                disabled={droppingAttachments}
+                title={
+                  capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image
+                    ? '添加文本文件或图片'
+                    : '添加文本文件（当前运行时未声明图片输入能力）'
+                }
+                aria-label="添加附件"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
+                </svg>
+              </button>
+              <div className="relative">
+                <button
+                  className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowModePicker(!showModePicker);
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M8 2c-1.5 0-3 .5-4 1.5l1.5 1.5C6.5 4.5 7.5 4 8 4c2 0 4 1.5 4 4h-1.5l2 2.5 2-2.5H13c0-2.5-2-4-5-4z" />
+                    <path d="M8 14c1.5 0 3-.5 4-1.5L10.5 11C9.5 11.5 8.5 12 8 12c-2 0-4-1.5-4-4h1.5l-2-2.5-2 2.5H3c0 2.5 2 4 5 4z" />
+                  </svg>
+                  {currentModeName}
+                </button>
+                {showModePicker && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowModePicker(false)} />
+                    <div className="absolute bottom-full left-0 mb-1 z-20 w-40 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
+                      {modeOptions.map((m) => (
+                        <button
+                          key={m.id}
+                          disabled={sessionSelectionBusy || sessionResponseBusy}
+                          className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                          style={{
+                            color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
+                          }}
+                          onClick={() => changeSessionSetting('mode', m.id)}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
-          </div>
-
-          {showTokensCounter && usage && (
-            <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
-              用量: {usage.used ?? '-'} / {usage.size ?? '-'}
+            <div className="flex items-center gap-1.5">
+              <div className="relative">
+                <button
+                  className="max-w-[180px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowModelPicker(!showModelPicker);
+                  }}
+                >
+                  {currentModelName || currentModel || '选择模型'}
+                </button>
+                {showModelPicker && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
+                    <div
+                      data-model-picker
+                      className="absolute bottom-full right-0 mb-1 z-20 w-56 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
+                    >
+                      {models.length > 0 ? (
+                        models.map((m) => {
+                          const modelId = m.id || m.modelId || m.name;
+                          return (
+                            <button
+                              key={modelId}
+                              disabled={sessionSelectionBusy || sessionResponseBusy}
+                              className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                              style={{
+                                color:
+                                  modelId === currentModel
+                                    ? 'var(--color-accent-blue)'
+                                    : 'var(--color-text-secondary)',
+                              }}
+                              onClick={() => changeSessionSetting('model', modelId)}
+                            >
+                              {m.name || m.id || m.modelId}
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              {isStreaming ? (
+                <button
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
+                  style={{ background: 'var(--color-accent-red)' }}
+                  disabled={cancelBusy}
+                  onClick={cancelActiveSession}
+                  title={cancelBusy ? '正在停止生成' : '停止生成'}
+                >
+                  {cancelBusy ? (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <rect x="3" y="3" width="10" height="10" rx="1" />
+                    </svg>
+                  )}
+                </button>
+              ) : (
+                <button
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40"
+                  style={{ background: 'var(--color-accent-blue)' }}
+                  onClick={onSubmit}
+                  disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
+                  title={!canSend ? '等待会话连接' : '发送'}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
+                  </svg>
+                </button>
+              )}
             </div>
-          )}
+          </div>
         </div>
+
+        {showTokensCounter && usage && (
+          <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
+            用量: {usage.used ?? '-'} / {usage.size ?? '-'}
+          </div>
+        )}
       </div>
     </div>
   );
-}
+});

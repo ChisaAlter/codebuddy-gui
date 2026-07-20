@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 
 export default function ActionConfirmDialog({
   open,
@@ -11,6 +11,26 @@ export default function ActionConfirmDialog({
   onCancel,
   onConfirm,
 }) {
+  const cancelRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const frame = requestAnimationFrame(() => {
+      cancelRef.current?.focus();
+    });
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      if (busy) return;
+      event.preventDefault();
+      onCancel?.();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, busy, onCancel]);
+
   if (!open) return null;
 
   return (
@@ -28,7 +48,9 @@ export default function ActionConfirmDialog({
         {description ? <div className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">{description}</div> : null}
         {error ? <div className="mt-3 text-xs text-[var(--color-accent-red)]">{error}</div> : null}
         <div className="mt-5 flex justify-end gap-2">
-          <button className="btn-ghost px-3 py-1.5 text-xs" disabled={busy} onClick={onCancel}>取消</button>
+          <button ref={cancelRef} className="btn-ghost px-3 py-1.5 text-xs" disabled={busy} onClick={onCancel}>
+            取消
+          </button>
           <button
             className={danger ? 'rounded-md px-3 py-1.5 text-xs font-medium text-white' : 'btn-primary px-3 py-1.5 text-xs'}
             style={danger ? { background: 'var(--color-accent-red)' } : undefined}

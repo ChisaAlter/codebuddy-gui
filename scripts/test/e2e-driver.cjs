@@ -424,7 +424,23 @@ async function cleanupRuntimeDir(options = {}) {
     `.codebuddy-e2e-quarantine-${ownership.markerToken}-${crypto.randomBytes(8).toString('hex')}`,
   );
   if (fs.existsSync(quarantineDir)) throw new Error('runtime quarantine path already exists');
-  fs.renameSync(runtimeDir, quarantineDir);
+  const renameImpl = options.renameImpl || fs.renameSync;
+  const waitImpl = options.waitImpl || wait;
+  const renameRetries = Number.isInteger(options.renameRetries) ? Math.max(0, options.renameRetries) : 30;
+  const renameRetryDelayMs = Number.isInteger(options.renameRetryDelayMs)
+    ? Math.max(1, options.renameRetryDelayMs)
+    : 100;
+  const transientRenameErrors = new Set(['EACCES', 'EBUSY', 'EPERM']);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameImpl(runtimeDir, quarantineDir);
+      break;
+    } catch (error) {
+      if (!transientRenameErrors.has(error?.code) || attempt >= renameRetries) throw error;
+      await waitImpl(renameRetryDelayMs);
+      verifyRuntimeOwnership(options, { verifySubtree: true });
+    }
+  }
   const quarantinedOwnership = {
     ...ownership,
     runtimeDir: quarantineDir,
@@ -2924,24 +2940,46 @@ function createOwnedProcessTracker(options = {}) {
   };
 }
 
-async function listSystemProcesses() {
-  if (process.platform === 'win32') {
+async function listSystemProcesses(options = {}) {
+  const platform = options.platform || process.platform;
+  const execFileImpl = options.execFileImpl;
+  const waitImpl = options.waitImpl || wait;
+  const processListRetries = Number.isInteger(options.processListRetries)
+    ? Math.max(0, options.processListRetries)
+    : 4;
+  const processListRetryDelayMs = Number.isInteger(options.processListRetryDelayMs)
+    ? Math.max(1, options.processListRetryDelayMs)
+    : 150;
+  if (platform === 'win32') {
     const script =
       "$ErrorActionPreference='Stop'; Get-CimInstance Win32_Process" +
       " | Select-Object @{n='pid';e={[int]$_.ProcessId}},@{n='parentPid';e={[int]$_.ParentProcessId}},@{n='name';e={$_.Name}},@{n='executablePath';e={$_.ExecutablePath}},@{n='commandLine';e={$_.CommandLine}},@{n='creationTime';e={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')} else {''}}}" +
       ' | ConvertTo-Json -Compress';
-    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
-    });
-    const parsed = stdout.trim() ? JSON.parse(stdout) : [];
-    return Array.isArray(parsed) ? parsed : [parsed];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const { stdout } = await execFileAsync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', script],
+          {
+            encoding: 'utf8',
+            maxBuffer: 16 * 1024 * 1024,
+            windowsHide: true,
+            ...(execFileImpl ? { execFileImpl } : {}),
+          },
+        );
+        const parsed = stdout.trim() ? JSON.parse(stdout) : [];
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch (error) {
+        if (attempt >= processListRetries) throw error;
+        await waitImpl(processListRetryDelayMs);
+      }
+    }
   }
 
   const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart=,comm=,args='], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
+    ...(execFileImpl ? { execFileImpl } : {}),
   });
   return stdout
     .split(/\r?\n/)

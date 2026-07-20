@@ -6,7 +6,15 @@ let _apiBase = 'http://127.0.0.1:63918';
 
 const LONG_RUNNING_ACP_METHODS = new Set(['session/prompt', 'authenticate']);
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
-const LONG_REQUEST_IDLE_TIMEOUT_MS = 0;
+const LONG_REQUEST_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_INCOMING_EVENT_FINGERPRINTS = 4000;
+const PROMPT_NOTIFICATION_FALLBACK_MS = 80;
+const PROMPT_CONTENT_SESSION_UPDATES = new Set([
+  'agent_message_chunk',
+  'agent_thought_chunk',
+  'tool_call',
+  'tool_call_update',
+]);
 
 export function getApiBase() {
   return _apiBase;
@@ -68,7 +76,8 @@ function makeHeaders(extra = {}, includeAcpSessionToken = true, includeAuthToken
 }
 
 export async function requestCodeBuddy(pathOrUrl, init = {}) {
-  const url = /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : `${_apiBase}${pathOrUrl}`;
+  const baseUrl = String(init.baseUrl || _apiBase || '').replace(/\/$/, '');
+  const url = /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : `${baseUrl}${pathOrUrl}`;
   const timeoutMs = init.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const signal = init.signal;
   const request = {
@@ -82,6 +91,7 @@ export async function requestCodeBuddy(pathOrUrl, init = {}) {
   delete request.timeoutMs;
   delete request.omitAcpSessionToken;
   delete request.omitAuthToken;
+  delete request.baseUrl;
 
   const controller = new AbortController();
   // 走 IPC 代理通道时由主进程统一管超时（避免前端 30s 抢盖主进程 120s 长响应）
@@ -210,6 +220,18 @@ function consumeEventStreamChunk(buffer, chunk, flush = false) {
   };
 }
 
+function promptEventRequestId(message) {
+  const metadata = message?.params?.update?._meta;
+  return metadata?.['codebuddy.ai/requestId'] || metadata?.['codebuddy.ai']?.requestId || null;
+}
+
+function incomingEventFingerprint(message) {
+  try {
+    return JSON.stringify(message);
+  } catch (_) {
+    return null;
+  }
+}
 export class AcpClient {
   constructor(options = {}) {
     this.apiBase = options.apiBase || getApiBase();
@@ -224,6 +246,10 @@ export class AcpClient {
     this.permissionRequestToolCallIds = new Map();
     this.questionRequestIds = new Map();
     this.activePromptRequests = new Map();
+    this.incomingEventOccurrences = new Map();
+    this.pendingPromptNotifications = new Map();
+    this.promptRunIdByRequestId = new Map();
+    this.sessionCancelSupported = null;
 
     // 重连相关
     this.reconnectAttempts = 0;
@@ -285,8 +311,107 @@ export class AcpClient {
     this.eventTarget.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
-  handleIncomingRpc(message) {
+  activePromptContext(sessionId) {
+    const key = String(sessionId || '').trim();
+    const handles = this.activePromptRequests.get(key);
+    if (!handles?.size) return null;
+    const handle = Array.from(handles).at(-1);
+    return handle?.context || null;
+  }
+
+  cancelPendingPromptNotification(message) {
+    const fingerprint = incomingEventFingerprint(message);
+    if (!fingerprint) return false;
+    const pending = this.pendingPromptNotifications.get(fingerprint);
+    if (!pending) return false;
+    pending.contexts.shift();
+    if (pending.contexts.length > 0) return true;
+    clearTimeout(pending.timer);
+    this.pendingPromptNotifications.delete(fingerprint);
+    return true;
+  }
+
+  queuePromptNotification(message) {
+    const fingerprint = incomingEventFingerprint(message);
+    if (!fingerprint) return;
+    const sessionId = message?.params?.sessionId;
+    const requestId = promptEventRequestId(message);
+    const mappedPromptRunId = requestId ? this.promptRunIdByRequestId.get(requestId) : null;
+    const queuedContext = mappedPromptRunId
+      ? { promptRunId: mappedPromptRunId }
+      : this.activePromptContext(sessionId);
+    const existing = this.pendingPromptNotifications.get(fingerprint);
+    if (existing) {
+      existing.totalOccurrences += 1;
+      existing.contexts.push(queuedContext);
+      return;
+    }
+    const pending = {
+      timer: null,
+      totalOccurrences: 1,
+      contexts: [queuedContext],
+    };
+    pending.timer = setTimeout(() => {
+      this.pendingPromptNotifications.delete(fingerprint);
+      for (let index = 0; index < pending.totalOccurrences; index += 1) {
+        const context = pending.contexts[Math.min(index, pending.contexts.length - 1)] || null;
+        this.handleIncomingRpc(message, 'notification-fallback', context);
+      }
+    }, PROMPT_NOTIFICATION_FALLBACK_MS);
+    this.pendingPromptNotifications.set(fingerprint, pending);
+  }
+
+  clearPendingPromptNotifications() {
+    for (const pending of this.pendingPromptNotifications.values()) clearTimeout(pending.timer);
+    this.pendingPromptNotifications.clear();
+  }
+  shouldProcessIncomingEvent(message, source) {
+    if (!source || message?.method !== 'session/update') return true;
+    const fingerprint = incomingEventFingerprint(message);
+    if (!fingerprint) return true;
+    let state = this.incomingEventOccurrences.get(fingerprint);
+    if (!state) {
+      if (this.incomingEventOccurrences.size >= MAX_INCOMING_EVENT_FINGERPRINTS) {
+        this.incomingEventOccurrences.delete(this.incomingEventOccurrences.keys().next().value);
+      }
+      state = { delivered: 0, counts: new Map() };
+      this.incomingEventOccurrences.set(fingerprint, state);
+    }
+    const count = (state.counts.get(source) || 0) + 1;
+    state.counts.set(source, count);
+    if (count <= state.delivered) return false;
+    state.delivered = count;
+    return true;
+  }
+
+  handleIncomingRpc(message, source = null, context = null) {
     if (!message || typeof message !== 'object') return;
+    const sessionId = message?.params?.sessionId;
+    const sessionUpdate =
+      message?.params?.update?.sessionUpdate ||
+      message?.params?.update?.session_update ||
+      message?.params?.update?.type;
+    const promptContentEvent =
+      message?.method === 'session/update' && PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
+    const requestId = promptContentEvent ? promptEventRequestId(message) : null;
+    const mappedPromptRunId = requestId ? this.promptRunIdByRequestId.get(requestId) : null;
+    const eventContext = mappedPromptRunId ? { promptRunId: mappedPromptRunId } : context;
+    if (source === 'notification' && promptContentEvent) {
+      if (this.hasActivePrompt(sessionId)) {
+        if (requestId) this.queuePromptNotification(message);
+        return;
+      }
+    }
+    if (source === 'request' && promptContentEvent) {
+      this.cancelPendingPromptNotification(message);
+      if (requestId && context?.promptRunId) {
+        if (this.promptRunIdByRequestId.size >= MAX_INCOMING_EVENT_FINGERPRINTS) {
+          this.promptRunIdByRequestId.delete(this.promptRunIdByRequestId.keys().next().value);
+        }
+        this.promptRunIdByRequestId.set(requestId, context.promptRunId);
+      }
+    }
+    if (!this.shouldProcessIncomingEvent(message, source)) return;
 
     if (message.method && message.id !== undefined && message.id !== null) {
       if (message.method === 'session/request_permission') {
@@ -304,7 +429,17 @@ export class AcpClient {
       const params = message.params || {};
       const update = params.update || {};
       const sessionUpdate = update.sessionUpdate;
-      this.emit('session/update', params);
+      const clientSource = source === 'notification-fallback' ? 'notification' : source;
+      const eventParams = source && (promptContentEvent || eventContext?.promptRunId)
+        ? {
+            ...params,
+            _client: {
+              source: clientSource,
+              ...(eventContext?.promptRunId ? { promptRunId: eventContext.promptRunId } : {}),
+            },
+          }
+        : params;
+      this.emit('session/update', eventParams);
       const interruption = update._meta?.['codebuddy.ai/interruptionRequest'];
       if (interruption) {
         this.emit('interruption_request', {
@@ -394,6 +529,34 @@ export class AcpClient {
     return true;
   }
 
+  async notify(method, params = {}) {
+    if (!this.connected || !this.connectionId) throw new Error('ACP client is not connected');
+    const response = await this.requestHttp('/api/v1/acp', {
+      method: 'POST',
+      headers: makeHeaders({
+        Accept: 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+        'acp-connection-id': this.connectionId,
+      }),
+      body: JSON.stringify({ jsonrpc: '2.0', method, params }),
+      timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    });
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const payload = await response.json();
+        detail = payload?.error?.message || payload?.message || '';
+      } catch (_) {}
+      throw new Error(detail || `ACP notification failed: ${response.status} ${response.statusText}`);
+    }
+    const responseText = await response.text();
+    if (responseText.trim()) {
+      const messages = parseEventStreamMessages(responseText);
+      const rpcError = messages.find((message) => message?.error)?.error;
+      if (rpcError) throw createAcpRpcError(method, rpcError);
+    }
+    return true;
+  }
   async sendJsonRpcResult(requestId, result) {
     const response = await this.requestHttp('/api/v1/acp', {
       method: 'POST',
@@ -455,10 +618,10 @@ export class AcpClient {
     return true;
   }
 
-  trackActivePrompt(sessionId, cancel) {
+  trackActivePrompt(sessionId, cancel, context = null) {
     const key = String(sessionId || '').trim();
     if (!key || typeof cancel !== 'function') return () => {};
-    const handle = { cancel };
+    const handle = { cancel, context };
     const handles = this.activePromptRequests.get(key) || new Set();
     handles.add(handle);
     this.activePromptRequests.set(key, handles);
@@ -470,6 +633,10 @@ export class AcpClient {
     };
   }
 
+  hasActivePrompt(sessionId) {
+    const key = String(sessionId || '').trim();
+    return Boolean(this.activePromptRequests.get(key)?.size);
+  }
   cancelActivePrompt(sessionId) {
     const key = String(sessionId || '').trim();
     const handles = this.activePromptRequests.get(key);
@@ -639,7 +806,7 @@ export class AcpClient {
 
     const onMessage = (message) => {
       this._sseRetryAttempt = 0;
-      this.handleIncomingRpc(message);
+      this.handleIncomingRpc(message, 'notification');
     };
     const onError = () => this._scheduleNotificationReconnect();
 
@@ -794,6 +961,9 @@ export class AcpClient {
     this.permissionRequestIds.clear();
     this.permissionRequestToolCallIds.clear();
     this.questionRequestIds.clear();
+    this.incomingEventOccurrences.clear();
+    this.clearPendingPromptNotifications();
+    this.promptRunIdByRequestId.clear();
 
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
@@ -813,7 +983,7 @@ export class AcpClient {
     }).catch(() => null);
   }
 
-  requestStreamingIpc(payload, id, timeoutMs) {
+  requestStreamingIpc(payload, id, timeoutMs, context = null) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let stream = null;
@@ -822,6 +992,12 @@ export class AcpClient {
       let matchedResponse = false;
       let matchedResult = null;
       let matchedError = null;
+      const streamFailure = (error, fallback) => {
+        const failure =
+          error instanceof Error ? error : new Error(typeof error === 'string' ? error : error?.message || fallback);
+        if (matchedResponse) failure.promptAccepted = true;
+        return failure;
+      };
       const cleanup = () => {
         if (timeoutId) clearTimeout(timeoutId);
         unregisterPrompt();
@@ -841,9 +1017,13 @@ export class AcpClient {
         }, timeoutMs);
       };
       if (payload.method === 'session/prompt') {
-        unregisterPrompt = this.trackActivePrompt(payload.params?.sessionId, () => {
-          finish(reject, new Error('ACP request cancelled by user'));
-        });
+        unregisterPrompt = this.trackActivePrompt(
+          payload.params?.sessionId,
+          () => {
+            finish(reject, new Error('ACP request cancelled by user'));
+          },
+          context,
+        );
       }
       armTimeout();
 
@@ -872,21 +1052,32 @@ export class AcpClient {
                 matchedError = message.error ? createAcpRpcError(payload.method, message.error) : null;
                 return;
               }
-              this.handleIncomingRpc(message);
+              this.handleIncomingRpc(message, 'request', context);
             },
             onError: (error) => {
-              finish(
-                reject,
-                new Error(typeof error === 'string' ? error : error?.message || `ACP stream failed: ${payload.method}`),
-              );
+              if (matchedError) {
+                finish(reject, matchedError);
+              } else {
+                finish(reject, streamFailure(error, `ACP stream failed: ${payload.method}`));
+              }
             },
             onEnd: (result) => {
               if (result?.ok === false) {
                 finish(reject, new Error(`ACP POST failed: ${result.status || 0} ${result.statusText || ''}`.trim()));
               } else if (matchedError) {
                 finish(reject, matchedError);
+              } else if (!matchedResponse) {
+                finish(reject, new Error(`ACP response stream ended before RPC result: ${payload.method}`));
+              } else if (Number(result?.parseErrorCount) > 0) {
+                finish(
+                  reject,
+                  streamFailure(
+                    `ACP response stream contained ${result.parseErrorCount} invalid event(s)`,
+                    `ACP stream failed: ${payload.method}`,
+                  ),
+                );
               } else {
-                finish(resolve, matchedResponse ? matchedResult : null);
+                finish(resolve, matchedResult);
               }
             },
           },
@@ -897,7 +1088,7 @@ export class AcpClient {
     });
   }
 
-  async request(method, params = {}) {
+  async request(method, params = {}, context = null) {
     if (!this.connected || !this.connectionId) {
       throw new Error('ACP client is not connected');
     }
@@ -906,16 +1097,20 @@ export class AcpClient {
     const payload = { jsonrpc: '2.0', method, params, id };
     const isLongRunning = LONG_RUNNING_ACP_METHODS.has(method);
     if (isLongRunning && typeof window !== 'undefined' && window.electronAPI?.openCodeBuddyStream) {
-      return this.requestStreamingIpc(payload, id, LONG_REQUEST_IDLE_TIMEOUT_MS);
+      return this.requestStreamingIpc(payload, id, LONG_REQUEST_IDLE_TIMEOUT_MS, context);
     }
 
     const controller = new AbortController();
     let cancelledByUser = false;
     const unregisterPrompt = isLongRunning
-      ? this.trackActivePrompt(params?.sessionId, () => {
-          cancelledByUser = true;
-          controller.abort();
-        })
+      ? this.trackActivePrompt(
+          params?.sessionId,
+          () => {
+            cancelledByUser = true;
+            controller.abort();
+          },
+          context,
+        )
       : () => {};
     let timeoutId = null;
     const armTimeout = () => {
@@ -959,7 +1154,7 @@ export class AcpClient {
             }
             matchedResult = message.result ?? null;
           } else {
-            this.handleIncomingRpc(message);
+            this.handleIncomingRpc(message, 'request', context);
           }
         }
       };
@@ -996,7 +1191,7 @@ export class AcpClient {
         return parsed?.result ?? parsed;
       }
 
-      return null;
+      throw new Error(`ACP response stream ended before RPC result: ${method}`);
     } catch (err) {
       if (err.name === 'AbortError') {
         if (cancelledByUser) throw new Error('ACP request cancelled by user');

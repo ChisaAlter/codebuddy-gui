@@ -194,15 +194,22 @@ describe('AcpClient GET SSE notification stream', () => {
     const updates = [];
     client.on('session/update', (event) => updates.push(event.detail));
     let requestResolved = false;
-    const request = client.request('session/prompt', { sessionId: 's-stream', prompt: [] }).then((result) => {
+    const request = client
+      .request(
+        'session/prompt',
+        { sessionId: 's-stream', prompt: [] },
+        { promptRunId: 'run-current' },
+      )
+      .then((result) => {
       requestResolved = true;
-      return result;
-    });
+        return result;
+      });
 
     await vi.waitFor(() => expect(updates).toHaveLength(1));
     expect(requestResolved).toBe(false);
     expect(updates[0]).toMatchObject({
       sessionId: 's-stream',
+      _client: { source: 'request', promptRunId: 'run-current' },
       update: { sessionUpdate: 'agent_message_chunk', messageId: 'm1' },
     });
 
@@ -257,7 +264,7 @@ describe('AcpClient GET SSE notification stream', () => {
       url: 'http://127.0.0.1:45678/api/v1/acp',
       method: 'POST',
       rpcId: '1',
-      timeoutMs: 0,
+      timeoutMs: 10 * 60 * 1000,
       headers: expect.objectContaining({
         'acp-connection-id': 'conn-ipc-stream',
         'acp-session-token': 'token-ipc-stream',
@@ -271,6 +278,428 @@ describe('AcpClient GET SSE notification stream', () => {
     handlers.onEnd({ ok: true, status: 200, statusText: 'OK' });
     await expect(request).resolves.toEqual({ stopReason: 'end_turn' });
     expect(closeCalled).toBe(true);
+  });
+
+  it('rejects a matched Electron RPC result when a later malformed stream event is reported', async () => {
+    let handlers;
+    const close = vi.fn();
+    window.electronAPI = {
+      openCodeBuddyStream(_request, nextHandlers) {
+        handlers = nextHandlers;
+        return { close };
+      },
+    };
+
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-malformed-tail';
+    const request = client.request('session/prompt', { sessionId: 's-malformed-tail', prompt: [] });
+
+    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: { stopReason: 'end_turn' } });
+    handlers.onError('ACP stream contained 1 invalid event(s)');
+
+    const error = await request.catch((value) => value);
+    expect(error).toMatchObject({ message: expect.stringContaining('invalid event'), promptAccepted: true });
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a POST stream end that reports malformed events after the RPC result', async () => {
+    let handlers;
+    window.electronAPI = {
+      openCodeBuddyStream(_request, nextHandlers) {
+        handlers = nextHandlers;
+        return { close: vi.fn() };
+      },
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-malformed-end';
+    const request = client.request('session/prompt', { sessionId: 's-malformed-end', prompt: [] });
+
+    handlers.onMessage({ jsonrpc: '2.0', id: '1', result: { stopReason: 'end_turn' } });
+    handlers.onEnd({ ok: true, status: 200, parseErrorCount: 1 });
+
+    const error = await request.catch((value) => value);
+    expect(error).toMatchObject({ message: expect.stringContaining('contained 1 invalid event'), promptAccepted: true });
+  });
+
+  it('uses the active prompt request stream as the canonical source for live content', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail.update.content.text));
+    const message = {
+      method: 'session/update',
+      params: {
+        sessionId: 's-active',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'm-active',
+          content: { type: 'text', text: 'CURRENT' },
+        },
+      },
+    };
+    const unregister = client.trackActivePrompt('s-active', () => {});
+
+    client.handleIncomingRpc(message, 'notification');
+    client.handleIncomingRpc(message, 'request', { promptRunId: 'run-current' });
+    unregister();
+
+    expect(updates).toEqual(['CURRENT']);
+  });
+  it('delivers the buffered notification copy when the POST stream never provides it', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail));
+      const unregister = client.trackActivePrompt('s-fallback', () => {}, { promptRunId: 'run-fallback' });
+      const message = {
+        method: 'session/update',
+        params: {
+          sessionId: 's-fallback',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'm-fallback',
+            content: { type: 'text', text: 'FALLBACK' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-fallback' },
+          },
+        },
+      };
+
+      client.handleIncomingRpc(message, 'notification');
+      expect(updates).toEqual([]);
+      await vi.advanceTimersByTimeAsync(81);
+
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({
+        update: { content: { text: 'FALLBACK' } },
+        _client: { source: 'notification', promptRunId: 'run-fallback' },
+      });
+      unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the notification fallback when the matching POST copy arrives first', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail.update.content.text));
+      const unregister = client.trackActivePrompt('s-race', () => {}, { promptRunId: 'run-race' });
+      const message = {
+        method: 'session/update',
+        params: {
+          sessionId: 's-race',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'm-race',
+            content: { type: 'text', text: 'POST_WINS' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-race' },
+          },
+        },
+      };
+
+      client.handleIncomingRpc(message, 'notification');
+      client.handleIncomingRpc(message, 'request', { promptRunId: 'run-race' });
+      await vi.advanceTimersByTimeAsync(81);
+
+      expect(updates).toEqual(['POST_WINS']);
+      unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a delayed notification mapped to its original backend prompt run', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail));
+      client.handleIncomingRpc(
+        {
+          method: 'session/update',
+          params: {
+            sessionId: 's-mapped',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: 'm-old-first',
+              content: { type: 'text', text: 'OLD_FIRST' },
+              _meta: { 'codebuddy.ai/requestId': 'backend-old' },
+            },
+          },
+        },
+        'request',
+        { promptRunId: 'run-old' },
+      );
+      updates.length = 0;
+      const unregister = client.trackActivePrompt('s-mapped', () => {}, { promptRunId: 'run-new' });
+
+      client.handleIncomingRpc(
+        {
+          method: 'session/update',
+          params: {
+            sessionId: 's-mapped',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: 'm-old-late',
+              content: { type: 'text', text: 'OLD_LATE' },
+              _meta: { 'codebuddy.ai/requestId': 'backend-old' },
+            },
+          },
+        },
+        'notification',
+      );
+      await vi.advanceTimersByTimeAsync(81);
+
+      expect(updates).toHaveLength(1);
+      expect(updates[0]._client).toMatchObject({ source: 'notification', promptRunId: 'run-old' });
+      unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves repeated identical notification chunks when only one POST copy arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail.update.content.text));
+      const unregister = client.trackActivePrompt('s-repeat', () => {}, { promptRunId: 'run-repeat' });
+      const message = {
+        method: 'session/update',
+        params: {
+          sessionId: 's-repeat',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'm-repeat',
+            content: { type: 'text', text: 'REPEAT' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-repeat' },
+          },
+        },
+      };
+
+      client.handleIncomingRpc(message, 'notification');
+      client.handleIncomingRpc(message, 'notification');
+      client.handleIncomingRpc(message, 'request', { promptRunId: 'run-repeat' });
+      await vi.advanceTimersByTimeAsync(81);
+
+      expect(updates).toEqual(['REPEAT', 'REPEAT']);
+      unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops uncorrelated notification content while another prompt is active', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail));
+      const unregister = client.trackActivePrompt('s-uncorrelated', () => {}, { promptRunId: 'run-current' });
+
+      client.handleIncomingRpc(
+        {
+          method: 'session/update',
+          params: {
+            sessionId: 's-uncorrelated',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: 'unknown-late',
+              content: { type: 'text', text: 'UNKNOWN_LATE' },
+            },
+          },
+        },
+        'notification',
+      );
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(updates).toEqual([]);
+      unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains the mapped prompt run on a late notification after the prompt stream closes', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail));
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-late-mapped',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'mapped-first',
+            content: { type: 'text', text: 'FIRST' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-mapped-late' },
+          },
+        },
+      },
+      'request',
+      { promptRunId: 'run-finished' },
+    );
+    updates.length = 0;
+
+    client.handleIncomingRpc(
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 's-late-mapped',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'mapped-late',
+            content: { type: 'text', text: 'LATE' },
+            _meta: { 'codebuddy.ai/requestId': 'backend-mapped-late' },
+          },
+        },
+      },
+      'notification',
+    );
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]._client).toMatchObject({ source: 'notification', promptRunId: 'run-finished' });
+  });
+
+  it('deduplicates interleaved POST and notification copies without dropping repeated live text', () => {
+    const client = new AcpClient();
+    const updates = [];
+    client.on('session/update', (event) => updates.push(event.detail.update.content.text));
+    const first = {
+      method: 'session/update',
+      params: {
+        sessionId: 's-dual',
+        update: { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'A' } },
+      },
+    };
+    const second = {
+      method: 'session/update',
+      params: {
+        sessionId: 's-dual',
+        update: { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'B' } },
+      },
+    };
+
+    client.handleIncomingRpc(first, 'request');
+    client.handleIncomingRpc(second, 'request');
+    client.handleIncomingRpc(first, 'notification');
+    client.handleIncomingRpc(second, 'notification');
+    client.handleIncomingRpc(first, 'request');
+
+    expect(updates).toEqual(['A', 'B', 'A']);
+  });
+
+  it('rejects an Electron POST stream that ends without the matching RPC result', async () => {
+    let handlers;
+    window.electronAPI = {
+      openCodeBuddyStream(_request, nextHandlers) {
+        handlers = nextHandlers;
+        return { close: vi.fn() };
+      },
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-missing-result';
+    const request = client.request('session/prompt', { sessionId: 's-missing-result', prompt: [] });
+
+    handlers.onEnd({ ok: true, status: 200, statusText: 'OK' });
+
+    await expect(request).rejects.toThrow('before RPC result');
+  });
+
+  it('rejects truncated Electron proxy responses without a matching RPC result', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'data: {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-trunc","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial"}}}}\n\n',
+        truncated: true,
+      }),
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-truncated';
+
+    await expect(client.request('session/prompt', { sessionId: 's-trunc', prompt: [] })).rejects.toThrow(
+      'ACP 响应流意外中断',
+    );
+  });
+
+  it('returns a matched RPC result even when the Electron proxy marks the body truncated', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'data: {"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}\n\n',
+        truncated: true,
+      }),
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-truncated-matched';
+    client.nextId = 1;
+
+    await expect(client.request('session/prompt', { sessionId: 's-trunc-ok', prompt: [] })).resolves.toEqual({
+      stopReason: 'end_turn',
+    });
+  });
+  it('sends session/cancel as a JSON-RPC notification without an id', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 202,
+        statusText: 'Accepted',
+        headers: {},
+        body: '',
+      }),
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-notify';
+    client.sessionToken = 'token-notify';
+
+    await expect(client.notify('session/cancel', { sessionId: 's-cancel' })).resolves.toBe(true);
+
+    const request = window.electronAPI.requestCodeBuddy.mock.calls[0][0];
+    expect(JSON.parse(request.body)).toEqual({
+      jsonrpc: '2.0',
+      method: 'session/cancel',
+      params: { sessionId: 's-cancel' },
+    });
+    expect(JSON.parse(request.body)).not.toHaveProperty('id');
+  });
+  it('rejects a successful HTTP notification response that contains a JSON-RPC error', async () => {
+    window.electronAPI = {
+      requestCodeBuddy: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32001, message: 'Cancellation rejected' },
+        }),
+      }),
+    };
+    const client = new AcpClient({ apiBase: 'http://127.0.0.1:45678' });
+    client.connected = true;
+    client.connectionId = 'conn-notify-error';
+
+    await expect(client.notify('session/cancel', { sessionId: 's-cancel' })).rejects.toMatchObject({
+      name: 'AcpRpcError',
+      code: -32001,
+      message: 'Cancellation rejected',
+    });
   });
 
   it('locally cancels the active Electron prompt stream', async () => {

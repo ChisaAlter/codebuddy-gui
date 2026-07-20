@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const streamId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     activeCodeBuddyStreams.add(streamId);
     let closed = false;
+    let openErrorReported = false;
     const cleanup = (notifyMain = false) => {
       if (closed) return;
       closed = true;
@@ -98,6 +99,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
     const onError = (_event, payload) => {
       if (payload?.streamId !== streamId) return;
+      openErrorReported = true;
       handlers.onError?.(payload.error);
       if (String(request.method || 'GET').toUpperCase() !== 'GET') cleanup();
     };
@@ -109,10 +111,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('codebuddy:streamMessage', onMessage);
     ipcRenderer.on('codebuddy:streamError', onError);
     ipcRenderer.on('codebuddy:streamEnd', onEnd);
-    ipcRenderer.invoke('codebuddy:openStream', { ...request, streamId }).catch((error) => {
-      handlers.onError?.(error?.message || String(error));
-      cleanup();
-    });
+    ipcRenderer
+      .invoke('codebuddy:openStream', { ...request, streamId })
+      .then((result) => {
+        if (result?.ok !== false) return;
+        if (!closed && !openErrorReported) {
+          handlers.onError?.(result.error || `ACP stream failed: ${result.status || 0}`);
+        }
+        cleanup();
+      })
+      .catch((error) => {
+        if (!closed) handlers.onError?.(error?.message || String(error));
+        cleanup();
+      });
     return {
       close: () => cleanup(true),
     };

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   replicaSidebarFooterItems,
@@ -6,7 +9,18 @@ import {
   replicaSidebarWidthStyle,
 } from '../../src/components/ReplicaSidebar';
 
+const testRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
 describe('ReplicaSidebar layout', () => {
+  it('lets the application shell follow the resized window instead of pinning the initial viewport width', () => {
+    const appSource = fs.readFileSync(path.join(testRoot, 'src', 'App.jsx'), 'utf8');
+    const cssSource = fs.readFileSync(path.join(testRoot, 'src', 'index.css'), 'utf8');
+
+    expect(appSource).toContain('app-shell flex h-full w-full min-w-0');
+    expect(appSource).not.toContain('app-shell flex h-screen w-screen');
+    expect(cssSource).toMatch(/html,\s*body,\s*#root\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
+    expect(cssSource).toMatch(/\.app-shell\s*\{[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*none;/);
+  });
   it('pins collapsed and expanded widths against flex min-content growth', () => {
     expect(replicaSidebarWidthStyle(true)).toEqual({ width: 60, minWidth: 60, maxWidth: 60 });
     expect(replicaSidebarWidthStyle(false)).toEqual({

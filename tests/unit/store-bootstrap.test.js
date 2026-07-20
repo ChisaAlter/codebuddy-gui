@@ -120,6 +120,145 @@ describe('store bootstrap coordination', () => {
     });
   });
 
+  it('closes history-replayed message streams when session initialization finishes', async () => {
+    const updateThreadRecord = vi.fn().mockResolvedValue(true);
+    const client = {
+      connected: false,
+      initialized: false,
+      connectionState: 'disconnected',
+      initializeSession: vi.fn().mockImplementation(async () => {
+        useStore.getState().handleThreadSessionUpdate('thread-history', {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'history-final',
+          content: { type: 'text', text: 'Recovered final answer' },
+          _meta: { 'codebuddy.ai': { mode: 'history', offset: 42 } },
+        });
+        return {
+          init: { agentCapabilities: {} },
+          loaded: { sessionId: 'session-history', title: '/init' },
+        };
+      }),
+    };
+    useStore.setState({
+      activeProjectId: 'project-1',
+      activeThreadId: 'thread-history',
+      projectsById: {
+        'project-1': { id: 'project-1', workspacePath: 'C:/Project' },
+      },
+      threadsById: {
+        'thread-history': {
+          id: 'thread-history',
+          projectId: 'project-1',
+          sessionId: 'session-history',
+          title: '/init',
+          timeline: [],
+          metadata: {},
+          status: 'idle',
+        },
+      },
+      threadRuntimeById: {},
+      initializeActiveThread: useStore.getInitialState().initializeActiveThread,
+      getThreadClient: vi.fn().mockReturnValue(client),
+      updateActiveThread: vi.fn().mockResolvedValue(true),
+      updateThreadRecord,
+    });
+
+    await expect(useStore.getState().initializeActiveThread()).resolves.toBe(true);
+
+    const runtime = useStore.getState().threadRuntimeById['thread-history'];
+    expect(runtime.timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'Recovered final answer', streaming: false }),
+      ]),
+    );
+    expect(runtime.historyReplayActive).toBe(false);
+    expect(updateThreadRecord).toHaveBeenCalledWith(
+      'thread-history',
+      expect.objectContaining({
+        status: 'idle',
+        timeline: expect.arrayContaining([
+          expect.objectContaining({ content: 'Recovered final answer', streaming: false }),
+        ]),
+      }),
+    );
+  });
+  it('preserves persisted model and mode selections when they remain available after session load', async () => {
+    const client = {
+      connected: false,
+      initialized: false,
+      connectionState: 'disconnected',
+      initializeSession: vi.fn().mockResolvedValue({
+        init: { agentCapabilities: {} },
+        loaded: {
+          sessionId: 'session-persisted',
+          title: 'Persisted thread',
+          models: {
+            currentModelId: 'hy3',
+            availableModels: [
+              { id: 'grok-4.5', name: 'Grok 4.5' },
+              { id: 'hy3', name: 'Hy3' },
+            ],
+          },
+          modes: {
+            currentModeId: 'default',
+            availableModes: [
+              { id: 'default', name: 'Default' },
+              { id: 'delegate', name: 'Delegate' },
+            ],
+          },
+        },
+      }),
+    };
+    const updateThreadRecord = vi.fn().mockImplementation(async (threadId, patch) => {
+      useStore.setState((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          [threadId]: { ...state.threadsById[threadId], ...patch },
+        },
+      }));
+      return true;
+    });
+    useStore.setState({
+      activeProjectId: 'project-1',
+      activeThreadId: 'thread-persisted',
+      projectsById: {
+        'project-1': { id: 'project-1', workspacePath: 'C:/Project', runtimePort: 45678 },
+      },
+      threadsById: {
+        'thread-persisted': {
+          id: 'thread-persisted',
+          projectId: 'project-1',
+          sessionId: 'session-persisted',
+          title: 'Persisted thread',
+          modelId: 'custom-local:grok-4.5',
+          modeId: 'delegate',
+          timeline: [],
+          metadata: {},
+          status: 'idle',
+        },
+      },
+      threadRuntimeById: {},
+      initializeActiveThread: useStore.getInitialState().initializeActiveThread,
+      getThreadClient: vi.fn().mockReturnValue(client),
+      updateActiveThread: vi.fn().mockResolvedValue(true),
+      updateThreadRecord,
+    });
+
+    await expect(useStore.getState().initializeActiveThread()).resolves.toBe(true);
+
+    const state = useStore.getState();
+    expect(state.currentModel).toBe('grok-4.5');
+    expect(state.currentMode).toBe('delegate');
+    expect(state.threadRuntimeById['thread-persisted']).toMatchObject({
+      currentModel: 'grok-4.5',
+      currentMode: 'delegate',
+    });
+    expect(state.threadsById['thread-persisted']).toMatchObject({
+      modelId: 'grok-4.5',
+      modeId: 'delegate',
+    });
+  });
+
   it('restarts the embedded runtime and bootstraps after account login', async () => {
     const authenticate = vi.fn().mockResolvedValue({
       _meta: {

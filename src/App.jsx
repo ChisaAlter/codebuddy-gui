@@ -852,7 +852,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app-shell flex h-screen w-screen overflow-hidden text-[var(--color-text-primary)]">
+    <div className="app-shell flex h-full w-full min-w-0 overflow-hidden text-[var(--color-text-primary)]">
       {authViewState === 'loading' ? (
         <AuthLoadingView />
       ) : authViewState === 'login' ? (

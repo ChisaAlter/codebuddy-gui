@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../src/store';
 
 function runtime() {
@@ -10,6 +10,9 @@ function runtime() {
     usage: null,
     availableCommands: [],
     isAwaitingResponse: false,
+    promptStartedAt: null,
+    activePromptRunId: null,
+    promptDispatched: false,
     promptQueue: [],
     pendingAttachments: [],
     promptSuggestion: null,
@@ -34,8 +37,8 @@ describe('store conversation event routing', () => {
         'project-1': { id: 'project-1', workspacePath: 'C:/Project' },
       },
       threadsById: {
-        'thread-1': { id: 'thread-1', projectId: 'project-1', sessionId: 'session-1', metadata: {} },
-        'thread-2': { id: 'thread-2', projectId: 'project-1', sessionId: 'session-2', metadata: {} },
+        'thread-1': { id: 'thread-1', projectId: 'project-1', sessionId: 'session-1', metadata: {}, status: 'idle' },
+        'thread-2': { id: 'thread-2', projectId: 'project-1', sessionId: 'session-2', metadata: {}, status: 'idle' },
       },
       threadRuntimeById: {
         'thread-1': runtime(),
@@ -44,6 +47,8 @@ describe('store conversation event routing', () => {
       ...runtime(),
       sessionId: 'session-1',
       error: null,
+      getThreadClient: useStore.getInitialState().getThreadClient,
+      drainThreadPromptQueue: useStore.getInitialState().drainThreadPromptQueue,
     });
   });
 
@@ -83,6 +88,210 @@ describe('store conversation event routing', () => {
     const state = useStore.getState().threadRuntimeById['thread-1'];
     expect(state.isAwaitingResponse).toBe(false);
     expect(state.timeline[0]).toMatchObject({ type: 'thinking', streaming: true });
+  });
+
+  it.each(['idle', 'error', 'cancelled'])('clears prompt runtime state when status_change reaches %s without an active request', (status) => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-terminal',
+      promptDispatched: true,
+      isAwaitingResponse: true,
+      promptStartedAt: 1234,
+      historyReplayActive: true,
+      agentPhase: 'working',
+      progress: { current: 1, total: 2 },
+    });
+
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: { sessionUpdate: 'status_change', status },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
+      activePromptRunId: null,
+      promptDispatched: false,
+      isAwaitingResponse: false,
+      promptStartedAt: null,
+      historyReplayActive: false,
+      agentPhase: null,
+      progress: null,
+    });
+  });
+
+  it('keeps the run attached when a terminal status arrives before the active response stream ends', () => {
+    useStore.setState({
+      getThreadClient: () => ({ hasActivePrompt: () => true }),
+    });
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-current',
+      promptDispatched: true,
+      isAwaitingResponse: false,
+    });
+
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        update: { sessionUpdate: 'status_change', status: 'idle' },
+      },
+    });
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        _client: { source: 'request', promptRunId: 'run-current' },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'final-after-idle',
+          content: { type: 'text', text: 'final chunk' },
+        },
+      },
+    });
+
+    const runtimeState = useStore.getState().threadRuntimeById['thread-1'];
+    expect(runtimeState.activePromptRunId).toBe('run-current');
+    expect(runtimeState.timeline.some((item) => item.content === 'final chunk')).toBe(true);
+  });
+
+  it.each(['session_update', 'type'])('rejects old prompt content expressed through the %s alias', (field) => {
+    useStore.getState().patchThreadRuntime('thread-1', { activePromptRunId: 'run-current' });
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        _client: { source: 'request', promptRunId: 'run-old' },
+        update: {
+          [field]: 'agent_message_chunk',
+          messageId: `old-${field}`,
+          content: { type: 'text', text: 'OLD_ALIAS_CONTENT' },
+        },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
+  });
+
+  it('rejects uncorrelated notification content during the post-stream grace window', () => {
+    useStore.setState((state) => ({
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], status: 'running' },
+      },
+    }));
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-grace',
+      promptDispatched: true,
+      isAwaitingResponse: false,
+      historyReplayActive: false,
+    });
+
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        _client: { source: 'notification' },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'uncorrelated-grace',
+          content: { type: 'text', text: 'UNCORRELATED_GRACE' },
+        },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
+  });
+
+  it('rejects uncorrelated notification content on an idle thread', () => {
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        _client: { source: 'notification' },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'uncorrelated-idle',
+          content: { type: 'text', text: 'UNCORRELATED_IDLE' },
+        },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
+  });
+
+  it('rejects correlated prompt content after its run has already ended', () => {
+    useStore.getState().handleConversationEvent({
+      threadId: 'thread-1',
+      type: 'session/update',
+      detail: {
+        sessionId: 'session-1',
+        _client: { source: 'notification', promptRunId: 'run-finished' },
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'late-after-finish',
+          content: { type: 'text', text: 'LATE_AFTER_FINISH' },
+        },
+      },
+    });
+
+    expect(useStore.getState().threadRuntimeById['thread-1'].timeline).toEqual([]);
+  });
+
+  it('clears prompt runtime state after reconnect failure', () => {
+    useStore.getState().patchThreadRuntime('thread-1', {
+      activePromptRunId: 'run-reconnect',
+      promptDispatched: true,
+      isAwaitingResponse: true,
+      promptStartedAt: 5678,
+      historyReplayActive: true,
+    });
+
+    useStore.getState().handleConversationEvent({ threadId: 'thread-1', type: 'reconnect_failed', detail: {} });
+
+    expect(useStore.getState().threadRuntimeById['thread-1']).toMatchObject({
+      connectionState: 'error',
+      activePromptRunId: null,
+      promptDispatched: false,
+      isAwaitingResponse: false,
+      promptStartedAt: null,
+      historyReplayActive: false,
+    });
+  });
+
+  it('leaves a persisted prompt queue paused when an orphaned run reaches idle', async () => {
+    vi.useFakeTimers();
+    try {
+      const drainThreadPromptQueue = vi.fn().mockResolvedValue(true);
+      useStore.setState({ drainThreadPromptQueue });
+      useStore.getState().patchThreadRuntime('thread-1', {
+        activePromptRunId: 'run-orphaned',
+        promptDispatched: true,
+        isAwaitingResponse: true,
+        promptQueue: [{ id: 'queued-1', text: 'continue' }],
+      });
+
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-1',
+          update: { sessionUpdate: 'status_change', status: 'idle' },
+        },
+      });
+      await vi.runAllTimersAsync();
+
+      expect(drainThreadPromptQueue).not.toHaveBeenCalled();
+      expect(useStore.getState().threadRuntimeById['thread-1'].promptQueue).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders extension and JSON-RPC permission notifications for one tool call only once', () => {

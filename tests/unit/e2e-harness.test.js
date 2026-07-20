@@ -742,7 +742,8 @@ describe('desktop E2E harness public contract', () => {
       const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-job-collision-'));
       const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'collision-first', label: 'launch' });
       const fixtureDir = path.join(layout.runtimeDir, 'fixture');
-      const token = '33'.repeat(16);
+      const tokenBytes = crypto.randomBytes(16);
+      const token = tokenBytes.toString('hex');
       const jobName = `CodeBuddyE2E-${token}`;
       fs.mkdirSync(layout.userDataDir, { recursive: true });
       let ownershipController = null;
@@ -761,7 +762,7 @@ describe('desktop E2E harness public contract', () => {
           onOwnershipController(controller) {
             ownershipController = controller;
           },
-          randomBytesImpl: (size) => Buffer.alloc(size, 0x33),
+          randomBytesImpl: () => Buffer.from(tokenBytes),
         });
         await waitForFixtureMarker(fixtureDir, 'survivor-ready');
 
@@ -1255,26 +1256,59 @@ describe('desktop E2E harness public contract', () => {
       `;
 
       let identities = [];
+      let exitsVerified = false;
       try {
-        const run = spawnSync(process.execPath, ['-e', probe], {
-          encoding: 'utf8',
-          timeout: 25000,
+        const probeProcess = spawn(process.execPath, ['-e', probe], {
+          stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
         });
-        expect(run.status, run.stderr || run.error?.message).toBe(23);
+        const stdout = [];
+        const stderr = [];
+        probeProcess.stdout.on('data', (chunk) => stdout.push(String(chunk)));
+        probeProcess.stderr.on('data', (chunk) => stderr.push(String(chunk)));
+        const run = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            probeProcess.kill('SIGKILL');
+            reject(
+              new Error(
+                'hard watchdog probe did not exit within 25000ms; stdout=' +
+                  stdout.join('') +
+                  '; stderr=' +
+                  stderr.join(''),
+              ),
+            );
+          }, 25000);
+          probeProcess.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+          probeProcess.once('exit', (status, signal) => {
+            clearTimeout(timer);
+            resolve({ status, signal, stdout: stdout.join(''), stderr: stderr.join('') });
+          });
+        });
+        expect(run.status, run.stderr || run.signal || run.stdout).toBe(23);
         identities = JSON.parse(fs.readFileSync(identitiesPath, 'utf8'));
         const emergency = JSON.parse(fs.readFileSync(emergencyPath, 'utf8'));
         expect(emergency.remainingVerifiedProcesses).toMatchObject({ verified: true, count: 0, empty: true });
+        const remainingProcesses = (await driver.listSystemProcesses()).map(driver.normalizeProcessEntry);
         for (const identity of identities) {
-          expect(await exactProcessStillExists(identity), `owned fixture pid ${identity.pid} survived hard exit`).toBe(false);
+          const current = remainingProcesses.find((entry) => entry.pid === identity.pid);
+          expect(
+            Boolean(current && driver.sameProcessIdentity(identity, current)),
+            `owned fixture pid ${identity.pid} survived hard exit`,
+          ).toBe(false);
         }
+        exitsVerified = true;
       } finally {
         signalFixture(fixtureDir, 'shutdown');
-        for (const identity of identities) {
-          try {
-            await waitForExactProcessExit(identity, 5000);
-          } catch (_) {
-            // The assertion above reports an emergency-cleanup failure.
+        if (!exitsVerified) {
+          for (const identity of identities) {
+            try {
+              await waitForExactProcessExit(identity, 5000);
+            } catch (_) {
+              // The assertion above reports an emergency-cleanup failure.
+            }
           }
         }
       }
@@ -1666,6 +1700,42 @@ describe('desktop E2E harness public contract', () => {
     expect(captured.options.timeout).toBeGreaterThan(0);
   });
 
+  it('retries transient Windows process enumeration failures before returning a verified snapshot', async () => {
+    let attempts = 0;
+    const retryDelays = [];
+    const processes = await driver.listSystemProcesses({
+      platform: 'win32',
+      processListRetries: 3,
+      processListRetryDelayMs: 9,
+      waitImpl: async (delayMs) => retryDelays.push(delayMs),
+      execFileImpl(file, args, options, callback) {
+        attempts += 1;
+        if (attempts < 3) {
+          const error = new Error('Get-CimInstance is temporarily unavailable');
+          error.code = 'E_CIM_TRANSIENT';
+          callback(error, '', 'temporary provider failure');
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            pid: 4321,
+            parentPid: 100,
+            name: 'node.exe',
+            executablePath: 'C:\\Program Files\\nodejs\\node.exe',
+            commandLine: 'node fixture.cjs',
+            creationTime: '2026-07-18T00:00:00.000Z',
+          }),
+          '',
+        );
+      },
+    });
+
+    expect(attempts).toBe(3);
+    expect(retryDelays).toEqual([9, 9]);
+    expect(processes).toHaveLength(1);
+    expect(processes[0]).toMatchObject({ pid: 4321, parentPid: 100, name: 'node.exe' });
+  });
   it('Windows termination verifies and kills through one held Process object without exposing identity secrets', async () => {
     const identity = processFixture(4321, 100, 'codebuddy.exe', {
       commandLine: '"C:\\CodeBuddy\\codebuddy.exe" --serve --password top-secret-value',
@@ -3114,6 +3184,34 @@ describe('desktop E2E harness public contract', () => {
     expect(csharpSource).toContain('CanonicalDirectoryPath(projectRoot)');
   });
 
+  it('retries transient Windows quarantine rename failures before removing an owned runtime', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-rename-retry-'));
+    const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'rename-retry', label: 'renderer' });
+    fs.mkdirSync(layout.userDataDir, { recursive: true });
+    const retryDelays = [];
+    let renameAttempts = 0;
+
+    const cleanup = await driver.cleanupRuntimeDir({
+      ...layout,
+      renameRetries: 3,
+      renameRetryDelayMs: 7,
+      waitImpl: async (delayMs) => retryDelays.push(delayMs),
+      renameImpl(source, destination) {
+        renameAttempts += 1;
+        if (renameAttempts < 3) {
+          const error = new Error('runtime profile is still releasing file handles');
+          error.code = 'EPERM';
+          throw error;
+        }
+        fs.renameSync(source, destination);
+      },
+    });
+
+    expect(renameAttempts).toBe(3);
+    expect(retryDelays).toEqual([7, 7]);
+    expect(cleanup.removed).toBe(true);
+    expect(fs.existsSync(layout.runtimeDir)).toBe(false);
+  });
   it('keeps raw Electron profiles outside evidence and safely removes only the owned runtime directory', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-runtime-layout-'));
     const layout = driver.createRuntimeLayout({ projectRoot, runStamp: 'run-1', label: 'renderer' });

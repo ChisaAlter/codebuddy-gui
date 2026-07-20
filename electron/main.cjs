@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, net, dialog, session, Tray, Menu, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net, dialog, session, screen, Tray, Menu, Notification } = require('electron');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
@@ -52,6 +52,16 @@ function readWindowState() {
   } catch (_) {
     return null;
   }
+}
+
+function windowStateIsVisible(state) {
+  if (typeof state?.x !== 'number' || typeof state?.y !== 'number') return true;
+  const minimumVisibleSize = 80;
+  return screen.getAllDisplays().some(({ workArea }) => {
+    const visibleWidth = Math.min(state.x + state.width, workArea.x + workArea.width) - Math.max(state.x, workArea.x);
+    const visibleHeight = Math.min(state.y + state.height, workArea.y + workArea.height) - Math.max(state.y, workArea.y);
+    return visibleWidth >= minimumVisibleSize && visibleHeight >= minimumVisibleSize;
+  });
 }
 
 function writeWindowState(state) {
@@ -548,10 +558,9 @@ function runCapturedProcess(
 }
 
 function runCodeBuddyCli(args, options = {}) {
-  const isWindows = process.platform === 'win32';
-  const command = isWindows ? process.env.ComSpec || 'cmd.exe' : 'codebuddy';
-  const commandArgs = isWindows ? ['/d', '/s', '/c', `codebuddy ${args.join(' ')}`] : args;
-  return runCapturedProcess(command, commandArgs, options);
+  // Always pass argv array with shell:false so Windows does not re-tokenize via cmd.
+  const argv = Array.isArray(args) ? args.map((arg) => String(arg)) : [];
+  return runCapturedProcess('codebuddy', argv, options);
 }
 
 function runSandboxCli(args, timeoutMs = 120000) {
@@ -1443,8 +1452,9 @@ async function createWindow() {
   }
 
   // 恢复上次窗口状态（P0-3）：bounds + isMaximized，最小化不存
-  const savedBounds = readWindowState();
-  closeToTrayHintShown = Boolean(savedBounds?.closeToTrayHintShown);
+  const restoredWindowState = readWindowState();
+  const savedBounds = restoredWindowState && windowStateIsVisible(restoredWindowState) ? restoredWindowState : null;
+  closeToTrayHintShown = Boolean(restoredWindowState?.closeToTrayHintShown);
   const winOpts = {
     width: savedBounds?.width || 1440,
     height: savedBounds?.height || 920,
@@ -1753,6 +1763,7 @@ function parseSseMessagesFromBuffer(buffer) {
   const parts = buffer.split(/\r?\n\r?\n/);
   const rest = parts.pop() || '';
   const messages = [];
+  let parseErrorCount = 0;
   for (const part of parts) {
     const lines = part.split(/\r?\n/);
     const eventType = lines
@@ -1772,10 +1783,11 @@ function parseSseMessagesFromBuffer(buffer) {
           : message,
       );
     } catch (error) {
+      parseErrorCount += 1;
       logStartup(`codebuddy stream JSON parse failed: ${error.message}`);
     }
   }
-  return { messages, rest };
+  return { messages, rest, parseErrorCount };
 }
 
 ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
@@ -1819,6 +1831,32 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
       event.sender.send('codebuddy:streamError', { streamId, error: `ACP stream failed: ${response.status}` });
       return { ok: false, status: response.status };
     }
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (method !== 'GET' && contentType.includes('application/json')) {
+      const text = await response.text();
+      codebuddyStreams.delete(streamId);
+      if (timeoutId) clearTimeout(timeoutId);
+      try {
+        const message = JSON.parse(text);
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('codebuddy:streamMessage', { streamId, message });
+          event.sender.send('codebuddy:streamEnd', {
+            streamId,
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+          });
+        }
+        return { ok: true };
+      } catch (error) {
+        event.sender.send('codebuddy:streamError', {
+          streamId,
+          error: `ACP JSON response parse failed: ${error.message}`,
+        });
+        return { ok: false, error: error.message };
+      }
+    }
+
     const reader = response.body?.getReader?.();
     if (!reader) {
       const text = await response.text().catch(() => '');
@@ -1854,6 +1892,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
         }
       };
       let streamError = null;
+      let parseErrorCount = 0;
       try {
         while (!controller.signal.aborted) {
           const { done, value } = await reader.read();
@@ -1862,6 +1901,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
             if (buffer.trim()) {
               const parsed = parseSseMessagesFromBuffer(`${buffer}\n\n`);
               buffer = parsed.rest;
+              parseErrorCount += parsed.parseErrorCount;
               emitMessages(parsed.messages);
             }
             break;
@@ -1870,6 +1910,7 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseSseMessagesFromBuffer(buffer);
           buffer = parsed.rest;
+          parseErrorCount += parsed.parseErrorCount;
           emitMessages(parsed.messages);
         }
       } catch (error) {
@@ -1890,6 +1931,12 @@ ipcMain.handle('codebuddy:openStream', async (event, request = {}) => {
               ok: response.ok,
               status: response.status,
               statusText: response.statusText,
+              parseErrorCount,
+            });
+          } else if (parseErrorCount > 0) {
+            sender.send('codebuddy:streamError', {
+              streamId,
+              error: `ACP stream contained ${parseErrorCount} invalid event(s)`,
             });
           } else if (method === 'GET' && !controller.signal.aborted) {
             sender.send('codebuddy:streamError', { streamId, error: 'ACP stream closed' });
