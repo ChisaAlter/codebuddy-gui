@@ -77,6 +77,96 @@ describe('store prompt session selection', () => {
     expect(hasCompletePromptResponse(timeline, 'prompt-1', promptStartedAt)).toBe(true);
   });
 
+  it('rejects incomplete prompt responses that only have thinking, tools, or empty assistant text', () => {
+    const promptStartedAt = 1000;
+    const prompt = { id: 'prompt-1', type: 'message', role: 'user', content: 'hello', createdAt: promptStartedAt };
+
+    expect(
+      hasCompletePromptResponse(
+        [prompt, { id: 'think-1', type: 'thinking', content: '…', createdAt: 1100 }],
+        'prompt-1',
+        promptStartedAt,
+      ),
+    ).toBe(false);
+    expect(
+      hasCompletePromptResponse(
+        [prompt, { id: 'tool-1', type: 'tool_call', role: 'assistant', status: 'completed', createdAt: 1100 }],
+        'prompt-1',
+        promptStartedAt,
+      ),
+    ).toBe(false);
+    expect(
+      hasCompletePromptResponse(
+        [prompt, { id: 'empty-1', type: 'message', role: 'assistant', content: '   ', createdAt: 1200 }],
+        'prompt-1',
+        promptStartedAt,
+      ),
+    ).toBe(false);
+    expect(
+      hasCompletePromptResponse(
+        [
+          prompt,
+          { id: 'early-1', type: 'message', role: 'assistant', content: 'partial', createdAt: 1100 },
+          { id: 'tool-1', type: 'tool_call', role: 'assistant', status: 'completed', createdAt: 1200 },
+        ],
+        'prompt-1',
+        promptStartedAt,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not call session/prompt when neither the thread record nor runtime has a session id', async () => {
+    useStore.setState((state) => ({
+      sessionId: null,
+      threadsById: {
+        ...state.threadsById,
+        'thread-1': { ...state.threadsById['thread-1'], sessionId: null },
+      },
+      threadRuntimeById: {
+        ...state.threadRuntimeById,
+        'thread-1': runtime({ sessionId: null }),
+      },
+      ...runtime({ sessionId: null }),
+    }));
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(useStore.getState().error).toContain('尚未完成连接');
+  });
+
+  it('aborts success handling when the thread session changes mid-flight', async () => {
+    request.mockImplementationOnce(async () => {
+      useStore.setState((state) => ({
+        threadsById: {
+          ...state.threadsById,
+          'thread-1': { ...state.threadsById['thread-1'], sessionId: 'session-switched' },
+        },
+        threadRuntimeById: {
+          ...state.threadRuntimeById,
+          'thread-1': {
+            ...state.threadRuntimeById['thread-1'],
+            sessionId: 'session-switched',
+          },
+        },
+      }));
+      return { stopReason: 'end_turn' };
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+
+    expect(request).toHaveBeenCalledWith(
+      'session/prompt',
+      {
+        sessionId: 'session-ready',
+        prompt: [{ type: 'text', text: 'hello' }],
+      },
+      { promptRunId: expect.stringMatching(/^run-/) },
+    );
+    expect(useStore.getState().threadsById['thread-1'].status).not.toBe('error');
+    expect(useStore.getState().error).toBeNull();
+  });
+
   it('uses the connected runtime session while the persisted thread record is still catching up', async () => {
     request.mockImplementationOnce(async () => {
       const promptRunId = useStore.getState().threadRuntimeById['thread-1'].activePromptRunId;

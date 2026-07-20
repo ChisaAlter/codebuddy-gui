@@ -32,6 +32,53 @@ describe('product state sidebar fields', () => {
     expect(normalized.threadsById.t1.archivedAt).toBeNull();
   });
 
+  it('backfills completedAt for finished thinking entries missing an end time', () => {
+    const normalized = normalizeProductState({
+      projectsById: {
+        p1: { id: 'p1', preferences: {} },
+      },
+      projectOrder: ['p1'],
+      threadsById: {
+        t1: {
+          id: 't1',
+          projectId: 'p1',
+          timeline: [
+            {
+              id: 'thought-1',
+              type: 'thinking',
+              createdAt: 1000,
+              streaming: false,
+              completedAt: null,
+              content: '旧思考',
+            },
+            {
+              id: 'thought-2',
+              type: 'thinking',
+              createdAt: 2000,
+              streaming: true,
+              completedAt: null,
+              content: '仍在思考',
+            },
+          ],
+        },
+      },
+      threadOrderByProject: { p1: ['t1'] },
+      activeProjectId: 'p1',
+      activeThreadId: 't1',
+    });
+
+    expect(normalized.threadsById.t1.timeline[0]).toMatchObject({
+      id: 'thought-1',
+      completedAt: 1000,
+      streaming: false,
+    });
+    expect(normalized.threadsById.t1.timeline[1]).toMatchObject({
+      id: 'thought-2',
+      completedAt: null,
+      streaming: true,
+    });
+  });
+
   it('preserves explicit folding, pinning, and archive values', () => {
     const normalized = normalizeProductState({
       projectsById: {

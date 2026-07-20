@@ -38,7 +38,7 @@ describe('ReplicaSidebar layout', () => {
 
   it('moves settings and keybindings out of the scrolling navigation into the footer', () => {
     expect(replicaSidebarMainGroups().map((group) => group.id)).not.toContain('preferences');
-    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['models', 'settings', 'keybindings']);
+    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['docs', 'models', 'settings', 'keybindings']);
   });
 
   it('omits the redundant chat button from primary navigation', () => {

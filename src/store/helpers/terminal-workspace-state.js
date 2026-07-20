@@ -1,0 +1,86 @@
+export function makePane(title = 'Terminal') {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title,
+    status: 'idle',
+    sessionId: null,
+    output: '',
+    split: 'single',
+  };
+}
+
+export function terminalStateFromProject(project, resetSessions = false) {
+  const saved = project?.preferences?.terminalState;
+  const panes =
+    Array.isArray(saved?.panes) && saved.panes.length
+      ? saved.panes.map((pane) => ({
+          ...makePane(pane.title || 'Terminal'),
+          ...pane,
+          output: String(pane.output || '').slice(-200000),
+          sessionId: resetSessions ? null : pane.sessionId || null,
+          status: resetSessions ? 'idle' : pane.status || 'idle',
+        }))
+      : [makePane()];
+  const activePaneId = panes.some((pane) => pane.id === saved?.activePaneId) ? saved.activePaneId : panes[0].id;
+  return { panes, activePaneId };
+}
+
+export function workspaceStateFromProject(project) {
+  const saved = project?.preferences?.workspaceState || {};
+  const selectedFile = typeof saved.selectedFile === 'string' && saved.selectedFile ? saved.selectedFile : null;
+  const fileDirty = Boolean(selectedFile && saved.fileDirty && typeof saved.filePreview === 'string');
+  return {
+    fileCwd: typeof saved.fileCwd === 'string' && saved.fileCwd ? saved.fileCwd : project?.workspacePath || '.',
+    selectedFile,
+    filePreview: fileDirty ? saved.filePreview : '',
+    fileSavedContent: fileDirty && typeof saved.fileSavedContent === 'string' ? saved.fileSavedContent : '',
+    fileDirty,
+    updatedAt: saved.updatedAt || null,
+  };
+}
+
+export function workspaceStateSnapshot(state, projectId, discardDirty = false) {
+  const project = state.projectsById?.[projectId];
+  const selectedFile = state.activeProjectId === projectId ? state.selectedFile : null;
+  const fileDirty = !discardDirty && Boolean(selectedFile && state.fileDirty);
+  return {
+    fileCwd:
+      state.activeProjectId === projectId
+        ? state.fileCwd || project?.workspacePath || '.'
+        : project?.workspacePath || '.',
+    selectedFile: selectedFile || null,
+    fileDirty,
+    filePreview: fileDirty ? String(state.filePreview || '') : '',
+    fileSavedContent: fileDirty ? String(state.fileSavedContent || '') : '',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function resetProjectRuntimeViews() {
+  return {
+    info: null,
+    infoLoaded: false,
+    settings: null,
+    settingsLoaded: false,
+    sessions: [],
+    workers: [],
+    workersError: null,
+    plugins: [],
+    marketplaces: [],
+    pluginError: null,
+    marketplaceError: null,
+    pluginBusy: null,
+    metrics: null,
+    metricsError: null,
+    stats: null,
+    statsError: null,
+    statsLoading: false,
+    sessionStats: null,
+    scheduledTasks: [],
+    scheduledTasksError: null,
+    taskTemplates: [],
+    taskTemplatesError: null,
+    taskTemplatesLoading: false,
+    traces: [],
+  };
+}

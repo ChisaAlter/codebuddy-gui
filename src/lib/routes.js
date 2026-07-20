@@ -16,6 +16,7 @@ export const ROUTES = [
   'metrics',
   'logs',
   'workers',
+  'docs',
   'keybindings',
   'models',
   'settings',

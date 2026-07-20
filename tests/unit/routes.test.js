@@ -69,6 +69,7 @@ describe('ROUTES 常量', () => {
     expect(ROUTES).toContain('metrics');
     expect(ROUTES).toContain('logs');
     expect(ROUTES).toContain('workers');
+    expect(ROUTES).toContain('docs');
     expect(ROUTES).toContain('models');
     expect(ROUTES).toContain('settings');
     expect(ROUTES).toContain('keybindings');

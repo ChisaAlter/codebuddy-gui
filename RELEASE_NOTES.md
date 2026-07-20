@@ -2,6 +2,12 @@
 
 1.0.1 是面向 CodeBuddy CLI 2.122.0 的桌面稳定性修复版本，重点收口新会话发送、长任务、权限卡、偏好持久化和侧栏快捷键。
 
+## 开发主干（未发版）
+
+- 设置页 CLI 维护增加兼容状态（最低 / 推荐版本）；低于最低版本或 CLI 缺失时 **硬阻断** 项目运行时启动，并提供一键安装推荐版本。
+- 关键路径补充集成测试：新会话 sessionId、权限卡去重响应、退出同步 flush、product-state 磁盘恢复。
+- 渐进拆分 `store.js`：抽出 helpers 与 slices（product-persist、projects-runtime、sessions-chat），对外 `useStore` API 不变。
+
 ## 本版本重点
 
 - 修复新会话刚连接时线程记录尚未写入 sessionId，首条消息可能以 `null` 调用 `session/prompt` 并返回 `Invalid params` 的竞态。

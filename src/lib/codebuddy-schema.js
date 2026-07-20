@@ -37,6 +37,7 @@ export const NAV_GROUPS = [
     id: 'preferences',
     title: '配置',
     items: [
+      { id: 'docs', label: '文档' },
       { id: 'models', label: '模型' },
       { id: 'settings', label: '设置' },
       { id: 'keybindings', label: '快捷键' },

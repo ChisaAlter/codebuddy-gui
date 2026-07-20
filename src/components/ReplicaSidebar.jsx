@@ -159,8 +159,6 @@ export default function ReplicaSidebar() {
     connectionState,
     newSession,
     newSessionBusy,
-    newSessionProjectId,
-    newSessionError,
     changesCount,
     projectNavigationBusy,
     projectNavigationTargetId,
@@ -191,8 +189,6 @@ export default function ReplicaSidebar() {
       connectionState: state.connectionState,
       newSession: state.newSession,
       newSessionBusy: state.newSessionBusy,
-      newSessionProjectId: state.newSessionProjectId,
-      newSessionError: state.newSessionError,
       changesCount: state.changesCount,
       projectNavigationBusy: state.projectNavigationBusy,
       projectNavigationTargetId: state.projectNavigationTargetId,
@@ -378,7 +374,7 @@ export default function ReplicaSidebar() {
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
-              className="flex min-h-9 w-full items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-card)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] shadow-sm transition-colors hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+              className="flex min-h-9 w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
               disabled={newSessionBusy || projectNavigationBusy}
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
@@ -395,9 +391,6 @@ export default function ReplicaSidebar() {
               )}
               {projectNavigationBusy ? '切换中...' : newSessionBusy ? '正在创建...' : '新对话'}
             </button>
-            {newSessionError && newSessionProjectId === activeProjectId ? (
-              <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{newSessionError}</div>
-            ) : null}
           </div>
         )}
 

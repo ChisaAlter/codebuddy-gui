@@ -71,26 +71,40 @@ export function createThreadRecord(projectId, overrides = {}) {
 
 function normalizeTimelineEntry(entry) {
   if (!entry || typeof entry !== 'object') return entry;
-  const historyMode = entry.raw?._meta?.['codebuddy.ai']?.mode === 'history';
-  const rawText = entry.raw?.content?.text;
-  const content = entry.content;
-  if (!historyMode || typeof rawText !== 'string' || !rawText || typeof content !== 'string') return entry;
+  let normalized = entry;
+
+  // 已结束的思考若缺少 completedAt，回填为 createdAt，避免 UI 把“消息年龄”显示成思考用时。
+  if (normalized.type === 'thinking' && !normalized.streaming) {
+    const completedAt = Number(normalized.completedAt);
+    if (!Number.isFinite(completedAt) || completedAt <= 0) {
+      const startedAt = Number(normalized.createdAt);
+      normalized = {
+        ...normalized,
+        completedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : null,
+      };
+    }
+  }
+
+  const historyMode = normalized.raw?._meta?.['codebuddy.ai']?.mode === 'history';
+  const rawText = normalized.raw?.content?.text;
+  const content = normalized.content;
+  if (!historyMode || typeof rawText !== 'string' || !rawText || typeof content !== 'string') return normalized;
   const repeatCount = content.length / rawText.length;
   const repeatedContent = Number.isInteger(repeatCount)
     && repeatCount >= 2
     && rawText.repeat(repeatCount) === content;
-  const metaText = entry.meta?.content?.text;
+  const metaText = normalized.meta?.content?.text;
   const corruptedMeta = typeof metaText === 'string'
     && metaText.includes('\uFFFD')
     && !rawText.includes('\uFFFD');
-  if (!repeatedContent && !corruptedMeta) return entry;
+  if (!repeatedContent && !corruptedMeta) return normalized;
   return {
-    ...entry,
+    ...normalized,
     ...(repeatedContent ? { content: rawText } : {}),
     ...(corruptedMeta ? {
       meta: {
-        ...entry.meta,
-        content: { ...entry.meta.content, text: rawText },
+        ...normalized.meta,
+        content: { ...normalized.meta.content, text: rawText },
       },
     } : {}),
   };

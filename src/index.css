@@ -1420,6 +1420,34 @@ select {
     0 8px 24px rgba(15, 23, 42, 0.08),
     0 1px 3px rgba(15, 23, 42, 0.08);
 }
+.chat-composer-resize-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+  margin: 0;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.chat-composer-resize-handle:hover .chat-composer-resize-grip,
+.chat-composer-resize-handle:active .chat-composer-resize-grip {
+  background: var(--color-text-muted);
+}
+.chat-composer-resize-grip {
+  width: 36px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-border-default);
+  transition: background 0.15s ease;
+}
+.chat-composer-input {
+  min-height: 52px;
+  max-height: min(50vh, 360px);
+  overflow-y: auto;
+  resize: none;
+}
 .responsive-tool-grid,
 .responsive-card-grid,
 .responsive-plugin-grid {

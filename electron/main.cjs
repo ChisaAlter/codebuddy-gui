@@ -21,6 +21,12 @@ const {
   normalizeExternalHttpUrl,
   rendererOriginForEntry,
 } = require('./navigation-policy.cjs');
+const {
+  RECOMMENDED_VERSION,
+  buildCompatStatus,
+  assertCliCompatibleForRuntime,
+} = require('./cli-compat.cjs');
+const { resolveCodeBuddySpawnSpec } = require('./codebuddy-cli-path.cjs');
 
 const isDev = !app.isPackaged;
 
@@ -558,9 +564,13 @@ function runCapturedProcess(
 }
 
 function runCodeBuddyCli(args, options = {}) {
-  // Always pass argv array with shell:false so Windows does not re-tokenize via cmd.
+  // Resolve Windows npm shims (codebuddy.cmd) to node + JS entry so shell:false works.
   const argv = Array.isArray(args) ? args.map((arg) => String(arg)) : [];
-  return runCapturedProcess('codebuddy', argv, options);
+  const spec = resolveCodeBuddySpawnSpec(argv, options.env || process.env);
+  return runCapturedProcess(spec.command, spec.args, {
+    ...options,
+    env: spec.env,
+  });
 }
 
 function runSandboxCli(args, timeoutMs = 120000) {
@@ -663,6 +673,7 @@ async function startBackgroundSession(payload = {}) {
   if (prompt.length > 20000) throw new Error('后台任务内容不能超过 20000 个字符');
 
   let result;
+  const bgEnv = resolveCodeBuddySpawnSpec(['--version'], process.env).env || process.env;
   if (process.platform === 'win32') {
     const windowsPowerShell = path.join(
       process.env.SystemRoot || 'C:\\Windows',
@@ -685,12 +696,13 @@ async function startBackgroundSession(payload = {}) {
       ],
       {
         cwd,
-        env: { ...process.env, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
+        env: { ...bgEnv, CODEBUDDY_GUI_BG_NAME: name, CODEBUDDY_GUI_BG_PROMPT: prompt },
         timeoutMs: 60000,
       },
     );
   } else {
-    result = await runCapturedProcess('codebuddy', ['--bg', '--name', name, '--', prompt], { cwd, timeoutMs: 60000 });
+    const spec = resolveCodeBuddySpawnSpec(['--bg', '--name', name, '--', prompt], bgEnv);
+    result = await runCapturedProcess(spec.command, spec.args, { cwd, env: spec.env, timeoutMs: 60000 });
   }
   let snapshot = await listBackgroundSessions();
   for (let attempt = 0; attempt < 4 && !snapshot.sessions.some((item) => item.name === name); attempt += 1) {
@@ -935,17 +947,52 @@ function parseCodeBuddyCliVersion(value) {
 }
 
 async function getCodeBuddyCliInfo() {
-  const result = await runCodeBuddyCli(['--version'], {
-    timeoutMs: 10000,
-    maxOutputBytes: 64 * 1024,
-    timeoutMessage: '读取 CodeBuddy CLI 版本超过 10 秒，已停止命令',
-  });
-  const output = stripTerminalFormatting(result.output).trim();
-  return {
-    version: parseCodeBuddyCliVersion(output),
-    output,
-    truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
-  };
+  try {
+    const result = await runCodeBuddyCli(['--version'], {
+      timeoutMs: 10000,
+      maxOutputBytes: 64 * 1024,
+      timeoutMessage: '读取 CodeBuddy CLI 版本超过 10 秒，已停止命令',
+    });
+    const output = stripTerminalFormatting(result.output).trim();
+    let version = null;
+    let parseError = null;
+    try {
+      version = parseCodeBuddyCliVersion(output);
+    } catch (error) {
+      parseError = error;
+    }
+    if (!version) {
+      return {
+        version: null,
+        output,
+        truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+        compat: buildCompatStatus(null, { unknown: true }),
+        error: parseError?.message || '无法识别 CodeBuddy CLI 版本',
+      };
+    }
+    return {
+      version,
+      output,
+      truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
+      compat: buildCompatStatus(version),
+    };
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    const missing = /not found|ENOENT|不是内部或外部命令|无法识别|未找到 CodeBuddy CLI/i.test(message);
+    return {
+      version: null,
+      output: message,
+      truncated: false,
+      compat: buildCompatStatus(null, missing ? { missing: true } : { unknown: true }),
+      error: message || '读取 CodeBuddy CLI 版本失败',
+    };
+  }
+}
+
+async function ensureCodeBuddyCliCompatibleForRuntime() {
+  const info = await getCodeBuddyCliInfo();
+  assertCliCompatibleForRuntime(info.compat);
+  return info;
 }
 
 async function runCodeBuddyCliDoctor() {
@@ -962,6 +1009,12 @@ async function runCodeBuddyCliDoctor() {
 
 async function updateCodeBuddyCli() {
   const before = await getCodeBuddyCliInfo();
+  if (!before.version) {
+    throw new Error(
+      before.error ||
+        `未找到可用的 CodeBuddy CLI，无法执行 update。请先安装推荐版本 v${RECOMMENDED_VERSION}。`,
+    );
+  }
   const result = await runCodeBuddyCli(['update'], {
     timeoutMs: 5 * 60 * 1000,
     maxOutputBytes: 1024 * 1024,
@@ -972,6 +1025,7 @@ async function updateCodeBuddyCli() {
     beforeVersion: before.version,
     afterVersion: after.version,
     changed: before.version !== after.version,
+    compat: after.compat,
     output: stripTerminalFormatting(result.output).trim() || '更新命令已完成，CodeBuddy CLI 未返回文本输出。',
     truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
   };
@@ -990,17 +1044,35 @@ function validateCodeBuddyInstallTarget(value) {
 async function installCodeBuddyCli(targetValue) {
   const target = validateCodeBuddyInstallTarget(targetValue);
   const before = await getCodeBuddyCliInfo();
-  const result = await runCodeBuddyCli(['install', target], {
-    timeoutMs: 10 * 60 * 1000,
-    maxOutputBytes: 1024 * 1024,
-    timeoutMessage: 'CodeBuddy CLI 安装超过 10 分钟，已停止命令。请在终端中检查当前安装状态。',
-  });
+  let result;
+  try {
+    result = await runCodeBuddyCli(['install', target], {
+      timeoutMs: 10 * 60 * 1000,
+      maxOutputBytes: 1024 * 1024,
+      timeoutMessage: 'CodeBuddy CLI 安装超过 10 分钟，已停止命令。请在终端中检查当前安装状态。',
+    });
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (/not found|ENOENT|不是内部或外部命令|未找到 CodeBuddy CLI/i.test(message)) {
+      throw new Error(
+        `未找到 codebuddy 命令，无法执行安装。请先按官方文档安装 CodeBuddy CLI，再回到设置安装推荐版本 v${RECOMMENDED_VERSION}。原始错误: ${message}`,
+      );
+    }
+    throw error;
+  }
   const after = await getCodeBuddyCliInfo();
+  if (!after.version) {
+    throw new Error(
+      after.error ||
+        `安装命令已完成，但仍无法读取 CodeBuddy CLI 版本。请确认 PATH 中存在 codebuddy，并安装推荐版本 v${RECOMMENDED_VERSION}。`,
+    );
+  }
   return {
     target,
-    beforeVersion: before.version,
+    beforeVersion: before.version || null,
     afterVersion: after.version,
     changed: before.version !== after.version,
+    compat: after.compat,
     output: stripTerminalFormatting(result.output).trim() || '安装命令已完成，CodeBuddy CLI 未返回文本输出。',
     truncated: Boolean(result.stdoutTruncated || result.stderrTruncated),
   };
@@ -1126,10 +1198,16 @@ const runtimeManager = createCodeBuddyRuntimeManager({
   },
 });
 
-ipcMain.handle('runtime:ensure', (_event, request = {}) => runtimeManager.ensure(request.projectId, request.cwd));
+ipcMain.handle('runtime:ensure', async (_event, request = {}) => {
+  await ensureCodeBuddyCliCompatibleForRuntime();
+  return runtimeManager.ensure(request.projectId, request.cwd);
+});
 ipcMain.handle('runtime:list', () => runtimeManager.list());
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
-ipcMain.handle('runtime:restart', (_event, request = {}) => runtimeManager.restart(request.projectId, request.cwd));
+ipcMain.handle('runtime:restart', async (_event, request = {}) => {
+  await ensureCodeBuddyCliCompatibleForRuntime();
+  return runtimeManager.restart(request.projectId, request.cwd);
+});
 ipcMain.handle('notification:consumeOpenThread', () => {
   const target = pendingNotificationTarget;
   pendingNotificationTarget = null;

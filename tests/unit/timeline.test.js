@@ -182,6 +182,21 @@ describe('closeAssistantStream', () => {
     now.mockRestore();
   });
 
+  it('关闭流时给缺少 completedAt 的已结束思考补全结束时间', () => {
+    const closed = closeAssistantStream([
+      {
+        id: 'legacy-thought',
+        type: 'thinking',
+        role: 'assistant',
+        createdAt: 1000,
+        streaming: false,
+        completedAt: null,
+      },
+    ]);
+
+    expect(closed[0]).toMatchObject({ streaming: false, completedAt: 1000 });
+  });
+
   it('非 assistant 条目不变', () => {
     const tl = pushUserMessage([], 'hi');
     const closed = closeAssistantStream(tl);

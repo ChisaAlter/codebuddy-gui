@@ -1,0 +1,128 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { createProductStateStore, emptyProductState } = require('../../electron/product-state.cjs');
+
+describe('electron product-state store', () => {
+  /** @type {string[]} */
+  const tempDirs = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeStore() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebuddy-product-state-'));
+    tempDirs.push(dir);
+    const logs = [];
+    const store = createProductStateStore(dir, (message) => logs.push(message));
+    return { dir, store, logs };
+  }
+
+  it('round-trips save and load', () => {
+    const { store } = makeStore();
+    const saved = store.save({
+      version: 1,
+      projectsById: {
+        'project-1': {
+          id: 'project-1',
+          name: 'Demo',
+          workspacePath: 'C:/Demo',
+          preferences: { sidebarExpanded: true },
+        },
+      },
+      projectOrder: ['project-1'],
+      threadsById: {
+        'thread-1': {
+          id: 'thread-1',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          title: 'Chat',
+          timeline: [{ id: 'm1', type: 'message', role: 'user', content: 'hi' }],
+          pinned: false,
+          archivedAt: null,
+        },
+      },
+      threadOrderByProject: { 'project-1': ['thread-1'] },
+      activeProjectId: 'project-1',
+      activeThreadId: 'thread-1',
+      guiSettings: { theme: 'dark' },
+    });
+
+    expect(saved.activeProjectId).toBe('project-1');
+    expect(store.load().threadsById['thread-1'].timeline[0].content).toBe('hi');
+    expect(store.load().guiSettings.theme).toBe('dark');
+  });
+
+  it('recovers from backup when primary JSON is corrupt', () => {
+    const { dir, store, logs } = makeStore();
+    // First save creates primary; second save promotes primary to .bak.
+    store.save({
+      projectsById: { 'project-1': { id: 'project-1', preferences: {} } },
+      projectOrder: ['project-1'],
+      threadsById: {},
+      threadOrderByProject: { 'project-1': [] },
+      activeProjectId: 'project-1',
+      activeThreadId: null,
+      guiSettings: { theme: 'light' },
+    });
+    store.save({
+      projectsById: { 'project-1': { id: 'project-1', preferences: {} } },
+      projectOrder: ['project-1'],
+      threadsById: {},
+      threadOrderByProject: { 'project-1': [] },
+      activeProjectId: 'project-1',
+      activeThreadId: null,
+      guiSettings: { theme: 'dark' },
+    });
+
+    fs.writeFileSync(store.stateFile, '{not-json', 'utf8');
+    const loaded = store.load();
+    expect(loaded.guiSettings.theme).toBe('light');
+    expect(logs.some((line) => /recovered|quarantine|Invalid product state/i.test(line))).toBe(true);
+    expect(fs.existsSync(store.stateFile)).toBe(true);
+    expect(fs.readdirSync(dir).some((name) => name.startsWith('product-state.invalid-'))).toBe(true);
+  });
+
+  it('writes atomically and keeps a backup of the previous primary file', () => {
+    const { store } = makeStore();
+    store.save({
+      projectsById: {},
+      projectOrder: [],
+      threadsById: {},
+      threadOrderByProject: {},
+      activeProjectId: null,
+      activeThreadId: null,
+      guiSettings: { step: 1 },
+    });
+    store.save({
+      projectsById: {},
+      projectOrder: [],
+      threadsById: {},
+      threadOrderByProject: {},
+      activeProjectId: null,
+      activeThreadId: null,
+      guiSettings: { step: 2 },
+    });
+
+    expect(fs.existsSync(`${store.stateFile}.tmp`)).toBe(false);
+    expect(fs.existsSync(`${store.stateFile}.bak`)).toBe(true);
+    const backup = JSON.parse(fs.readFileSync(`${store.stateFile}.bak`, 'utf8'));
+    const primary = JSON.parse(fs.readFileSync(store.stateFile, 'utf8'));
+    expect(backup.guiSettings.step).toBe(1);
+    expect(primary.guiSettings.step).toBe(2);
+  });
+
+  it('returns empty state when primary and backup are both invalid', () => {
+    const { store } = makeStore();
+    fs.writeFileSync(store.stateFile, '{bad', 'utf8');
+    fs.writeFileSync(`${store.stateFile}.bak`, '{also-bad', 'utf8');
+    expect(store.load()).toEqual(emptyProductState());
+  });
+});

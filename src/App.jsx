@@ -25,6 +25,7 @@ const ReplicaRemoteControlView = lazy(() => import('./components/ReplicaRemoteCo
 const ReplicaInstancesView = lazy(() => import('./components/ReplicaInstancesView'));
 const ReplicaMonitorView = lazy(() => import('./components/ReplicaMonitorView'));
 const ReplicaKeybindingsView = lazy(() => import('./components/ReplicaKeybindingsView'));
+const ReplicaDocsView = lazy(() => import('./components/ReplicaDocsView'));
 
 function WindowControls({ height = 'h-12' }) {
   return (
@@ -437,6 +438,7 @@ const ROUTE_TITLES = {
   traces: '链路',
   monitor: '监控',
   logs: '日志',
+  docs: '文档',
   models: '模型',
   settings: '设置',
   keybindings: '快捷键',
@@ -596,6 +598,9 @@ function MainContent() {
     case 'terminal':
       content = <ReplicaTerminalView />;
       break;
+    case 'docs':
+      content = <ReplicaDocsView />;
+      break;
     case 'models':
       content = <ReplicaModelsView />;
       break;
@@ -679,6 +684,36 @@ function GlobalErrorNotice() {
       <button className="btn-ghost shrink-0 px-2 py-1 text-xs" onClick={clearError} aria-label="关闭错误提示">
         关闭
       </button>
+    </div>
+  );
+}
+
+function ToastStack() {
+  const toasts = useStore((state) => state.toasts);
+  const dismissToast = useStore((state) => state.dismissToast);
+  if (!Array.isArray(toasts) || toasts.length === 0) return null;
+  return (
+    <div className="toast-container" role="status" aria-live="polite">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`toast ${
+            toast.type === 'error' ? 'toast-error' : toast.type === 'success' ? 'toast-success' : 'toast-info'
+          }`}
+        >
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[var(--color-text-primary)]">
+            {toast.message}
+          </span>
+          <button
+            type="button"
+            className="btn-ghost shrink-0 px-2 py-1 text-xs"
+            onClick={() => dismissToast(toast.id)}
+            aria-label="关闭提示"
+          >
+            关闭
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -867,6 +902,7 @@ export default function App() {
             <MainContent />
           </div>
           <GlobalErrorNotice />
+          <ToastStack />
         </>
       )}
       <DirtyFileConfirmDialog />

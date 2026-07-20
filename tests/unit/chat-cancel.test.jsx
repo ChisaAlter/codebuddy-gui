@@ -62,6 +62,7 @@ import { useStore } from '../../src/store';
 import ReplicaChatView, {
   formatThinkingDuration,
   getResponseActivityLabel,
+  resolveThinkingEndedAt,
 } from '../../src/components/ReplicaChatView';
 
 useStore.getState = () => ({
@@ -416,5 +417,24 @@ describe('ReplicaChatView cancellation', () => {
   it('does not render a completed sub-second thought as zero seconds', () => {
     expect(formatThinkingDuration(1000, 1500, false)).toBe('<1 秒');
     expect(formatThinkingDuration(1000, 5500, false)).toBe('4 秒');
+  });
+
+  it('does not treat message age as thinking duration when completedAt is missing', () => {
+    const now = 1000 + 63 * 3600 * 1000 + 8 * 60 * 1000;
+    const endedAt = resolveThinkingEndedAt(
+      { type: 'thinking', createdAt: 1000, streaming: false, completedAt: null },
+      now,
+    );
+    expect(endedAt).toBe(1000);
+    expect(formatThinkingDuration(1000, endedAt, false)).toBe('<1 秒');
+  });
+
+  it('keeps live thinking duration while the thought is still streaming', () => {
+    const endedAt = resolveThinkingEndedAt(
+      { type: 'thinking', createdAt: 1000, streaming: true, completedAt: null },
+      6500,
+    );
+    expect(endedAt).toBe(6500);
+    expect(formatThinkingDuration(1000, endedAt, true)).toBe('5 秒');
   });
 });

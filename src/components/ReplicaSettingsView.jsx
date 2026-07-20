@@ -387,9 +387,15 @@ export default function ReplicaSettingsView() {
       const value = await getCliMaintenanceInfo();
       if (!mountedRef.current) return null;
       setCliInfo(value);
+      if (value?.compat?.status === 'missing' || value?.compat?.status === 'outdated' || value?.compat?.status === 'unknown') {
+        setCliInfoError(value.compat.message || value.error || 'CodeBuddy CLI 版本不可用');
+      }
       return value;
     } catch (error) {
-      if (mountedRef.current) setCliInfoError(error?.message || '读取 CodeBuddy CLI 版本失败');
+      if (mountedRef.current) {
+        setCliInfo(null);
+        setCliInfoError(error?.message || '读取 CodeBuddy CLI 版本失败');
+      }
       return null;
     } finally {
       if (mountedRef.current && showLoading) setCliInfoLoading(false);
@@ -648,7 +654,12 @@ export default function ReplicaSettingsView() {
     try {
       const result = await updateCodeBuddyCli();
       if (!mountedRef.current) return;
-      setCliInfo((current) => ({ ...(current || {}), version: result.afterVersion, output: result.afterVersion }));
+      setCliInfo((current) => ({
+        ...(current || {}),
+        version: result.afterVersion,
+        output: result.afterVersion,
+        compat: result.compat || current?.compat,
+      }));
       setCliOutput({ title: '更新输出', content: result.output, truncated: result.truncated });
       setCliUpdateOpen(false);
       if (result.changed) {
@@ -660,6 +671,7 @@ export default function ReplicaSettingsView() {
       } else {
         setCliNotice({ type: 'success', message: `CodeBuddy CLI 已是当前版本 ${result.afterVersion}。` });
       }
+      await loadCliInfo({ showLoading: false });
     } catch (error) {
       if (!mountedRef.current) return;
       const message = error?.message || 'CodeBuddy CLI 更新失败';
@@ -682,16 +694,22 @@ export default function ReplicaSettingsView() {
     try {
       const result = await installCodeBuddyCli(target);
       if (!mountedRef.current) return;
-      setCliInfo((current) => ({ ...(current || {}), version: result.afterVersion, output: result.afterVersion }));
+      setCliInfo((current) => ({
+        ...(current || {}),
+        version: result.afterVersion,
+        output: result.afterVersion,
+        compat: result.compat || current?.compat,
+      }));
       setCliOutput({ title: `安装输出 · ${result.target}`, content: result.output, truncated: result.truncated });
       setCliInstallOpen(false);
       setCliRestartNeeded(true);
       setCliNotice({
         type: 'success',
         message: result.changed
-          ? `CodeBuddy CLI 已从 ${result.beforeVersion} 切换到 ${result.afterVersion}。现有项目运行时仍在使用安装前的进程。`
+          ? `CodeBuddy CLI 已从 ${result.beforeVersion || '未知'} 切换到 ${result.afterVersion}。现有项目运行时仍在使用安装前的进程。`
           : `CodeBuddy CLI ${result.afterVersion} 安装命令已完成。请重启现有项目运行时以重新加载安装结果。`,
       });
+      await loadCliInfo({ showLoading: false });
     } catch (error) {
       if (!mountedRef.current) return;
       const message = error?.message || 'CodeBuddy CLI 版本安装失败';
@@ -729,6 +747,34 @@ export default function ReplicaSettingsView() {
       if (mountedRef.current) setCliOperation('');
     }
   };
+
+  const installRecommendedCli = async () => {
+    const target = cliInfo?.compat?.recommendedVersion || '2.122.0';
+    await confirmCliInstall(target);
+  };
+
+  const cliCompat = cliInfo?.compat || null;
+  const cliBlocked = cliCompat && ['missing', 'outdated', 'unknown'].includes(cliCompat.status);
+  const cliCompatLabel =
+    cliCompat?.status === 'ok'
+      ? '兼容'
+      : cliCompat?.status === 'newer'
+        ? '高于验证版本'
+        : cliCompat?.status === 'outdated'
+          ? '过低'
+          : cliCompat?.status === 'missing'
+            ? '未安装'
+            : cliCompat?.status === 'unknown'
+              ? '无法识别'
+              : cliInfoLoading
+                ? '检查中'
+                : '未知';
+  const cliCompatTone =
+    cliCompat?.status === 'ok'
+      ? 'text-[var(--color-accent-green)]'
+      : cliCompat?.status === 'newer'
+        ? 'text-[var(--color-accent-yellow)]'
+        : 'text-[var(--color-accent-red)]';
 
   const copyCliOutput = async () => {
     if (!cliOutput?.content) return;
@@ -995,9 +1041,12 @@ export default function ReplicaSettingsView() {
         <div className="settings-group">
           <h2 className="settings-heading">CodeBuddy CLI 维护</h2>
           <div className="overflow-hidden rounded-lg border border-[var(--color-border-default)]">
-            <SettingRow label="已安装版本" desc={cliInfoError || '读取当前由 CodeBuddy GUI 调用的本机 CLI 版本'} control={
+            <SettingRow
+              label="已安装版本"
+              desc={cliInfoError || cliCompat?.message || '读取当前由 CodeBuddy GUI 调用的本机 CLI 版本；低于最低支持版本时将阻止启动项目运行时'}
+              control={
               <div className="flex items-center gap-2">
-                <span className={`text-xs ${cliInfoError ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-secondary)]'}`}>
+                <span className={`text-xs ${cliInfoError || cliBlocked ? 'text-[var(--color-accent-red)]' : 'text-[var(--color-text-secondary)]'}`}>
                   {cliInfoLoading ? '读取中...' : cliInfo?.version ? `v${cliInfo.version}` : '不可用'}
                 </span>
                 <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={cliInfoLoading || Boolean(cliOperation)} onClick={() => loadCliInfo()}>
@@ -1005,7 +1054,29 @@ export default function ReplicaSettingsView() {
                 </button>
               </div>
             } />
-            <SettingRow label="维护操作" desc="可诊断、更新到最新版，或安装指定版本进行回滚" control={
+            <SettingRow
+              label="兼容状态"
+              desc={`最低支持 v${cliCompat?.minVersion || '2.122.0'} · 推荐 v${cliCompat?.recommendedVersion || '2.122.0'}。过低或缺失时拒绝启动项目运行时。`}
+              control={<span className={`text-xs font-medium ${cliCompatTone}`}>{cliCompatLabel}</span>}
+            />
+            {cliBlocked ? (
+              <SettingRow
+                label="修复兼容性"
+                desc="一键安装 GUI 验证过的推荐 CLI 版本。安装后需重启当前项目运行时。"
+                control={
+                  <button
+                    className="btn-primary shrink-0 px-2 py-1 text-[11px]"
+                    disabled={Boolean(cliOperation)}
+                    onClick={installRecommendedCli}
+                  >
+                    {cliOperation === 'install'
+                      ? '安装中...'
+                      : `安装推荐版本 v${cliCompat?.recommendedVersion || '2.122.0'}`}
+                  </button>
+                }
+              />
+            ) : null}
+            <SettingRow label="维护操作" desc="可诊断、更新到最新版，或安装指定版本进行回滚。更新到高于验证版本时可能出现未覆盖的行为差异。" control={
               <div className="flex flex-wrap items-center justify-end gap-1">
                 <button className="btn-ghost shrink-0 px-2 py-1 text-[11px]" disabled={Boolean(cliOperation)} onClick={runCliDiagnostics}>
                   {cliOperation === 'doctor' ? '诊断中...' : '运行诊断'}
@@ -1111,7 +1182,7 @@ export default function ReplicaSettingsView() {
       <ActionConfirmDialog
         open={cliUpdateOpen}
         title="检查并更新 CodeBuddy CLI？"
-        description={<><div>将运行真实的 <span className="font-mono text-[var(--color-text-primary)]">codebuddy update</span>。该命令会检查新版本，并在可用时直接修改本机 CLI 安装。</div><div className="mt-2">更新不会自动重启已经运行的项目进程。版本变化后，设置页会提供当前项目运行时重启入口。</div></>}
+        description={<><div>将运行真实的 <span className="font-mono text-[var(--color-text-primary)]">codebuddy update</span>。该命令会检查新版本，并在可用时直接修改本机 CLI 安装。</div><div className="mt-2">若更新后的版本高于 GUI 验证版本，部分功能可能未覆盖验证。更新不会自动重启已经运行的项目进程；版本变化后请使用设置页的运行时重启入口。</div></>}
         confirmLabel="检查并更新"
         busy={cliOperation === 'update'}
         error={cliUpdateError}

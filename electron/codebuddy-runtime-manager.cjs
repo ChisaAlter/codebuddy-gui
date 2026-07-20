@@ -1,13 +1,16 @@
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
+const { resolveCodeBuddySpawnSpec } = require('./codebuddy-cli-path.cjs');
 
 const CLI_UNAVAILABLE_MESSAGE = '未找到 CodeBuddy CLI。请先安装 CodeBuddy，并确认在命令行中可以直接运行 codebuddy。';
 
 function buildCodeBuddyRuntimeEnvironment(source = process.env) {
-  return {
+  const base = {
     ...source,
     CODEBUDDY_INTERNET_ENVIRONMENT: source.CODEBUDDY_INTERNET_ENVIRONMENT || 'ioa',
   };
+  // Reuse CLI path resolution so packaged GUI inherits npm global PATH extras.
+  return resolveCodeBuddySpawnSpec(['--serve'], base).env || base;
 }
 
 function isCliUnavailable(value) {
@@ -86,12 +89,11 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     logger(`Starting CodeBuddy runtime project=${entry.projectId} cwd=${entry.cwd}`);
 
     const promise = new Promise((resolve, reject) => {
-      const isWindows = process.platform === 'win32';
-      const command = isWindows ? process.env.ComSpec || 'cmd.exe' : 'codebuddy';
-      const commandArgs = isWindows ? ['/d', '/s', '/c', 'codebuddy --serve'] : ['--serve'];
-      const proc = spawn(command, commandArgs, {
+      const runtimeEnv = buildCodeBuddyRuntimeEnvironment();
+      const spec = resolveCodeBuddySpawnSpec(['--serve'], runtimeEnv);
+      const proc = spawn(spec.command, spec.args, {
         cwd: entry.cwd,
-        env: buildCodeBuddyRuntimeEnvironment(),
+        env: spec.env || runtimeEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
         windowsHide: true,

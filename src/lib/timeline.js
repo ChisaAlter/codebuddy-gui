@@ -111,13 +111,30 @@ function findLocalUserHistoryTarget(timeline, content) {
   return null;
 }
 
+function finalizeThinkingEntry(item, completedAt = Date.now()) {
+  if (!item || item.type !== 'thinking') return item;
+  if (item.streaming) {
+    return { ...item, streaming: false, completedAt };
+  }
+  const existingCompletedAt = Number(item.completedAt);
+  if (Number.isFinite(existingCompletedAt) && existingCompletedAt > 0) {
+    return item.streaming === false ? item : { ...item, streaming: false };
+  }
+  const startedAt = Number(item.createdAt);
+  return {
+    ...item,
+    streaming: false,
+    completedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : completedAt,
+  };
+}
+
 export function closeAssistantStream(timeline) {
   const completedAt = Date.now();
   return timeline.map((item) =>
     item.type === 'message' && item.role === 'assistant'
       ? { ...item, streaming: false }
-      : item.type === 'thinking' && item.streaming
-        ? { ...item, streaming: false, completedAt }
+      : item.type === 'thinking'
+        ? finalizeThinkingEntry(item, completedAt)
         : item,
   );
 }
@@ -125,7 +142,7 @@ export function closeAssistantStream(timeline) {
 function closeThinkingStream(timeline) {
   const completedAt = Date.now();
   return timeline.map((item) =>
-    item.type === 'thinking' && item.streaming ? { ...item, streaming: false, completedAt } : item,
+    item.type === 'thinking' && item.streaming ? finalizeThinkingEntry(item, completedAt) : item,
   );
 }
 

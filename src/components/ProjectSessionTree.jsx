@@ -4,17 +4,9 @@ import { projectSidebarExpanded, visibleProjectThreads } from '../lib/session-si
 
 const SESSION_PREVIEW_LIMIT = 8;
 
-function ChevronIcon({ expanded }) {
-  return (
-    <svg className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <path d="M6 3l5 5-5 5" />
-    </svg>
-  );
-}
-
 function FolderIcon() {
   return (
-    <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M1.5 4h5l1.2 1.5h6.8v7.5h-13V4z" />
     </svg>
   );
@@ -153,7 +145,7 @@ export function ProjectSessionTree({
             <div className="group/project flex items-center gap-0.5">
               <button
                 type="button"
-                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[13px] transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
+                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-[15px] font-medium transition-colors ${showActiveProjectHighlight ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]'}`}
                 data-active-highlight={showActiveProjectHighlight}
                 aria-label={`${expanded ? '折叠' : '展开'}项目 ${project.name}`}
                 aria-expanded={expanded}
@@ -161,8 +153,7 @@ export function ProjectSessionTree({
                 disabled={mutating}
                 title={project.workspacePath}
               >
-                <span className="text-[var(--color-text-muted)]"><ChevronIcon expanded={expanded} /></span>
-                <FolderIcon />
+                <span className="text-[var(--color-text-muted)]"><FolderIcon /></span>
                 <span className="truncate">{project.name}</span>
                 <span className={`ml-auto h-1.5 w-1.5 shrink-0 rounded-full ${project.runtimeStatus === 'running' ? 'bg-[var(--color-accent-green)]' : project.runtimeStatus === 'error' ? 'bg-[var(--color-accent-red)]' : project.runtimeStatus === 'starting' ? 'bg-[var(--color-accent-yellow)]' : 'bg-[var(--color-text-muted)]'}`} />
               </button>
@@ -180,11 +171,11 @@ export function ProjectSessionTree({
             </div>
 
             {expanded ? (
-              <div className="ml-5 mt-0.5 space-y-0.5 border-l border-[var(--color-border-muted)] pl-1.5">
+              <div className="mt-0.5 space-y-0.5 pl-7">
                 {projectThreads.length === 0 ? (
                   <button
                     type="button"
-                    className="w-full px-2 py-1 text-left text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                    className="w-full py-1 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
                     aria-label={`在 ${project.name} 中新建会话`}
                     onClick={() => onCreateProjectThread(projectId)}
                   >+ 新建会话</button>
@@ -210,7 +201,7 @@ export function ProjectSessionTree({
                             value={renameValue}
                             disabled={renameBusy}
                             aria-label="会话新名称"
-                            className="w-full rounded border border-[var(--color-border-active)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-xs text-[var(--color-text-primary)]"
+                            className="w-full rounded border border-[var(--color-border-active)] bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 text-sm text-[var(--color-text-primary)]"
                             onChange={(event) => { setRenameValue(event.target.value); setRenameError(''); }}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') submitRename(thread.id);
@@ -223,7 +214,7 @@ export function ProjectSessionTree({
                         <>
                           <button
                             type="button"
-                            className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[13px] text-[var(--color-text-secondary)] disabled:opacity-60"
+                            className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-2 text-left text-[14px] text-[var(--color-text-secondary)] disabled:opacity-60"
                             disabled={projectNavigationBusy}
                             onClick={() => onActivateThread(thread.id)}
                             title={thread.title || '新对话'}
@@ -267,7 +258,7 @@ export function ProjectSessionTree({
                 {projectThreads.length > SESSION_PREVIEW_LIMIT ? (
                   <button
                     type="button"
-                    className="w-full px-2 py-1 text-left text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                    className="w-full py-1 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
                     aria-label={`${sessionsExpanded ? '收起' : '展开'} ${project.name} 的全部会话`}
                     onClick={() => setExpandedSessionProjects((current) => ({
                       ...current,

@@ -115,9 +115,30 @@ function CopyButton({ text }) {
   );
 }
 
+export function resolveThinkingEndedAt(item, now = Date.now()) {
+  const startedAt = Number(item?.createdAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return null;
+
+  if (item?.streaming) {
+    const liveNow = Number(now);
+    return Number.isFinite(liveNow) && liveNow > 0 ? Math.max(startedAt, liveNow) : startedAt;
+  }
+
+  const completedAt = Number(item?.completedAt);
+  if (Number.isFinite(completedAt) && completedAt > 0) {
+    return Math.max(startedAt, completedAt);
+  }
+
+  // 旧数据/历史条目可能只有 createdAt：不能用“现在”当结束时间，否则会把消息年龄当成思考用时。
+  return startedAt;
+}
+
 export function formatThinkingDuration(createdAt, endedAt, streaming) {
-  if (!createdAt) return '0 秒';
-  const elapsedMs = Math.max(0, endedAt - createdAt);
+  const startedAt = Number(createdAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return '0 秒';
+  const finishedAt = Number(endedAt);
+  const safeEndedAt = Number.isFinite(finishedAt) ? finishedAt : startedAt;
+  const elapsedMs = Math.max(0, safeEndedAt - startedAt);
   if (!streaming && elapsedMs < 1000) return '<1 秒';
   const elapsed = Math.floor(elapsedMs / 1000);
   if (elapsed < 60) return `${elapsed} 秒`;
@@ -228,7 +249,7 @@ function ThinkingCard({ item }) {
   }, [item.streaming, item.createdAt]);
 
   const durationText = useMemo(() => {
-    const endedAt = item.completedAt || now;
+    const endedAt = resolveThinkingEndedAt(item, now);
     return formatThinkingDuration(item.createdAt, endedAt, item.streaming);
   }, [item.createdAt, item.completedAt, item.streaming, now]);
 
@@ -1891,6 +1912,27 @@ export default function ReplicaChatView() {
   );
 }
 
+const COMPOSER_HEIGHT_STORAGE_KEY = 'codebuddy-gui-composer-height';
+const COMPOSER_MIN_HEIGHT = 52;
+const COMPOSER_DEFAULT_HEIGHT = 64;
+const COMPOSER_MAX_HEIGHT = 360;
+
+function clampComposerHeight(value) {
+  const maxHeight =
+    typeof window === 'undefined' ? COMPOSER_MAX_HEIGHT : Math.min(COMPOSER_MAX_HEIGHT, Math.round(window.innerHeight * 0.5));
+  return Math.max(COMPOSER_MIN_HEIGHT, Math.min(maxHeight, Math.round(Number(value) || COMPOSER_DEFAULT_HEIGHT)));
+}
+
+function readStoredComposerHeight() {
+  try {
+    const raw = localStorage.getItem(COMPOSER_HEIGHT_STORAGE_KEY);
+    if (!raw) return COMPOSER_DEFAULT_HEIGHT;
+    return clampComposerHeight(raw);
+  } catch (_) {
+    return COMPOSER_DEFAULT_HEIGHT;
+  }
+}
+
 const ChatComposer = React.memo(function ChatComposer({
   textareaRef,
   promptSuggestionEnabled,
@@ -1942,6 +1984,56 @@ const ChatComposer = React.memo(function ChatComposer({
   showTokensCounter,
   usage,
 }) {
+  const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
+  const resizeDragRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMPOSER_HEIGHT_STORAGE_KEY, String(composerHeight));
+    } catch (_) {}
+  }, [composerHeight]);
+
+  useEffect(() => {
+    const onResize = () => setComposerHeight((current) => clampComposerHeight(current));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const onPointerMove = (event) => {
+      const drag = resizeDragRef.current;
+      if (!drag) return;
+      // 向上拖增高，向下拖变矮
+      const next = clampComposerHeight(drag.startHeight + (drag.startY - event.clientY));
+      setComposerHeight(next);
+    };
+    const endDrag = () => {
+      if (!resizeDragRef.current) return;
+      resizeDragRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+    };
+  }, []);
+
+  const beginComposerResize = (event) => {
+    if (event.button != null && event.button !== 0) return;
+    event.preventDefault();
+    resizeDragRef.current = {
+      startY: event.clientY,
+      startHeight: composerHeight,
+    };
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  };
+
   return (
     <div className="chat-composer-wrap shrink-0">
       <div className="mx-auto max-w-[820px]">
@@ -2077,12 +2169,22 @@ const ChatComposer = React.memo(function ChatComposer({
           </div>
         ) : null}
         <div
-          className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-all ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-active)]'}`}
+          className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-colors ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-active)]'}`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+          <div
+            className="chat-composer-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="拖动调整输入框高度"
+            title="拖动调整输入框高度"
+            onPointerDown={beginComposerResize}
+          >
+            <span className="chat-composer-resize-grip" aria-hidden="true" />
+          </div>
           {draggingAttachments || droppingAttachments ? (
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg bg-[var(--color-bg-secondary)]/95 text-sm font-medium text-[var(--color-accent-blue)]">
               {droppingAttachments ? '正在读取附件...' : '释放以添加附件'}
@@ -2127,7 +2229,8 @@ const ChatComposer = React.memo(function ChatComposer({
             onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
+            style={{ height: `${composerHeight}px` }}
+            className="chat-composer-input w-full resize-none bg-transparent px-4 pt-2 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
           />
           <div className="flex items-center justify-between px-3 pb-3">
             <div className="flex items-center gap-1">
