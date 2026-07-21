@@ -69,6 +69,17 @@ npm run format
 
 跨项目操作必须携带明确的项目或工作目录上下文。不能重新引入一个全局 CodeBuddy 进程、一个全局会话或固定端口假设。
 
+## 聊天输入栏（Composer）
+
+主实现：`src/components/ReplicaChatView.jsx`（`ChatComposer`）与 `src/store/slices/sessions-chat.js`。
+
+- **模式 / 模型 / 思考强度**：`setMode` / `setModel` / `setThoughtLevel` 采用 **乐观更新**——先写 runtime/store 再发 RPC；失败回滚。model/mode 的 `updateThreadRecord` 持久化不阻塞 UI。
+- **UI**：`FlipLabel` 负责选中值翻转入场；`ComposerAnimatedMenu` 负责下拉进出动画。切换时不要再加整栏 `busy` 禁用。
+- **布局**：模型与思考强度放在 `composer-picker-cluster` 中贴近排列，与发送键用 `ml-4` 拉开；窄窗依赖 `truncate` + `min-w-0`，发送键 `shrink-0`。
+- **发送 / 停止**：对齐 WebUI——圆形 `ArrowUp` 发送、圆形 `Square` 停止（`lucide-react`）。
+- **附件**：回形针菜单仅 **图片 / 文件** 两档；主进程 `attachment:choose` 按 `kind` 过滤。不做 WebUI 加号网格 / 右侧历史抽屉（见 `docs/composer-actions-decision.md`）。
+- **品牌图标**：`build/icon.png` + `build/icon.ico`（窗口、托盘、通知、登录、侧栏、安装包）；`tests/unit/branding-icons.test.js` 用 SHA256 锁定。
+
 ## 持久化
 
 Electron 产品状态保存以下核心数据：
