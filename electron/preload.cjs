@@ -59,7 +59,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUserData: () => ipcRenderer.invoke('app:openUserData'),
   runGit: (request) => ipcRenderer.invoke('git:run', request),
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
-  chooseAttachments: () => ipcRenderer.invoke('attachment:choose'),
+  chooseAttachments: (options) => ipcRenderer.invoke('attachment:choose', options),
   readDroppedAttachments: (files = []) => {
     const filePaths = Array.from(files || [], (file) => webUtils.getPathForFile(file)).filter(Boolean);
     return ipcRenderer.invoke('attachment:read', filePaths);

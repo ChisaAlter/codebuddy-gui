@@ -737,7 +737,7 @@ export const useStore = create((set, get) => {
     return true;
   },
 
-  async chooseAttachments() {
+  async chooseAttachments(options = {}) {
     const state = get();
     const projectId = state.activeProjectId;
     const threadId = state.activeThreadId;
@@ -751,7 +751,7 @@ export const useStore = create((set, get) => {
     }
     set({ error: null });
     try {
-      const selected = await window.electronAPI.chooseAttachments();
+      const selected = await window.electronAPI.chooseAttachments(options);
       const thread = get().threadsById[threadId];
       if (!thread || thread.projectId !== projectId) return [];
       const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();

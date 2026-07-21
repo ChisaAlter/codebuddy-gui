@@ -59,6 +59,10 @@ describe('i18n', () => {
     expect(translate('zh', 'chat.scrollToLatest')).toBe('跳到最新');
     expect(translate('en', 'chat.scrollToLatest')).toBe('Scroll to latest');
     expect(translate('zh', 'input.dropHint')).toBe('拖拽文件到这里');
+    expect(translate('zh', 'input.addAttachment')).toBe('添加附件');
+    expect(translate('en', 'input.addAttachment')).toBe('Add attachment');
+    expect(translate('zh', 'input.menu.image')).toBe('图片');
+    expect(translate('zh', 'input.menu.file')).toBe('文件');
     expect(translate('zh', 'input.deepThinking')).toBe('深度思考');
     expect(translate('zh', 'phase.modelRequesting')).toBe('等待模型响应');
     expect(translate('zh', 'phase.thinking')).toBe('正在思考');

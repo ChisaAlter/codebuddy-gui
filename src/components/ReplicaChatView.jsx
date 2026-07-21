@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
 import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
+import { ArrowUp, Square } from 'lucide-react';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
@@ -35,6 +36,78 @@ function MarkdownTable(props) {
     <div className="markdown-table-wrapper">
       <table {...tableProps}>{children}</table>
     </div>
+  );
+}
+
+/** 切换 mode/model/effort 时 pill 文案 3D 翻转，不依赖 framer-motion */
+function FlipLabel({ value, className = '' }) {
+  return (
+    <span className={`composer-flip-label ${className}`.trim()}>
+      <span key={value} className="composer-flip-label__text">
+        {value}
+      </span>
+    </span>
+  );
+}
+
+const COMPOSER_MENU_EXIT_MS = 160;
+
+/** 带进出动画的 composer 下拉菜单（模式 / 模型 / 思考强度） */
+function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-testid': dataTestId, ...rest }) {
+  const [render, setRender] = useState(open);
+  const [phase, setPhase] = useState(open ? 'enter' : 'exit');
+  const exitTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (exitTimerRef.current) {
+      clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    }
+    if (open) {
+      setRender(true);
+      setPhase('enter');
+      // 下一帧切到 shown，触发 CSS transition
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => setPhase('shown'));
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      };
+    }
+    if (!render) return undefined;
+    setPhase('exit');
+    exitTimerRef.current = setTimeout(() => {
+      setRender(false);
+      exitTimerRef.current = null;
+    }, COMPOSER_MENU_EXIT_MS);
+    return () => {
+      if (exitTimerRef.current) {
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = null;
+      }
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- only react to open; render is internal
+
+  if (!render) return null;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-10"
+        style={{ left: 'var(--sidebar-width, 252px)' }}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        data-testid={dataTestId}
+        className={`composer-menu absolute z-20 ${phase === 'shown' ? 'composer-menu--open' : ''} ${className}`.trim()}
+        {...rest}
+      >
+        {children}
+      </div>
+    </>
   );
 }
 
@@ -1528,10 +1601,8 @@ export default function ReplicaChatView() {
   const [showModePicker, setShowModePicker] = useState(false);
   const [showEffortPicker, setShowEffortPicker] = useState(false);
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0);
-  const [sessionSelectionStatus, setSessionSelectionStatus] = useState(null);
   const sessionSelectionRequestRef = useRef(0);
   const sessionSelectionInFlightRef = useRef(null);
-  const sessionSelectionBusy = sessionSelectionStatus?.type === 'busy';
   const [cancelBusy, setCancelBusy] = useState(false);
   const cancelRequestRef = useRef(0);
   const cancelInFlightRef = useRef(null);
@@ -1561,7 +1632,6 @@ export default function ReplicaChatView() {
     dropAttachmentsInFlightRef.current = null;
     setDraggingAttachments(false);
     setDroppingAttachments(false);
-    setSessionSelectionStatus(null);
     setRecovering(false);
     setChatError(null);
     setCancelBusy(false);
@@ -1660,7 +1730,6 @@ export default function ReplicaChatView() {
   const changeSessionSetting = useCallback(
     async (kind, value) => {
       if (
-        sessionSelectionInFlightRef.current ||
         connectionState !== 'connected' ||
         !activeThreadId ||
         !value ||
@@ -1668,11 +1737,14 @@ export default function ReplicaChatView() {
         isAwaitingResponse
       )
         return;
-      const operation = {};
-      sessionSelectionInFlightRef.current = operation;
+
+      // 同 kind 防重入（不同 kind 可并行），避免连点同一选项重复 RPC
+      if (sessionSelectionInFlightRef.current?.[kind]) return;
+
       const projectId = activeProjectId;
       const threadId = activeThreadId;
-      const requestId = ++sessionSelectionRequestRef.current;
+      // 仅用于切换会话后丢弃过期结果；不同 kind 可并发，不共用序号互斥
+      const epoch = sessionSelectionRequestRef.current;
       const label =
         kind === 'model'
           ? t('composer.label.model')
@@ -1680,10 +1752,18 @@ export default function ReplicaChatView() {
             ? t('composer.label.mode')
             : t('composer.label.effort');
       const isCurrent = () =>
-        requestId === sessionSelectionRequestRef.current &&
+        epoch === sessionSelectionRequestRef.current &&
         projectId === useStore.getState().activeProjectId &&
         threadId === useStore.getState().activeThreadId;
-      setSessionSelectionStatus({ type: 'busy', message: t('composer.switching', { label }) });
+
+      // 立刻关菜单；store 侧乐观更新 pill 文案，不再用 busy 灰掉三个按钮
+      if (kind === 'model') setShowModelPicker(false);
+      else if (kind === 'mode') setShowModePicker(false);
+      else setShowEffortPicker(false);
+
+      const flight = { ...(sessionSelectionInFlightRef.current || {}), [kind]: true };
+      sessionSelectionInFlightRef.current = flight;
+
       try {
         let changed;
         if (kind === 'model') {
@@ -1693,12 +1773,20 @@ export default function ReplicaChatView() {
         } else if (kind === 'effort') {
           if (value === 'ultracode') {
             // ultracode 是复合模式，仅 /effort 斜杠命令触发（无 thought_level 值）。
-            // 服务端写的是 session.meta.workflowEffortLevel，不会回推 thought_level='ultracode'，
-            // 因此发送成功后必须在本地乐观写入，否则 pill 不会变。
-            changed = await sendPrompt('/effort ultracode');
-            if (changed && isCurrent()) {
-              useStore.getState().patchThreadRuntime(threadId, { thoughtLevel: 'ultracode' });
+            // 先乐观写 pill，再发命令；失败则回滚。
+            const previousLevel =
+              useStore.getState().threadRuntimeById[threadId]?.thoughtLevel ??
+              useStore.getState().thoughtLevel;
+            useStore.getState().patchThreadRuntime(threadId, { thoughtLevel: 'ultracode' });
+            if (useStore.getState().activeThreadId === threadId) {
               useStore.setState({ thoughtLevel: 'ultracode' });
+            }
+            changed = await sendPrompt('/effort ultracode');
+            if (!changed && isCurrent()) {
+              useStore.getState().patchThreadRuntime(threadId, { thoughtLevel: previousLevel });
+              if (useStore.getState().activeThreadId === threadId) {
+                useStore.setState({ thoughtLevel: previousLevel });
+              }
             }
           } else {
             changed = await setThoughtLevel(value);
@@ -1707,22 +1795,19 @@ export default function ReplicaChatView() {
           changed = false;
         }
         if (!isCurrent()) return;
-        if (changed) {
-          setSessionSelectionStatus(null);
-          if (kind === 'model') setShowModelPicker(false);
-          else if (kind === 'mode') setShowModePicker(false);
-          else setShowEffortPicker(false);
-        } else {
-          setSessionSelectionStatus(null);
+        if (!changed) {
           setChatError(consumeStoreError(t('composer.switchFailed', { label })));
         }
       } catch (error) {
         if (isCurrent()) {
-          setSessionSelectionStatus(null);
           setChatError(error?.message || t('composer.switchFailed', { label }));
         }
       } finally {
-        if (sessionSelectionInFlightRef.current === operation) sessionSelectionInFlightRef.current = null;
+        if (sessionSelectionInFlightRef.current) {
+          const next = { ...sessionSelectionInFlightRef.current };
+          delete next[kind];
+          sessionSelectionInFlightRef.current = Object.keys(next).length ? next : null;
+        }
       }
     },
     [
@@ -2302,7 +2387,6 @@ export default function ReplicaChatView() {
         handleKeyDown={handleKeyDown}
         chooseAttachments={chooseAttachments}
         capabilities={capabilities}
-        sessionSelectionBusy={sessionSelectionBusy}
         connectionState={connectionState}
         sessionResponseBusy={sessionResponseBusy}
         showModePicker={showModePicker}
@@ -2383,7 +2467,6 @@ const ChatComposer = React.memo(function ChatComposer({
   handleKeyDown,
   chooseAttachments,
   capabilities,
-  sessionSelectionBusy,
   connectionState,
   sessionResponseBusy,
   showModePicker,
@@ -2410,7 +2493,24 @@ const ChatComposer = React.memo(function ChatComposer({
 }) {
   const t = useUiTranslate();
   const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const resizeDragRef = useRef(null);
+  const imageCapability = Boolean(
+    capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image,
+  );
+
+  const closeAttachMenu = useCallback(() => setShowAttachMenu(false), []);
+  const pickAttachments = useCallback(
+    async (kind) => {
+      setShowAttachMenu(false);
+      await chooseAttachments({ kind });
+    },
+    [chooseAttachments],
+  );
+
+  useEffect(() => {
+    if (showModePicker || showModelPicker || showEffortPicker) setShowAttachMenu(false);
+  }, [showModePicker, showModelPicker, showEffortPicker]);
 
   useEffect(() => {
     try {
@@ -2598,7 +2698,7 @@ const ChatComposer = React.memo(function ChatComposer({
           </div>
         ) : null}
         <div
-          className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-colors ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)] focus-within:border-[var(--color-border-active)]'}`}
+          className={`chat-composer relative rounded-lg border bg-[var(--color-bg-card)] transition-colors ${draggingAttachments || droppingAttachments ? 'border-[var(--color-accent-blue)]' : 'border-[var(--color-border-default)]'}`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -2667,30 +2767,67 @@ const ChatComposer = React.memo(function ChatComposer({
             style={{ height: `${composerHeight}px` }}
             className="chat-composer-input w-full resize-none bg-transparent px-4 pt-2 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
           />
-          <div className="flex items-center justify-between px-3 pb-3">
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
-                onClick={chooseAttachments}
-                disabled={droppingAttachments}
-                title={
-                  capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image
-                    ? t('input.addImage')
-                    : t('input.addFile')
-                }
-                aria-label={t('input.addFile')}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
-                </svg>
-              </button>
+          <div className="flex min-w-0 items-center justify-between gap-2 px-3 pb-3">
+            <div className="flex shrink-0 items-center gap-1">
               <div className="relative">
                 <button
-                  className="flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
-                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
                   onClick={(e) => {
                     e.stopPropagation();
+                    setShowModePicker(false);
+                    setShowModelPicker(false);
+                    setShowEffortPicker(false);
+                    setShowAttachMenu((open) => !open);
+                  }}
+                  disabled={droppingAttachments}
+                  title={t('input.addAttachment')}
+                  aria-label={t('input.addAttachment')}
+                  aria-expanded={showAttachMenu}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
+                  </svg>
+                </button>
+                {showAttachMenu && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      style={{ left: 'var(--sidebar-width, 252px)' }}
+                      onClick={closeAttachMenu}
+                    />
+                    <div className="absolute bottom-full left-0 mb-1 z-20 w-36 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
+                      <button
+                        type="button"
+                        disabled={droppingAttachments || !imageCapability}
+                        title={t('input.addImage')}
+                        className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={() => pickAttachments('image')}
+                      >
+                        {t('input.menu.image')}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={droppingAttachments}
+                        title={t('input.addFile')}
+                        className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                        onClick={() => pickAttachments('file')}
+                      >
+                        {t('input.menu.file')}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  type="button"
+                  className="composer-picker-trigger flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+                  disabled={connectionState !== 'connected' || sessionResponseBusy}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowAttachMenu(false);
                     setShowModePicker(!showModePicker);
                   }}
                 >
@@ -2698,145 +2835,148 @@ const ChatComposer = React.memo(function ChatComposer({
                     <path d="M8 2c-1.5 0-3 .5-4 1.5l1.5 1.5C6.5 4.5 7.5 4 8 4c2 0 4 1.5 4 4h-1.5l2 2.5 2-2.5H13c0-2.5-2-4-5-4z" />
                     <path d="M8 14c1.5 0 3-.5 4-1.5L10.5 11C9.5 11.5 8.5 12 8 12c-2 0-4-1.5-4-4h1.5l-2-2.5-2 2.5H3c0 2.5 2 4 5 4z" />
                   </svg>
-                  {currentModeName}
+                  <FlipLabel value={currentModeName} />
                 </button>
-                {showModePicker && (
-                  <>
-                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowModePicker(false)} />
-                    <div className="absolute bottom-full left-0 mb-1 z-20 w-40 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
-                      {modeOptions.map((m) => (
-                        <button
-                          key={m.id}
-                          disabled={sessionSelectionBusy || sessionResponseBusy}
-                          className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                          style={{
-                            color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
-                          }}
-                          onClick={() => changeSessionSetting('mode', m.id)}
-                        >
-                          {m.name}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+                <ComposerAnimatedMenu
+                  open={showModePicker}
+                  onClose={() => setShowModePicker(false)}
+                  className="bottom-full left-0 mb-1 w-40"
+                >
+                  {modeOptions.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={sessionResponseBusy}
+                      className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
+                      style={{
+                        color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
+                      }}
+                      onClick={() => changeSessionSetting('mode', m.id)}
+                    >
+                      {m.name}
+                    </button>
+                  ))}
+                </ComposerAnimatedMenu>
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <div className="relative">
-                <button
-                  className="max-w-[180px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowModelPicker(!showModelPicker);
-                  }}
-                >
-                  {currentModelName || currentModel || t('composer.selectModel')}
-                </button>
-                {showModelPicker && (
-                  <>
-                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowModelPicker(false)} />
-                    <div
-                      data-model-picker
-                      className="absolute bottom-full right-0 mb-1 z-20 w-56 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
-                    >
-                      {models.length > 0 ? (
-                        models.map((m) => {
-                          const modelId = m.id || m.modelId || m.name;
-                          return (
-                            <button
-                              key={modelId}
-                              disabled={sessionSelectionBusy || sessionResponseBusy}
-                              className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                              style={{
-                                color:
-                                  modelId === currentModel
-                                    ? 'var(--color-accent-blue)'
-                                    : 'var(--color-text-secondary)',
-                              }}
-                              onClick={() => changeSessionSetting('model', modelId)}
-                            >
-                              {m.name || m.id || m.modelId}
-                            </button>
-                          );
-                        })
-                      ) : (
-                        <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-              <div className="relative">
-                <button
-                  className="max-w-[140px] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                  disabled={sessionSelectionBusy || connectionState !== 'connected' || sessionResponseBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowEffortPicker(!showEffortPicker);
-                  }}
-                  title={t('composer.effort')}
-                >
-                  {currentEffortName}
-                </button>
-                {showEffortPicker && (
-                  <>
-                    <div className="fixed inset-0 z-10" style={{ left: 'var(--sidebar-width, 252px)' }} onClick={() => setShowEffortPicker(false)} />
-                    <div
-                      data-effort-picker
-                      className="absolute bottom-full left-0 mb-1 z-20 w-44 max-w-[calc(100vw-1rem)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1 max-h-60 overflow-y-auto"
-                    >
-                      {effortOptions.map((o) => {
-                        const level = thoughtLevel || 'enabled';
+            <div className="composer-controls-right flex min-w-0 items-center">
+              {/* 模型 + 思考强度贴在一组；与发送键拉开间距，窄窗时优先保留本组 */}
+              <div className="composer-picker-cluster flex min-w-0 items-center gap-1.5">
+                <div className="relative min-w-0">
+                  <button
+                    type="button"
+                    className="composer-picker-trigger max-w-[min(9.5rem,28vw)] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                    disabled={connectionState !== 'connected' || sessionResponseBusy}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAttachMenu(false);
+                      setShowModelPicker(!showModelPicker);
+                    }}
+                  >
+                    <FlipLabel value={currentModelName || currentModel || t('composer.selectModel')} />
+                  </button>
+                  <ComposerAnimatedMenu
+                    open={showModelPicker}
+                    onClose={() => setShowModelPicker(false)}
+                    data-model-picker
+                    className="bottom-full right-0 mb-1 w-56 max-w-[calc(100vw-1rem)] max-h-60 overflow-y-auto"
+                  >
+                    {models.length > 0 ? (
+                      models.map((m) => {
+                        const modelId = m.id || m.modelId || m.name;
                         return (
                           <button
-                            key={o.id}
-                            disabled={sessionSelectionBusy || sessionResponseBusy}
-                            className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                            key={modelId}
+                            type="button"
+                            disabled={sessionResponseBusy}
+                            className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
                             style={{
                               color:
-                                o.id === level
+                                modelId === currentModel
                                   ? 'var(--color-accent-blue)'
                                   : 'var(--color-text-secondary)',
                             }}
-                            onClick={() => changeSessionSetting('effort', o.id)}
+                            onClick={() => changeSessionSetting('model', modelId)}
                           >
-                            {o.name}
+                            {m.name || m.id || m.modelId}
                           </button>
                         );
-                      })}
-                    </div>
-                  </>
-                )}
+                      })
+                    ) : (
+                      <div className="px-3 py-2 text-xs text-[var(--color-text-muted)]">加载中...</div>
+                    )}
+                  </ComposerAnimatedMenu>
+                </div>
+                <div className="relative min-w-0 shrink-0">
+                  <button
+                    type="button"
+                    className="composer-picker-trigger max-w-[min(7.5rem,24vw)] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                    disabled={connectionState !== 'connected' || sessionResponseBusy}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAttachMenu(false);
+                      setShowEffortPicker(!showEffortPicker);
+                    }}
+                    title={t('composer.effort')}
+                  >
+                    <FlipLabel value={currentEffortName} />
+                  </button>
+                  <ComposerAnimatedMenu
+                    open={showEffortPicker}
+                    onClose={() => setShowEffortPicker(false)}
+                    data-effort-picker
+                    className="bottom-full right-0 mb-1 w-44 max-w-[calc(100vw-1rem)] max-h-60 overflow-y-auto"
+                  >
+                    {effortOptions.map((o) => {
+                      const level = thoughtLevel || 'enabled';
+                      return (
+                        <button
+                          key={o.id}
+                          type="button"
+                          disabled={sessionResponseBusy}
+                          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
+                          style={{
+                            color:
+                              o.id === level
+                                ? 'var(--color-accent-blue)'
+                                : 'var(--color-text-secondary)',
+                          }}
+                          onClick={() => changeSessionSetting('effort', o.id)}
+                        >
+                          {o.name}
+                        </button>
+                      );
+                    })}
+                  </ComposerAnimatedMenu>
+                </div>
               </div>
               {isStreaming ? (
                 <button
-                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white transition-all hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
-                  style={{ background: 'var(--color-accent-red)' }}
+                  type="button"
+                  className="composer-action-btn composer-action-btn--stop ml-4 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-primary)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
                   disabled={cancelBusy}
                   onClick={cancelActiveSession}
                   title={cancelBusy ? t('input.stopping') : t('input.stop')}
+                  aria-label={cancelBusy ? t('input.stopping') : t('input.stop')}
                 >
                   {cancelBusy ? (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--color-border-default)] border-t-[var(--color-text-primary)]" />
                   ) : (
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <rect x="3" y="3" width="10" height="10" rx="1" />
-                    </svg>
+                    <Square size={14} fill="currentColor" strokeWidth={0} />
                   )}
                 </button>
               ) : (
                 <button
-                  className="flex h-8 w-8 items-center justify-center rounded-lg text-white hover:brightness-110 transition-all disabled:opacity-40"
-                  style={{ background: 'var(--color-accent-blue)' }}
+                  type="button"
+                  className="composer-action-btn composer-action-btn--send ml-4 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] shadow-sm transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
                   onClick={onSubmit}
                   disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
                   title={t('input.send')}
+                  aria-label={t('input.send')}
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />
-                  </svg>
+                  <ArrowUp size={18} strokeWidth={2.5} />
                 </button>
               )}
             </div>

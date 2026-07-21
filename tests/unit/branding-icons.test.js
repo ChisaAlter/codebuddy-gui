@@ -14,7 +14,7 @@ function sha256(relativePath) {
 }
 
 describe('CodeBuddy branding icons', () => {
-  it('uses the cat head asset throughout the renderer and Windows package', () => {
+  it('uses the brand icon asset throughout the renderer and Windows package', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
     const sidebarSource = fs.readFileSync(path.join(root, 'src', 'components', 'ReplicaSidebar.jsx'), 'utf8');
@@ -25,7 +25,7 @@ describe('CodeBuddy branding icons', () => {
     expect(appSource).toContain("import appIconUrl from '../build/icon.png'");
     expect(sidebarSource).toContain("import appIconUrl from '../../build/icon.png'");
     expect(mainSource).toContain("app.setAppUserModelId('com.codebuddy.gui.cathead')");
-    expect(sha256('build/icon.png')).toBe('7A9542907105481D79D827A423FFC45999763A65B6E15B8F1BA152FE7582DFD8');
-    expect(sha256('build/icon.ico')).toBe('5CBCD9004CF5FE791581FEB6697FF5B8143932E23FA1B84BEC845964BE97DD04');
+    expect(sha256('build/icon.png')).toBe('8E73A06713B5DBF1E19F5D54BE30334FEDE0D2FEF4C7045E03E5DA5DAB2180AC');
+    expect(sha256('build/icon.ico')).toBe('71FBBAEF584DE05037FC4C4983BE766AC2331B1DD1B2348F204791E13B07BBCB');
   });
 });

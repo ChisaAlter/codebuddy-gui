@@ -1003,18 +1003,30 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换模型' });
         return false;
       }
+      const runtime = get().threadRuntimeById[threadId] || {};
+      const previousModel = runtime.currentModel ?? get().currentModel;
+      if (previousModel === modelId) return true;
+      // 先乐观更新 pill，避免等 RPC / 磁盘持久化时卡住
+      get().patchThreadRuntime(threadId, { currentModel: modelId });
+      if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentModel: modelId });
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
         await client.request('session/set_model', { sessionId, modelId });
         const thread = get().threadsById[threadId];
         if (!thread || thread.sessionId !== sessionId) return false;
-        get().patchThreadRuntime(threadId, { currentModel: modelId });
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentModel: modelId });
-        await get().updateThreadRecord(threadId, { modelId });
+        void get().updateThreadRecord(threadId, { modelId });
         return true;
       } catch (error) {
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        const thread = get().threadsById[threadId];
+        if (thread && thread.sessionId === sessionId) {
+          get().patchThreadRuntime(threadId, { currentModel: previousModel });
+          if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+            set({ currentModel: previousModel, error: error.message });
+          }
+        } else if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+          set({ error: error.message });
+        }
         return false;
       }
     });
@@ -1036,18 +1048,29 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换模式' });
         return false;
       }
+      const runtime = get().threadRuntimeById[threadId] || {};
+      const previousMode = runtime.currentMode ?? get().currentMode;
+      if (previousMode === modeId) return true;
+      get().patchThreadRuntime(threadId, { currentMode: modeId });
+      if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentMode: modeId });
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
         await client.request('session/set_mode', { sessionId, modeId });
         const thread = get().threadsById[threadId];
         if (!thread || thread.sessionId !== sessionId) return false;
-        get().patchThreadRuntime(threadId, { currentMode: modeId });
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ currentMode: modeId });
-        await get().updateThreadRecord(threadId, { modeId });
+        void get().updateThreadRecord(threadId, { modeId });
         return true;
       } catch (error) {
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        const thread = get().threadsById[threadId];
+        if (thread && thread.sessionId === sessionId) {
+          get().patchThreadRuntime(threadId, { currentMode: previousMode });
+          if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+            set({ currentMode: previousMode, error: error.message });
+          }
+        } else if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+          set({ error: error.message });
+        }
         return false;
       }
     });
@@ -1069,6 +1092,12 @@ export function createSessionsChatSlice(set, get, ctx) {
         if (get().activeThreadId === threadId) set({ error: '当前回复进行中，请等待完成或停止后再切换思考强度' });
         return false;
       }
+      const runtime = get().threadRuntimeById[threadId] || {};
+      const previousLevel = runtime.thoughtLevel ?? get().thoughtLevel;
+      if (previousLevel === value) return true;
+      // thought_level 是会话级运行时状态，不持久化到会话记录（新会话回归默认）
+      get().patchThreadRuntime(threadId, { thoughtLevel: value });
+      if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ thoughtLevel: value });
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
@@ -1079,12 +1108,17 @@ export function createSessionsChatSlice(set, get, ctx) {
         });
         const thread = get().threadsById[threadId];
         if (!thread || thread.sessionId !== sessionId) return false;
-        get().patchThreadRuntime(threadId, { thoughtLevel: value });
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ thoughtLevel: value });
-        // thought_level 是会话级运行时状态，不持久化到会话记录（新会话回归默认）
         return true;
       } catch (error) {
-        if (get().activeThreadId === threadId && get().sessionId === sessionId) set({ error: error.message });
+        const thread = get().threadsById[threadId];
+        if (thread && thread.sessionId === sessionId) {
+          get().patchThreadRuntime(threadId, { thoughtLevel: previousLevel });
+          if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+            set({ thoughtLevel: previousLevel, error: error.message });
+          }
+        } else if (get().activeThreadId === threadId && get().sessionId === sessionId) {
+          set({ error: error.message });
+        }
         return false;
       }
     });

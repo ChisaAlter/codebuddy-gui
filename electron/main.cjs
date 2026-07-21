@@ -2310,12 +2310,22 @@ async function readAttachmentFiles(filePaths) {
   return attachments;
 }
 
-ipcMain.handle('attachment:choose', async () => {
+ipcMain.handle('attachment:choose', async (_event, options = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) return [];
-  const result = await dialog.showOpenDialog(mainWindow, {
+  const kind = String(options?.kind || 'all').toLowerCase();
+  const dialogOptions = {
     properties: ['openFile', 'multiSelections'],
     title: '选择要发送的文件或图片',
-  });
+  };
+  if (kind === 'image') {
+    dialogOptions.title = '选择图片';
+    dialogOptions.filters = [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+    ];
+  } else if (kind === 'file') {
+    dialogOptions.title = '选择文件';
+  }
+  const result = await dialog.showOpenDialog(mainWindow, dialogOptions);
   if (result.canceled) return [];
   return readAttachmentFiles(result.filePaths);
 });

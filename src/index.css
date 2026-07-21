@@ -281,6 +281,96 @@ select {
     transform: translateY(0);
   }
 }
+
+/* Composer mode/model/effort pill value flip */
+@keyframes composerFlipIn {
+  from {
+    opacity: 0;
+    transform: rotateX(-75deg) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: rotateX(0deg) translateY(0);
+  }
+}
+
+.composer-flip-label {
+  display: inline-block;
+  perspective: 180px;
+  vertical-align: baseline;
+  max-width: 100%;
+}
+
+.composer-flip-label__text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform-origin: center center;
+  backface-visibility: hidden;
+  animation: composerFlipIn 0.56s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-flip-label__text {
+    animation: none;
+  }
+}
+
+/* Composer mode/model/effort dropdown open/close */
+.composer-menu {
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-bg-secondary);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.08);
+  padding: 0.25rem 0;
+  opacity: 0;
+  transform: translateY(6px) scale(0.96);
+  transform-origin: bottom center;
+  pointer-events: none;
+  transition:
+    opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.composer-menu--open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.composer-menu-item {
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+  border-radius: 0.25rem;
+  margin: 0 0.25rem;
+  width: calc(100% - 0.5rem);
+}
+
+.composer-menu-item:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1), 0 0 0 1px color-mix(in srgb, var(--color-border-default) 70%, transparent);
+  color: var(--color-text-primary);
+}
+
+.composer-menu-item:focus,
+.composer-menu-item:focus-visible,
+.composer-picker-trigger:focus,
+.composer-picker-trigger:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-menu {
+    transition: opacity 0.01ms linear;
+    transform: none;
+  }
+}
 @keyframes slideInLeft {
   from {
     opacity: 0;
@@ -2180,6 +2270,33 @@ select {
   max-height: min(50vh, 360px);
   overflow-y: auto;
   resize: none;
+}
+
+/* 右侧：模型+思考强度贴一组，与发送键拉开；窄窗时文字截断而不是被挤没 */
+.composer-controls-right {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.composer-picker-cluster {
+  flex: 1 1 auto;
+}
+
+.composer-picker-cluster .composer-picker-trigger {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .composer-controls-right {
+    gap: 0;
+  }
+
+  .composer-action-btn--send,
+  .composer-action-btn--stop {
+    margin-left: 0.75rem; /* 仍与选择组保持间距，但比宽屏略紧 */
+  }
 }
 .responsive-tool-grid,
 .responsive-card-grid,
