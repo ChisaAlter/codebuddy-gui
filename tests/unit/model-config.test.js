@@ -40,7 +40,7 @@ describe('model config storage', () => {
     const filePath = createTempConfig();
     const snapshot = saveModelConfig(
       {
-        id: 'openai/gpt-4o',
+        id: 'openai:gpt-4o',
         url: 'https://api.example.com/v1/chat/completions',
         apiKey: 'sk-secret-value',
         maxInputTokens: 128000,
@@ -52,8 +52,8 @@ describe('model config storage', () => {
     );
 
     expect(snapshot.models[0]).toMatchObject({
-      id: 'openai/gpt-4o',
-      name: 'openai/gpt-4o',
+      id: 'openai:gpt-4o',
+      name: 'openai:gpt-4o',
       hasApiKey: true,
       apiKeyReference: '',
       maxInputTokens: 128000,
@@ -95,6 +95,7 @@ describe('model config storage', () => {
 
     const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     expect(written.customTopLevel).toBe(true);
+    // 改名时迁移已有白名单项；不因编辑而新增白名单
     expect(written.availableModels).toEqual(['custom-new']);
     expect(written.models[0]).toMatchObject({
       id: 'custom-new',
@@ -103,6 +104,58 @@ describe('model config storage', () => {
       supportsReasoning: true,
     });
     expect(fs.existsSync(`${filePath}.bak`)).toBe(true);
+  });
+
+  it('does not append new models to availableModels by default (WebUI visible:false)', () => {
+    const filePath = createTempConfig({
+      models: [{ id: 'keep' }],
+      availableModels: ['keep'],
+    });
+    saveModelConfig(
+      {
+        id: 'openai:gpt-4o',
+        url: 'https://api.example.com/v1/chat/completions',
+        apiKey: 'sk-new',
+      },
+      { filePath },
+    );
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.models.map((model) => model.id)).toEqual(['keep', 'openai:gpt-4o']);
+    expect(written.availableModels).toEqual(['keep']);
+  });
+
+  it('appends availableModels only when explicitly requested', () => {
+    const filePath = createTempConfig({ models: [], availableModels: [] });
+    saveModelConfig(
+      {
+        id: 'listed',
+        url: 'https://api.example.com/v1/chat/completions',
+        visible: true,
+      },
+      { filePath },
+    );
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.availableModels).toEqual(['listed']);
+  });
+
+  it('persists useCustomProtocol and validates model id charset', () => {
+    const filePath = createTempConfig({ models: [] });
+    saveModelConfig(
+      {
+        id: 'vendor:model-v1',
+        url: 'https://api.example.com/v1',
+        useCustomProtocol: true,
+      },
+      { filePath },
+    );
+    const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    expect(written.models[0]).toMatchObject({ id: 'vendor:model-v1', useCustomProtocol: true });
+    expect(() =>
+      saveModelConfig({ id: 'bad model', url: 'https://api.example.com/v1' }, { filePath }),
+    ).toThrow('字母、数字');
+    expect(() =>
+      saveModelConfig({ id: 'org/model', url: 'https://api.example.com/v1' }, { filePath }),
+    ).toThrow('字母、数字');
   });
 
   it('supports environment variable key references and returns the reference safely', () => {

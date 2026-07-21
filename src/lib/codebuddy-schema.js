@@ -38,94 +38,115 @@ export const NAV_GROUPS = [
     title: '配置',
     items: [
       { id: 'docs', label: '文档' },
-      { id: 'models', label: '模型' },
+      // 自定义模型入口已并入设置页「模型选择」；不再在侧栏底部放独立「模型」页
       { id: 'settings', label: '设置' },
       { id: 'keybindings', label: '快捷键' },
     ],
   },
 ];
 
+/**
+ * Mirrors CodeBuddy WebUI 2.124 settings schema `Mk` exactly (6 groups / 18 keys).
+ * Desktop GUI-only prefs live under appearance with scope:'gui' and are not part of Mk.
+ * ReplicaSettingsView renders Mk groups directly; this export is the shared key catalog.
+ */
 export const SETTINGS_GROUPS = [
   {
-    id: 'gui',
-    title: 'CodeBuddy GUI',
+    id: 'appearance',
+    title: '外观',
     items: [
-      { key: 'theme', label: '界面主题', type: 'text' },
-      { key: 'promptSuggestionEnabled', label: '显示提示建议', type: 'boolean' },
-      { key: 'enablePasteImageFromClipboard', label: '允许剪贴板贴图', type: 'boolean' },
-      { key: 'showTokensCounter', label: '显示 Token 计数', type: 'boolean' },
+      { key: 'theme', label: '界面主题', type: 'text', scope: 'gui' },
+      { key: 'enablePasteImageFromClipboard', label: '允许剪贴板贴图', type: 'boolean', scope: 'gui' },
+      { key: 'showTokensCounter', label: '显示 Token 计数', type: 'boolean', scope: 'gui' },
+      { key: 'desktopNotificationsEnabled', label: '桌面通知', type: 'boolean', scope: 'gui' },
     ],
   },
   {
     id: 'modelAndReasoning',
-    title: 'CodeBuddy CLI：模型与思考',
+    title: '模型与推理',
     items: [
       { key: 'model', label: '默认模型', type: 'text' },
       {
         key: 'reasoningEffort',
-        label: '思考强度',
+        label: '推理努力级别',
         type: 'select',
         options: [
-          ['minimal', 'Minimal'],
-          ['low', 'Low'],
-          ['medium', 'Medium'],
-          ['high', 'High'],
-          ['xhigh', 'Extra High'],
-          ['max', 'Max'],
+          ['minimal', '最小'],
+          ['low', '低'],
+          ['medium', '中'],
+          ['high', '高'],
+          ['xhigh', '极高'],
+          ['max', '最大'],
         ],
       },
-      { key: 'alwaysThinkingEnabled', label: '始终启用 Thinking', type: 'boolean' },
+      { key: 'alwaysThinkingEnabled', label: '始终启用深度思考', type: 'boolean' },
     ],
   },
   {
     id: 'behavior',
-    title: 'CodeBuddy CLI：行为',
+    title: '行为',
     items: [
       { key: 'autoCompactEnabled', label: '自动压缩上下文', type: 'boolean' },
-      { key: 'includeCoAuthoredBy', label: '包含 Co-authored-by', type: 'boolean' },
+      { key: 'includeCoAuthoredBy', label: '提交包含 Co-authored-by', type: 'boolean' },
       { key: 'fileCheckpointingEnabled', label: '文件检查点', type: 'boolean' },
+      { key: 'promptSuggestionEnabled', label: '提示建议', type: 'boolean' },
+      { key: 'ignoreGitIgnore', label: '忽略 .gitignore', type: 'boolean' },
+      { key: 'deferToolLoading', label: '延迟加载工具', type: 'boolean' },
       { key: 'hookOutputCollapsed', label: '折叠 Hook 输出', type: 'boolean' },
-      { key: 'enableTerminalProgressBar', label: '终端进度条', type: 'boolean' },
     ],
   },
   {
     id: 'memory',
-    title: 'CodeBuddy CLI：记忆',
+    title: '记忆',
     items: [
-      { key: 'memory.enabled', label: '启用记忆', type: 'boolean' },
+      { key: 'memory.enabled', label: '启用记忆功能', type: 'boolean' },
       { key: 'memory.autoMemoryEnabled', label: '自动记忆', type: 'boolean' },
     ],
   },
   {
     id: 'language',
-    title: 'CodeBuddy CLI：语言与通知',
-    items: [
-      { key: 'language', label: '响应语言', type: 'text' },
-      { key: 'preferredNotifChannel', label: 'CodeBuddy 通知渠道', type: 'text' },
-    ],
+    title: '语言',
+    items: [{ key: 'language', label: '响应语言', type: 'text' }],
   },
   {
     id: 'advanced',
-    title: 'CodeBuddy CLI：高级',
+    title: '高级',
     items: [
-      { key: 'cleanupPeriodDays', label: '会话保留天数', type: 'number' },
+      { key: 'cleanupPeriodDays', label: '聊天记录保留天数', type: 'number' },
       { key: 'imageHistoryRetainRounds', label: '图片保留轮数', type: 'number' },
-      { key: 'autoUpdates', label: '自动更新', type: 'boolean' },
-      { key: 'enableAllProjectMcpServers', label: '启用全部项目 MCP', type: 'boolean' },
-      { key: 'trustAll', label: '信任全部', type: 'boolean' },
-      { key: 'statusLine.command', label: '状态栏命令', type: 'text' },
-      { key: 'gateway.auth', label: '网关认证', type: 'text' },
+      { key: 'env', label: '环境变量', type: 'json' },
     ],
   },
   {
     id: 'sandbox',
-    title: 'CodeBuddy CLI：安全沙箱',
+    title: '安全沙箱',
     items: [
-      { key: 'sandbox.enabled', label: '启用沙箱', type: 'boolean' },
-      { key: 'sandbox.autoAllowBashIfSandboxed', label: '沙箱内自动允许 Bash', type: 'boolean' },
-      { key: 'sandbox.allowUnsandboxedCommands', label: '允许非沙箱命令', type: 'boolean' },
+      { key: 'sandbox.enabled', label: '启用安全沙箱', type: 'boolean' },
+      { key: 'sandbox.autoAllowBashIfSandboxed', label: '沙箱内自动批准命令', type: 'boolean' },
     ],
   },
+];
+
+/** Exact WebUI Mk key list (order preserved). */
+export const WEBUI_MK_SETTING_KEYS = [
+  'model',
+  'reasoningEffort',
+  'alwaysThinkingEnabled',
+  'autoCompactEnabled',
+  'includeCoAuthoredBy',
+  'fileCheckpointingEnabled',
+  'promptSuggestionEnabled',
+  'ignoreGitIgnore',
+  'deferToolLoading',
+  'hookOutputCollapsed',
+  'memory.enabled',
+  'memory.autoMemoryEnabled',
+  'language',
+  'cleanupPeriodDays',
+  'imageHistoryRetainRounds',
+  'env',
+  'sandbox.enabled',
+  'sandbox.autoAllowBashIfSandboxed',
 ];
 
 export function getByPath(obj, path) {

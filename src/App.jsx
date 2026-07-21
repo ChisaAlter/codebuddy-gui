@@ -5,6 +5,7 @@ import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
 import appIconUrl from '../build/icon.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
+import { applyDocumentLocale, resolveLocaleMode } from './lib/i18n';
 
 const ReplicaSettingsView = lazy(() => import('./components/ReplicaSettingsView'));
 const ReplicaModelsView = lazy(() => import('./components/ReplicaModelsView'));
@@ -27,12 +28,12 @@ const ReplicaMonitorView = lazy(() => import('./components/ReplicaMonitorView'))
 const ReplicaKeybindingsView = lazy(() => import('./components/ReplicaKeybindingsView'));
 const ReplicaDocsView = lazy(() => import('./components/ReplicaDocsView'));
 
-function WindowControls({ height = 'h-12' }) {
+function WindowControls({ height = 'h-11' }) {
   return (
-    <div className={`titlebar-no-drag ml-1 flex ${height} items-stretch border-l border-[var(--color-border-default)]`}>
+    <div className={`titlebar-no-drag flex ${height} items-stretch`}>
       <button
         type="button"
-        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        className="flex h-full w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
         onClick={() => window.electronAPI?.windowMinimize?.()}
         title="最小化"
         aria-label="最小化窗口"
@@ -43,7 +44,7 @@ function WindowControls({ height = 'h-12' }) {
       </button>
       <button
         type="button"
-        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
+        className="flex h-full w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
         onClick={() => window.electronAPI?.windowMaximize?.()}
         title="最大化或还原"
         aria-label="最大化或还原窗口"
@@ -54,7 +55,7 @@ function WindowControls({ height = 'h-12' }) {
       </button>
       <button
         type="button"
-        className="flex w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[#c42b1c] hover:text-white"
+        className="flex h-full w-11 items-center justify-center text-[var(--color-text-secondary)] transition-colors hover:bg-[#c42b1c] hover:text-white"
         onClick={() => window.electronAPI?.windowClose?.()}
         title="关闭到托盘"
         aria-label="关闭窗口到系统托盘"
@@ -449,20 +450,8 @@ const ROUTE_TITLES = {
 function StatusBar() {
   const route = useStore((s) => s.route);
   const sessionTitle = useStore((s) => s.sessionTitle);
-  const currentModel = useStore((s) => s.currentModel);
-  const currentModelName = useStore(
-    (s) => s.models.find((m) => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '',
-  );
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
-  const connectionState = useStore((s) => s.connectionState);
-  const codeBuddyAccountAuthState = useStore((s) => s.codeBuddyAccountAuthState);
-  const apiBase = useStore((s) => s.apiBase);
-  const activeProjectId = useStore((s) => s.activeProjectId);
-  const newSessionBusy = useStore((s) => s.newSessionBusy);
-  const newSessionProjectId = useStore((s) => s.newSessionProjectId);
-  const newSessionError = useStore((s) => s.newSessionError);
-  const projectNavigationBusy = useStore((s) => s.projectNavigationBusy);
 
   return (
     <div
@@ -489,63 +478,7 @@ function StatusBar() {
           </>
         ) : null}
       </div>
-      <div className="titlebar-no-drag flex items-center gap-2">
-        <span className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]" title={apiBase || '未连接'}>
-          <span
-            className={`inline-block w-1.5 h-1.5 rounded-full ${
-              connectionState === 'connected'
-                ? 'bg-[var(--color-accent-green)]'
-                : connectionState === 'error'
-                  ? 'bg-[var(--color-accent-red)]'
-                  : 'bg-[var(--color-accent-yellow)]'
-            }`}
-          />
-          {!activeProjectId
-            ? '未选择项目'
-            : ['required', 'authenticating', 'error'].includes(codeBuddyAccountAuthState)
-              ? codeBuddyAccountAuthState === 'authenticating'
-                ? '等待登录'
-                : '需要登录'
-            : connectionState === 'connected'
-              ? '已连接'
-              : connectionState === 'error'
-                ? '连接失败'
-                : connectionState === 'disconnected'
-                  ? '未连接'
-                  : '连接中...'}
-        </span>
-        {currentModel ? (
-          <span className="max-w-[180px] truncate rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] px-2.5 py-1 text-[var(--color-text-secondary)]">
-            {currentModelName}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="flex h-7 items-center justify-center rounded-md px-2.5 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
-          disabled={newSessionBusy || projectNavigationBusy}
-          onClick={async () => {
-            if (newSessionBusy || projectNavigationBusy) return;
-            const store = useStore.getState();
-            store.setRoute('chat');
-            await store.newSession();
-          }}
-          title={
-            projectNavigationBusy
-              ? '请等待项目或会话切换完成'
-              : newSessionError && newSessionProjectId === activeProjectId
-                ? newSessionError
-                : newSessionBusy
-                  ? '正在创建新对话'
-                  : '新对话'
-          }
-          aria-label={projectNavigationBusy ? '项目或会话切换中' : newSessionBusy ? '正在创建新对话' : '新对话'}
-        >
-          {newSessionBusy || projectNavigationBusy ? (
-            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
-          ) : (
-            '新对话'
-          )}
-        </button>
+      <div className="titlebar-no-drag flex h-full items-stretch">
         <WindowControls />
       </div>
     </div>
@@ -746,6 +679,7 @@ function isShortcutInputTarget(target) {
 export default function App() {
   const bootstrap = useStore((s) => s.bootstrap);
   const settingsTheme = useStore((s) => s.guiSettings?.theme);
+  const settingsLocale = useStore((s) => s.guiSettings?.locale);
   const authViewState = useStore((s) => s.authViewState);
 
   useEffect(() => {
@@ -847,6 +781,15 @@ export default function App() {
     }
     document.documentElement.dataset.theme = theme;
   }, [settingsTheme]);
+
+  // 界面语言：WebUI locale mode zh | en | system
+  useEffect(() => {
+    const apply = () => applyDocumentLocale(resolveLocaleMode(settingsLocale || 'system'));
+    apply();
+    if ((settingsLocale || 'system') !== 'system') return undefined;
+    window.addEventListener('languagechange', apply);
+    return () => window.removeEventListener('languagechange', apply);
+  }, [settingsLocale]);
 
   useEffect(() => {
     const onKeyDown = (event) => {

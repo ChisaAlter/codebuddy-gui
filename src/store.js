@@ -115,6 +115,8 @@ const scopedRequestVersions = new Map();
 const settingWriteVersions = new Map();
 const settingWriteChains = new Map();
 const confirmedSettingValues = new Map();
+/** WebUI A.current — user-scope settings snapshot for nested PUT merge. */
+const userSettingsBaselineByProject = new Map();
 const runtimeOperationChains = new Map();
 const sessionSettingChains = new Map();
 const threadMutationChains = new Map();
@@ -1784,10 +1786,19 @@ export const useStore = create((set, get) => {
 
   async refreshSettings() {
     const request = beginScopedRequest('settings', get());
-    const payload = await fetchJson('/api/v1/settings');
+    // WebUI 2.124: dual GET — effective settings for UI (v) + user scope baseline (A.current).
+    const [effectivePayload, userPayload] = await Promise.all([
+      fetchJson('/api/v1/settings'),
+      fetchJson('/api/v1/settings?scope=user').catch(() => null),
+    ]);
     if (!isScopedRequestCurrent(request, get())) return false;
-    const loaded = stripGuiSettings(payload.data || payload);
-    const projectPrefix = `${request.projectId || 'global'}:`;
+    const loaded = stripGuiSettings(effectivePayload?.data || effectivePayload || {});
+    const userBaseline = stripGuiSettings(
+      userPayload == null ? {} : (userPayload.data || userPayload || {}),
+    );
+    const projectKey = request.projectId || 'global';
+    userSettingsBaselineByProject.set(projectKey, userBaseline);
+    const projectPrefix = `${projectKey}:`;
     for (const storedKey of confirmedSettingValues.keys()) {
       if (storedKey.startsWith(projectPrefix)) confirmedSettingValues.delete(storedKey);
     }
@@ -1828,7 +1839,11 @@ export const useStore = create((set, get) => {
 
   // 乐观更新 UI，后端失败时回滚到最后一次确认值。版本号避免迟到响应覆盖更新的操作。
   async updateSetting(key, value) {
-    if (isGuiSettingKey(key)) return get().updateGuiSetting(key, value);
+    // promptSuggestionEnabled is a CLI user setting in WebUI; keep local GUI flag
+    // writable only via updateGuiSetting for backward compatibility.
+    if (isGuiSettingKey(key) && key !== 'promptSuggestionEnabled') {
+      return get().updateGuiSetting(key, value);
+    }
     const state = get();
     const projectId = state.activeProjectId;
     const apiBase = state.apiBase;
@@ -1849,12 +1864,45 @@ export const useStore = create((set, get) => {
       return { settings: next, settingsLoaded: true };
     });
 
+    // WebUI: nested keys (memory.enabled) PUT root key with object merged from user baseline (A.current).
+    const rootKey = String(key).split('.')[0];
+    const projectKey = projectId || 'global';
+    const baselineRoot = userSettingsBaselineByProject.get(projectKey) || {};
+    const apiValue = key.includes('.')
+      ? writeSettingPath(
+          { [rootKey]: baselineRoot[rootKey] && typeof baselineRoot[rootKey] === 'object' && !Array.isArray(baselineRoot[rootKey])
+            ? { ...baselineRoot[rootKey] }
+            : {} },
+          key,
+          value,
+        )[rootKey]
+      : value;
+
     const previousWrite = settingWriteChains.get(writeKey) || Promise.resolve();
     const operation = previousWrite
       .catch(() => {})
       .then(async () => {
         try {
-          await updateSettingByKeyApi(key, value, 'user', apiBase, requestContext);
+          // Nested: re-merge from latest user baseline so concurrent nested writes race cleanly.
+          let payloadValue = value;
+          if (key.includes('.')) {
+            const liveBaseline = userSettingsBaselineByProject.get(projectKey) || {};
+            payloadValue = writeSettingPath(
+              {
+                [rootKey]:
+                  liveBaseline[rootKey] && typeof liveBaseline[rootKey] === 'object' && !Array.isArray(liveBaseline[rootKey])
+                    ? { ...liveBaseline[rootKey] }
+                    : {},
+              },
+              key,
+              value,
+            )[rootKey];
+          }
+          await updateSettingByKeyApi(rootKey, payloadValue ?? apiValue, 'user', apiBase, requestContext);
+          // Keep A.current in sync with successful user-scope write (WebUI A.current[ee]=re).
+          const nextBaseline = { ...(userSettingsBaselineByProject.get(projectKey) || {}) };
+          nextBaseline[rootKey] = key.includes('.') ? payloadValue : value;
+          userSettingsBaselineByProject.set(projectKey, nextBaseline);
           confirmedSettingValues.set(writeKey, value);
           if (settingWriteVersions.get(writeKey) === version && projectId === get().activeProjectId) {
             set((current) => {

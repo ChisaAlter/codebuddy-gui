@@ -131,14 +131,22 @@ export function normalizeProductState(value) {
       },
     }];
   }));
-  const threadsById = Object.fromEntries(Object.entries(sourceThreads).map(([id, thread]) => [id, {
-    ...thread,
-    timeline: Array.isArray(thread?.timeline) ? thread.timeline.map(normalizeTimelineEntry) : [],
-    pinned: Boolean(thread?.pinned),
-    archivedAt: typeof thread?.archivedAt === 'string' && thread.archivedAt
-      ? thread.archivedAt
-      : null,
-  }]));
+  // running/waiting/cancelling 是进程内瞬态；磁盘恢复后没有对应 ACP 请求，
+  // 若原样读回会导致 UI 永久「等待模型响应 / 消息将排队」。
+  const EPHEMERAL_THREAD_STATUSES = new Set(['running', 'waiting', 'cancelling', 'connecting']);
+  const threadsById = Object.fromEntries(Object.entries(sourceThreads).map(([id, thread]) => {
+    const rawStatus = typeof thread?.status === 'string' ? thread.status : 'idle';
+    const status = EPHEMERAL_THREAD_STATUSES.has(rawStatus) ? 'idle' : rawStatus || 'idle';
+    return [id, {
+      ...thread,
+      status,
+      timeline: Array.isArray(thread?.timeline) ? thread.timeline.map(normalizeTimelineEntry) : [],
+      pinned: Boolean(thread?.pinned),
+      archivedAt: typeof thread?.archivedAt === 'string' && thread.archivedAt
+        ? thread.archivedAt
+        : null,
+    }];
+  }));
   const projectOrder = Array.isArray(value.projectOrder)
     ? value.projectOrder.filter((id) => typeof id === 'string' && projectsById[id])
     : [];

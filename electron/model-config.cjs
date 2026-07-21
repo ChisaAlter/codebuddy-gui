@@ -70,11 +70,14 @@ function normalizeEndpoint(value) {
   return parsed.toString();
 }
 
+// 与 WebUI settings.customModels.err.idInvalid 一致：仅字母、数字与 . _ : -
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+
 function normalizeModelPayload(payload = {}) {
   const id = String(payload.id || '').trim();
-  const hasControlCharacter = Array.from(id).some((character) => character.charCodeAt(0) < 32);
-  if (!id || id.length > 160 || /\s/.test(id) || hasControlCharacter) {
-    throw new Error('模型名称不能为空，且不能包含空格或控制字符');
+  if (!id) throw new Error('请填写模型 ID');
+  if (id.length > 160 || !MODEL_ID_PATTERN.test(id)) {
+    throw new Error('模型 ID 仅允许字母、数字与 . _ : -');
   }
   const name =
     String(payload.name || id)
@@ -93,12 +96,15 @@ function normalizeModelPayload(payload = {}) {
     url: normalizeEndpoint(payload.url),
     apiKey,
     preserveApiKey: payload.preserveApiKey !== false,
+    // WebUI 默认 visible:false：不把新模型写入 availableModels 白名单，避免遮蔽账号下发的官方模型
+    includeInAvailableModels: payload.includeInAvailableModels === true || payload.visible === true,
     maxInputTokens: finiteOptionalNumber(payload.maxInputTokens, '最大输入 Token', { min: 1, max: 100000000 }),
     maxOutputTokens: finiteOptionalNumber(payload.maxOutputTokens, '最大输出 Token', { min: 1, max: 100000000 }),
     temperature: finiteOptionalNumber(payload.temperature, 'Temperature', { integer: false, min: 0, max: 2 }),
     supportsToolCall: payload.supportsToolCall !== false,
     supportsImages: Boolean(payload.supportsImages),
     supportsReasoning: Boolean(payload.supportsReasoning),
+    useCustomProtocol: Boolean(payload.useCustomProtocol),
   };
 }
 
@@ -115,6 +121,7 @@ function publicModel(model) {
     supportsToolCall: model?.supportsToolCall !== false,
     supportsImages: Boolean(model?.supportsImages),
     supportsReasoning: Boolean(model?.supportsReasoning),
+    useCustomProtocol: Boolean(model?.useCustomProtocol),
     hasApiKey: Boolean(apiKey),
     apiKeyReference: ENV_REFERENCE_PATTERN.test(apiKey) ? apiKey : '',
   };
@@ -198,6 +205,7 @@ function saveModelConfig(payload = {}, options = {}) {
     supportsToolCall: normalized.supportsToolCall,
     supportsImages: normalized.supportsImages,
     supportsReasoning: normalized.supportsReasoning,
+    useCustomProtocol: normalized.useCustomProtocol,
   };
   if (normalized.apiKey) nextModel.apiKey = normalized.apiKey;
   else if (!normalized.preserveApiKey) delete nextModel.apiKey;
@@ -207,12 +215,21 @@ function saveModelConfig(payload = {}, options = {}) {
   else nextModel.maxOutputTokens = normalized.maxOutputTokens;
   if (normalized.temperature === undefined) delete nextModel.temperature;
   else nextModel.temperature = normalized.temperature;
+  if (!normalized.useCustomProtocol) delete nextModel.useCustomProtocol;
 
   if (originalIndex >= 0) config.models.splice(originalIndex, 1, nextModel);
   else config.models.push(nextModel);
+
+  // 对齐 WebUI：默认不写入 availableModels 白名单；仅在改名时迁移已有白名单项，
+  // 或调用方显式 includeInAvailableModels/visible 时追加。
   if (Array.isArray(config.availableModels)) {
+    const wasListed = Boolean(originalId && config.availableModels.includes(originalId));
     config.availableModels = config.availableModels.filter((id) => id !== originalId && id !== normalized.id);
-    config.availableModels.push(normalized.id);
+    if (wasListed || normalized.includeInAvailableModels) {
+      config.availableModels.push(normalized.id);
+    }
+  } else if (normalized.includeInAvailableModels) {
+    config.availableModels = [normalized.id];
   }
   writeModelConfig(config);
   return listModelConfig({ ...options, filePath });

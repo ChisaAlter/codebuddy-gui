@@ -147,7 +147,10 @@ export function replicaSidebarMainGroups() {
 }
 
 export function replicaSidebarFooterItems() {
-  return NAV_GROUPS.find((group) => group.id === 'preferences')?.items || [];
+  // Models live under Settings → 模型选择; keep footer free of the old 模型 entry.
+  return (NAV_GROUPS.find((group) => group.id === 'preferences')?.items || []).filter(
+    (item) => item.id !== 'models',
+  );
 }
 
 export default function ReplicaSidebar() {
@@ -315,7 +318,10 @@ export default function ReplicaSidebar() {
       await setProjectSidebarExpanded(projectId, true);
     }
     const nextState = useStore.getState();
-    if (nextState.activeProjectId !== projectId) return activateProject(projectId);
+    // 跨项目点 "+"：必须在目标项目下新建空白会话，而不是只 activate 到对方第一个会话
+    if (nextState.activeProjectId !== projectId) {
+      return activateProject(projectId, { preferNewThread: true });
+    }
     return newSession();
   };
 
@@ -391,7 +397,16 @@ export default function ReplicaSidebar() {
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
                 setRoute('chat');
-                await newSession();
+                // 始终弹目录选择；若仍选当前工作区则在该项目下新建会话
+                const state = useStore.getState();
+                const prevPath = state.projectsById[state.activeProjectId]?.workspacePath?.toLowerCase() || '';
+                const result = await state.chooseWorkspace();
+                if (!result) return;
+                const next = useStore.getState();
+                const nextPath = next.projectsById[next.activeProjectId]?.workspacePath?.toLowerCase() || '';
+                if (prevPath && nextPath === prevPath) {
+                  await next.newSession();
+                }
               }}
             >
               {newSessionBusy || projectNavigationBusy ? (
@@ -404,22 +419,6 @@ export default function ReplicaSidebar() {
 
         {!sidebarCollapsed && (
           <div className="mb-2 px-3">
-            <div className="mb-1 flex items-center justify-between">
-              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">项目</div>
-              <button
-                className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
-                disabled={projectNavigationBusy}
-                onClick={() => {
-                  if (!projectNavigationBusy) useStore.getState().chooseWorkspace();
-                }}
-                title="添加项目"
-                aria-label="添加项目"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M8 2v12M2 8h12" />
-                </svg>
-              </button>
-            </div>
             <ProjectSessionTree
               projectsById={projectsById}
               projectOrder={projectOrder}
@@ -572,7 +571,7 @@ export default function ReplicaSidebar() {
         </div>
       )}
 
-      <div className="shrink-0 border-t border-[var(--color-border-default)] p-1.5">
+      <div className="shrink-0 p-1.5">
         <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
         {!sidebarCollapsed ? (
           <div className="mt-1 flex items-center gap-2 border-t border-[var(--color-border-muted)] px-2.5 pt-2 text-[10px] text-[var(--color-text-muted)]">

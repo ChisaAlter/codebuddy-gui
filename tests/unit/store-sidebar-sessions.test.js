@@ -142,6 +142,45 @@ describe('store sidebar session mutations', () => {
     expect(useStore.getState().activeThreadId).toBe('visible');
   });
 
+  it('creates a new thread under the target project when preferNewThread is set', async () => {
+    useStore.setState({
+      projectsById: {
+        p1: project,
+        p2: { ...project, id: 'p2', name: 'Second', workspacePath: 'C:/Second' },
+      },
+      projectOrder: ['p1', 'p2'],
+      threadsById: {
+        t1: thread('t1'),
+        existing: { ...thread('existing'), projectId: 'p2' },
+      },
+      threadOrderByProject: { p1: ['t1'], p2: ['existing'] },
+      activeProjectId: 'p1',
+      activeThreadId: 't1',
+      persistActiveProjectWorkspaceState: vi.fn().mockResolvedValue(true),
+      persistActiveProjectTerminalState: vi.fn().mockResolvedValue(true),
+      persistProductState: vi.fn().mockResolvedValue(true),
+      ensureProjectRuntime: vi.fn().mockResolvedValue({ projectId: 'p2' }),
+      loadProjectTerminalState: vi.fn(),
+    });
+
+    await expect(
+      useStore.getState().activateProject('p2', {
+        deferInitializationUntilAuth: true,
+        preferNewThread: true,
+      }),
+    ).resolves.toBe(true);
+
+    const state = useStore.getState();
+    expect(state.activeProjectId).toBe('p2');
+    expect(state.activeThreadId).not.toBe('existing');
+    expect(state.threadOrderByProject.p2[0]).toBe(state.activeThreadId);
+    expect(state.threadsById[state.activeThreadId]).toMatchObject({
+      projectId: 'p2',
+      sessionId: null,
+    });
+    expect(state.threadOrderByProject.p2).toEqual([state.activeThreadId, 'existing']);
+  });
+
   it('reopens an existing workspace on its first visible thread', async () => {
     useStore.setState({
       projectsById: {

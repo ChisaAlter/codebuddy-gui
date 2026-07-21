@@ -139,18 +139,34 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (!isProjectNavigationCurrent(navigation)) return false;
       await get().persistActiveProjectTerminalState();
       if (!isProjectNavigationCurrent(navigation)) return false;
-      let thread = visibleProjectThreads(projectId, get().threadOrderByProject, get().threadsById)[0] || null;
-      let threadId = thread?.id || null;
-      if (!thread) {
+      // preferNewThread: sidebar project "+" always opens a blank chat under B,
+      // instead of resuming B's first existing session (activate/switch behavior).
+      let thread = null;
+      let threadId = null;
+      if (options.preferNewThread) {
         thread = createThreadRecord(projectId);
         threadId = thread.id;
         set((state) => ({
           threadsById: { ...state.threadsById, [thread.id]: thread },
           threadOrderByProject: {
             ...state.threadOrderByProject,
-            [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+            [projectId]: [thread.id, ...(state.threadOrderByProject[projectId] || [])],
           },
         }));
+      } else {
+        thread = visibleProjectThreads(projectId, get().threadOrderByProject, get().threadsById)[0] || null;
+        threadId = thread?.id || null;
+        if (!thread) {
+          thread = createThreadRecord(projectId);
+          threadId = thread.id;
+          set((state) => ({
+            threadsById: { ...state.threadsById, [thread.id]: thread },
+            threadOrderByProject: {
+              ...state.threadOrderByProject,
+              [projectId]: [...(state.threadOrderByProject[projectId] || []), thread.id],
+            },
+          }));
+        }
       }
       set({
         activeProjectId: projectId,

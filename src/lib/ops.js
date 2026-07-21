@@ -371,14 +371,67 @@ export async function searchTraces(params = {}) {
   };
 }
 
+// ===== 自定义模型（对照 WebUI ModelsController：POST /models/custom/*）=====
+
+async function postModelsCustom(path, body = {}, baseUrl = '') {
+  const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
+  const candidates = [`/models/custom/${path}`, `/api/v1/models/custom/${path}`];
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const payload = await fetchJson(`${normalizedBase}${candidate}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      });
+      return payload?.data && typeof payload.data === 'object' && Array.isArray(payload.data.models)
+        ? payload.data
+        : payload;
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || '');
+      // 路径不存在时换候选；其它错误直接抛出
+      if (!/404|Not Found|Unexpected response/i.test(message)) throw error;
+    }
+  }
+  throw lastError || new Error(`models/custom/${path} 不可用`);
+}
+
+/** 列出用户级自定义模型（WebUI uQ） */
+export async function listCustomModels(baseUrl = '', global = true) {
+  return postModelsCustom('list', { global }, baseUrl);
+}
+
+/**
+ * 保存自定义模型并触发 product sync（WebUI hQ，默认 visible:false）
+ * @param {{model: object, previousId?: string, visible?: boolean, global?: boolean}} payload
+ */
+export async function saveCustomModel(payload = {}, baseUrl = '') {
+  return postModelsCustom(
+    'save',
+    {
+      model: payload.model,
+      previousId: payload.previousId,
+      visible: payload.visible === true,
+      global: payload.global !== false,
+    },
+    baseUrl,
+  );
+}
+
+/** 删除自定义模型（WebUI pQ） */
+export async function deleteCustomModel(id, baseUrl = '', global = true) {
+  return postModelsCustom('delete', { id, global }, baseUrl);
+}
+
 // ===== Settings 管理 =====
 
 /**
- * 单项细粒度写（对照源 bundle：PUT /api/v1/settings/{key}?scope=user body {value}）
- * - key 含点 "." 时按路径切分嵌套合并（对照源 W.split(".") 逻辑）
- * - 与 updateSetting（整体 PUT /settings）并存；此路径更精准，对照源真实 UI 用此
- * @param {string} key - 设置项 key，如 "theme" 或 "memory.enabled"
- * @param {*} value - 设置值，对象类型会按 key 路径嵌套合并
+ * 单项细粒度写（对照源 bundle：PUT /api/v1/settings/{rootKey}?scope=user body {value}）
+ * - key 含点 "." 时：PUT 根键，value 为已在本地合并后的对象（对照源 A(I,T) 逻辑）
+ * - 例如 memory.enabled → PUT /settings/memory { value: { ...memory, enabled } }
+ * @param {string} key - 设置项 key 或根键，如 "theme" / "memory"
+ * @param {*} value - 写入体；嵌套项应传入合并后的根对象
  * @param {string} [scope='user'] - 命名空间，对照源固定 user
  * @param {string} [baseUrl=''] - 固定写入的项目运行时地址
  * @param {{authToken?: string|null, acpSessionToken?: string|null}} [requestContext] - 写入发起时的认证上下文
@@ -386,21 +439,26 @@ export async function searchTraces(params = {}) {
  */
 export async function updateSettingByKey(key, value, scope = 'user', baseUrl = '', requestContext = {}) {
   if (!key) throw new Error('setting key 不能为空');
+  const rootKey = String(key).split('.')[0];
+  if (!rootKey) throw new Error('setting key 不能为空');
   const params = new URLSearchParams();
   if (scope) params.set('scope', scope);
   const qs = params.toString();
   const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
-  const payload = await fetchJson(`${normalizedBase}/api/v1/settings/${encodeURIComponent(key)}${qs ? '?' + qs : ''}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(requestContext.authToken ? { Authorization: `Bearer ${requestContext.authToken}` } : {}),
-      ...(requestContext.acpSessionToken ? { 'acp-session-token': requestContext.acpSessionToken } : {}),
+  const payload = await fetchJson(
+    `${normalizedBase}/api/v1/settings/${encodeURIComponent(rootKey)}${qs ? '?' + qs : ''}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(requestContext.authToken ? { Authorization: `Bearer ${requestContext.authToken}` } : {}),
+        ...(requestContext.acpSessionToken ? { 'acp-session-token': requestContext.acpSessionToken } : {}),
+      },
+      omitAuthToken: true,
+      omitAcpSessionToken: true,
+      body: JSON.stringify({ value }),
     },
-    omitAuthToken: true,
-    omitAcpSessionToken: true,
-    body: JSON.stringify({ value }),
-  });
+  );
   return payload?.data || payload || null;
 }
 

@@ -86,12 +86,14 @@ describe('ProjectSessionTree', () => {
   it('uses readable project and conversation titles without tree guides', () => {
     const projectButton = container.querySelector('button[aria-label="折叠项目 Alpha"]');
     const threadTitle = container.querySelector('[data-session-id="unread"] .truncate');
-    const sessionContainer = container.querySelector('[data-session-id="running"]')?.parentElement;
+    const sessionRow = container.querySelector('[data-session-id="running"]');
+    // 缩进在会话行自身（pl-7），高亮背景可与项目行同宽，左侧不留空隙
     expect(projectButton.className).toContain('text-sm');
     expect(threadTitle?.textContent).toBe('Unread task');
     expect(projectButton.innerHTML).not.toContain('M6 3l5 5-5 5');
-    expect(sessionContainer?.className || '').not.toContain('border-l');
-    expect(sessionContainer?.className || '').toContain('pl-7');
+    expect(sessionRow?.className || '').not.toContain('border-l');
+    expect(sessionRow?.className || '').toContain('pl-7');
+    expect(sessionRow?.parentElement?.className || '').not.toContain('pl-7');
   });
 
   it('activates a conversation when the session row is clicked', async () => {

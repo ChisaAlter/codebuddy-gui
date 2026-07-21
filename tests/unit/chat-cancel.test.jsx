@@ -22,7 +22,7 @@ vi.mock('../../src/store', () => ({
       threadsById: {
         'thread-1': { id: 'thread-1', projectId: 'project-1', draft: '', status: mocks.threadStatus },
       },
-      guiSettings: {},
+      guiSettings: { locale: 'zh' },
       capabilities: {},
       connectionState: mocks.connectionState,
       currentModel: 'test-model',
@@ -101,7 +101,8 @@ describe('ReplicaChatView cancellation', () => {
   it('cancels the active CodeBuddy session when Stop is clicked', async () => {
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const stopButton = container.querySelector('button[title="停止生成"]');
+    // WebUI input.stop / input.send titles
+    const stopButton = container.querySelector('button[title="停止"]');
     expect(stopButton).toBeTruthy();
     expect(container.querySelector('button[title="加入待发送队列"]')).toBeNull();
     expect(container.querySelector('button[title="发送"]')).toBeNull();
@@ -118,7 +119,7 @@ describe('ReplicaChatView cancellation', () => {
     mocks.threadStatus = 'running';
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    expect(container.querySelector('button[title="停止生成"]')).toBeTruthy();
+    expect(container.querySelector('button[title="停止"]')).toBeTruthy();
     expect(container.querySelector('button[title="发送"]')).toBeNull();
   });
 
@@ -131,7 +132,7 @@ describe('ReplicaChatView cancellation', () => {
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    expect(container.querySelector('button[title="停止生成"]')).toBeNull();
+    expect(container.querySelector('button[title="停止"]')).toBeNull();
     expect(container.querySelector('button[title="发送"]')).toBeTruthy();
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
   });
@@ -140,8 +141,9 @@ describe('ReplicaChatView cancellation', () => {
     mocks.connectionState = 'error';
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    expect(container.querySelector('button[title="停止生成"]')).toBeNull();
-    expect(container.querySelector('button[title="等待会话连接"]')).toBeTruthy();
+    expect(container.querySelector('button[title="停止"]')).toBeNull();
+    // WebUI keeps send control (disabled) with input.send title
+    expect(container.querySelector('button[title="发送"]')).toBeTruthy();
   });
 
   it('shows Chinese permission modes and anchors the model picker inside the window', async () => {
@@ -207,7 +209,7 @@ describe('ReplicaChatView cancellation', () => {
     await act(async () => {
       scrollContainer.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
     });
-    expect(container.querySelector('button[title="跳转到最新内容"]')).toBeTruthy();
+    expect(container.querySelector('button[title="跳到最新"]')).toBeTruthy();
 
     mocks.timeline = [
       ...mocks.timeline,
@@ -217,10 +219,10 @@ describe('ReplicaChatView cancellation', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(initialScrollCalls);
 
     await act(async () => {
-      container.querySelector('button[title="跳转到最新内容"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector('button[title="跳到最新"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(initialScrollCalls + 1);
-    expect(container.querySelector('button[title="跳转到最新内容"]')).toBeNull();
+    expect(container.querySelector('button[title="跳到最新"]')).toBeNull();
   });
 
   it('keeps tool records manually collapsible without status updates reopening them', async () => {
@@ -267,7 +269,8 @@ describe('ReplicaChatView cancellation', () => {
 
     const indicator = container.querySelector('[data-response-activity]');
     expect(indicator).toBeTruthy();
-    expect(indicator.textContent).toContain('正在等待模型响应');
+    // WebUI phase.modelRequesting (zh)
+    expect(indicator.textContent).toContain('等待模型响应');
     expect(indicator.textContent).toContain('秒');
     expect(indicator.querySelectorAll('.response-activity-dot')).toHaveLength(3);
   });
@@ -292,7 +295,7 @@ describe('ReplicaChatView cancellation', () => {
         ...base,
         timeline: [{ type: 'tool_call', status: 'running' }],
       }),
-    ).toBe('正在执行工具');
+    ).toBe('执行工具');
     expect(
       getResponseActivityLabel({
         ...base,
@@ -384,7 +387,7 @@ describe('ReplicaChatView cancellation', () => {
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    expect(container.textContent).toContain('权限');
+    expect(container.textContent).toContain('需要授权');
     expect(container.textContent).toContain('运行命令 · 运行测试');
     expect(container.textContent).toContain('已始终允许');
     expect(container.textContent).not.toContain('ir-secret-identifier');
@@ -404,8 +407,9 @@ describe('ReplicaChatView cancellation', () => {
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const table = container.querySelector('.markdown-table-wrap table');
+    const table = container.querySelector('.markdown-table-wrapper table, .markdown-table-wrap table');
     expect(table).toBeTruthy();
+    expect(container.querySelector('.markdown-body.text-chat')).toBeTruthy();
     expect(Array.from(table.querySelectorAll('th')).map((cell) => cell.textContent)).toEqual(['模块', '职责']);
     expect(Array.from(table.querySelectorAll('td')).map((cell) => cell.textContent)).toEqual([
       '主进程',

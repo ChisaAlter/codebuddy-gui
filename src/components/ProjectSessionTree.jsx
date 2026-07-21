@@ -182,11 +182,12 @@ export function ProjectSessionTree({
             </div>
 
             {expanded ? (
-              <div className="mt-0.5 space-y-0.5 pl-7">
+              // 选中背景与项目行同宽（无左侧空隙）；会话标题用 pl-7 缩进对齐文件夹名
+              <div className="mt-0.5 space-y-0.5">
                 {projectThreads.length === 0 ? (
                   <button
                     type="button"
-                    className="w-full py-1 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                    className="w-full rounded-md py-1 pl-7 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)]"
                     aria-label={`在 ${project.name} 中新建会话`}
                     onClick={() => onCreateProjectThread(projectId)}
                   >新建会话</button>
@@ -208,7 +209,7 @@ export function ProjectSessionTree({
                       data-session-id={thread.id}
                       role="button"
                       tabIndex={isRenaming ? -1 : 0}
-                      className={`group/session relative flex min-h-8 cursor-pointer items-center rounded-md px-2 transition-colors ${isActive ? 'bg-[var(--color-accent-primary-dim)] text-[var(--color-text-primary)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
+                      className={`group/session relative flex min-h-8 w-full cursor-pointer items-center rounded-md pl-7 pr-1.5 transition-colors ${isActive ? 'bg-[var(--color-accent-primary-dim)] text-[var(--color-text-primary)]' : 'hover:bg-[var(--color-bg-hover)]'}`}
                       onClick={(event) => {
                         if (isRenaming) return;
                         if (event.target.closest?.('button, input, a, [data-session-action]')) return;
@@ -251,7 +252,7 @@ export function ProjectSessionTree({
                           >
                             <span className={`truncate ${isActive ? 'font-medium text-[var(--color-text-primary)]' : ''}`}>{thread.title || '新对话'}</span>
                           </div>
-                          <div className="mr-0.5 flex h-6 shrink-0 items-center gap-0.5" data-session-action>
+                          <div className="flex h-6 shrink-0 items-center gap-0.5" data-session-action>
                             <div className="hidden items-center gap-0.5 group-hover/session:flex group-focus-within/session:flex">
                               <button
                                 type="button"
@@ -288,7 +289,7 @@ export function ProjectSessionTree({
                 {projectThreads.length > SESSION_PREVIEW_LIMIT ? (
                   <button
                     type="button"
-                    className="w-full py-1 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                    className="w-full rounded-md py-1 pl-7 pr-2 text-left text-[13px] text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)]"
                     aria-label={`${sessionsExpanded ? '收起' : '展开'} ${project.name} 的全部会话`}
                     onClick={() => setExpandedSessionProjects((current) => ({
                       ...current,

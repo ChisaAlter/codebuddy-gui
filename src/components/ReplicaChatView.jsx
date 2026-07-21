@@ -1,6 +1,9 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
+import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 import {
@@ -10,35 +13,210 @@ import {
 } from '../lib/chat-commands';
 import { getSessionModeLabel } from '../lib/session-mode-labels';
 import { executionGroupSummary, groupTimelineForDisplay } from '../lib/timeline';
+import { resolveLocaleMode, translate } from '../lib/i18n';
+
+function useResolvedTheme() {
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'dark');
+  useEffect(() => {
+    const el = document.documentElement;
+    const update = () => setTheme(el.dataset.theme || 'dark');
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(el, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => observer.disconnect();
+  }, []);
+  return theme === 'light' ? 'light' : 'dark';
+}
 
 function MarkdownTable(props) {
-  const { node, ...tableProps } = props;
+  const { node, children, ...tableProps } = props;
   void node;
   return (
-    <div className="markdown-table-wrap">
-      <table {...tableProps} />
+    <div className="markdown-table-wrapper">
+      <table {...tableProps}>{children}</table>
     </div>
   );
 }
 
-const MARKDOWN_COMPONENTS = { table: MarkdownTable };
+function MarkdownCodeCopyButton({ text }) {
+  const t = useUiTranslate();
+  const [copied, setCopied] = useState(false);
+  const resetTimerRef = useRef(null);
 
-function getDayLabel(ts) {
+  useEffect(
+    () => () => {
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    },
+    [],
+  );
+
+  const handleCopy = useCallback(async () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    try {
+      await copyTextToClipboard(text);
+      setCopied(true);
+    } catch (_) {
+      setCopied(false);
+    }
+    resetTimerRef.current = setTimeout(() => {
+      resetTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
+  }, [text]);
+
+  const label = copied ? t('message.copied') : t('message.copyToClipboard');
+  return (
+    <div className="markdown-code-copy">
+      <button type="button" onClick={handleCopy} title={label} aria-label={label}>
+        {copied ? (
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--color-accent-green)" strokeWidth="1.5">
+            <path d="M3 8l3 3 7-7" />
+          </svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="5" y="5" width="10" height="10" rx="1.5" />
+            <path d="M11 5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v7a1 1 0 001 1h2" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function MarkdownCode({ className, children, ...props }) {
+  const theme = useResolvedTheme();
+  const languageMatch = /language-(\w+)/.exec(className || '');
+  const raw = String(children ?? '').replace(/\n$/, '');
+
+  // WebUI chat lF: group relative my-3 rounded-xl overflow-hidden bg-bg-code border + Prism Ol/Bl @ 14px/1.5
+  if (languageMatch) {
+    const language = languageMatch[1];
+    return (
+      <div className="markdown-code-block group relative my-3 overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-code)]">
+        <MarkdownCodeCopyButton text={raw} />
+        <div className="overflow-x-auto px-3 py-3">
+          <SyntaxHighlighter
+            style={theme === 'dark' ? oneDark : oneLight}
+            language={language}
+            PreTag="div"
+            customStyle={{
+              margin: 0,
+              padding: 0,
+              border: 'none',
+              background: 'transparent',
+              fontSize: '14px',
+              lineHeight: '1.5',
+            }}
+            codeTagProps={{ style: { background: 'transparent', textShadow: 'none' } }}
+          >
+            {raw}
+          </SyntaxHighlighter>
+        </div>
+      </div>
+    );
+  }
+
+  if (raw.includes('\n')) {
+    return (
+      <div className="markdown-code-block group relative my-3 overflow-hidden rounded-xl border border-[var(--color-border-default)] bg-[var(--color-bg-code)]">
+        <MarkdownCodeCopyButton text={raw} />
+        <pre
+          className="overflow-x-auto px-3 py-3 font-mono text-[var(--color-text-primary)]"
+          style={{ margin: 0, background: 'transparent', fontSize: '14px', lineHeight: 1.5, whiteSpace: 'pre' }}
+        >
+          {raw}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <code className={className} {...props}>
+      {children}
+    </code>
+  );
+}
+
+function MarkdownImage({ src, alt, className, style, variant = 'markdown' }) {
+  const t = useUiTranslate();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  const imgClass =
+    className ||
+    (variant === 'user'
+      ? 'max-w-full h-auto rounded-lg cursor-pointer hover:opacity-80 transition-opacity'
+      : 'markdown-image cursor-pointer hover:opacity-90 transition-opacity');
+
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt || ''}
+        className={imgClass}
+        style={style || (variant === 'user' ? { maxHeight: 360 } : undefined)}
+        title={src ? t('message.clickToEnlarge') : undefined}
+        onClick={(event) => {
+          event.preventDefault();
+          if (src) setOpen(true);
+        }}
+      />
+      {open && src ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-zoom-out"
+          onClick={() => setOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('message.clickToEnlarge')}
+        >
+          <img
+            src={src}
+            alt={alt || ''}
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** Unwrap react-markdown's default <pre> so fenced blocks are owned by MarkdownCode. */
+function MarkdownPre({ children }) {
+  return <>{children}</>;
+}
+
+const MARKDOWN_COMPONENTS = {
+  pre: MarkdownPre,
+  code: MarkdownCode,
+  table: MarkdownTable,
+  img: MarkdownImage,
+};
+
+function getDayLabel(ts, t) {
   const d = new Date(typeof ts === 'number' ? ts : Date.now());
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diff = (today - target) / 86400000;
-  if (diff === 0) return '今天';
-  if (diff === 1) return '昨天';
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  if (diff === 0) return t ? t('chat.date.today') : '今天';
+  if (diff === 1) return t ? t('chat.date.yesterday') : '昨天';
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 function readClipboardImage(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取剪贴板图片失败'));
+    reader.onerror = () => reject(reader.error || new Error(translate('zh', 'error.clipboardReadFailed')));
     reader.readAsDataURL(file);
   });
 }
@@ -57,6 +235,7 @@ function getPromptSuggestionText(value) {
 }
 
 function CopyButton({ text }) {
+  const t = useUiTranslate();
   const [copyStatus, setCopyStatus] = useState('idle');
   const resetTimerRef = useRef(null);
 
@@ -81,7 +260,12 @@ function CopyButton({ text }) {
     }, 1800);
   }, [text]);
 
-  const title = copyStatus === 'success' ? '已复制' : copyStatus === 'error' ? '复制失败' : '复制到剪贴板';
+  const title =
+    copyStatus === 'success'
+      ? t('message.copied')
+      : copyStatus === 'error'
+        ? t('clipboard.copyFailed')
+        : t('message.copyToClipboard');
 
   return (
     <button
@@ -154,15 +338,18 @@ export function getResponseActivityLabel({
   activePromptRunId,
   promptStartedAt,
   timeline,
+  t,
 }) {
+  // Default to zh so unit tests / pure callers keep WebUI Chinese chrome without locale wiring.
+  const tr = typeof t === 'function' ? t : (key) => translate('zh', key);
   if (connectionState !== 'connected') return null;
-  if (historyReplayActive) return '正在加载会话记录';
-  if (activeThreadStatus === 'cancelling') return '正在停止任务';
-  if (activeThreadStatus === 'waiting') return '正在等待你的操作';
+  if (historyReplayActive) return tr('phase.loadingHistory');
+  if (activeThreadStatus === 'cancelling') return tr('phase.cancelling');
+  if (activeThreadStatus === 'waiting') return tr('phase.waitingUser');
   const responseActive =
     activeThreadStatus === 'running' || Boolean(isAwaitingResponse) || Boolean(activePromptRunId);
   if (!responseActive) return null;
-  if (isAwaitingResponse) return '正在等待模型响应';
+  if (isAwaitingResponse) return tr('phase.modelRequesting');
 
   const entries = Array.isArray(timeline) ? timeline : [];
   const normalizedStartedAt = Number(promptStartedAt);
@@ -189,10 +376,10 @@ export function getResponseActivityLabel({
       !['completed', 'done', 'failed', 'error', 'cancelled', 'canceled'].includes(item?.status)
     );
   });
-  if (activeEntry?.type === 'thinking') return '正在思考';
-  if (activeEntry?.type === 'tool_call') return '正在执行工具';
-  if (activeEntry?.type === 'message' && activeEntry?.role === 'assistant') return '正在生成回答';
-  if (activePromptRunId || activeThreadStatus === 'running') return '正在处理任务';
+  if (activeEntry?.type === 'thinking') return tr('phase.thinking');
+  if (activeEntry?.type === 'tool_call') return tr('phase.toolExecuting');
+  if (activeEntry?.type === 'message' && activeEntry?.role === 'assistant') return tr('phase.generating');
+  if (activePromptRunId || activeThreadStatus === 'running') return tr('phase.processing');
   return null;
 }
 
@@ -214,7 +401,7 @@ function ResponseActivityIndicator({ label, startedAt }) {
       : null;
   return (
     <div
-      className="response-activity-indicator my-3 flex items-center justify-center gap-2 text-xs text-[var(--color-text-muted)]"
+      className="response-activity-indicator shrink-0 flex items-center justify-center gap-2 px-4 pb-1 pt-2 text-xs text-[var(--color-text-muted)]"
       data-response-activity
     >
       <span className="sr-only" role="status" aria-live="polite">
@@ -237,54 +424,100 @@ function ResponseActivityIndicator({ label, startedAt }) {
   );
 }
 
+function useUiTranslate() {
+  const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
+  const [systemTick, setSystemTick] = useState(0);
+  useEffect(() => {
+    if (localeMode !== 'system') return undefined;
+    const onChange = () => setSystemTick((value) => value + 1);
+    window.addEventListener('languagechange', onChange);
+    return () => window.removeEventListener('languagechange', onChange);
+  }, [localeMode]);
+  return useMemo(() => {
+    void systemTick;
+    const resolved = resolveLocaleMode(localeMode);
+    return (key, vars) => translate(resolved, key, vars);
+  }, [localeMode, systemTick]);
+}
+
 function ThinkingCard({ item }) {
-  const [expanded, setExpanded] = useState(false);
+  // null = follow WebUI default (expanded while streaming); boolean = user override
+  const t = useUiTranslate();
+  const [expandedOverride, setExpandedOverride] = useState(null);
   const [now, setNow] = useState(() => Date.now());
+  const contentRef = useRef(null);
+  const streaming = Boolean(item.streaming);
+  const expanded = expandedOverride !== null ? expandedOverride : streaming;
+  const content = typeof item.content === 'string' ? item.content : '';
+  const hasContent = content.trim().length > 0;
 
   useEffect(() => {
-    if (!item.streaming) return undefined;
+    if (!streaming) return undefined;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [item.streaming, item.createdAt]);
+  }, [streaming, item.createdAt]);
 
-  const durationText = useMemo(() => {
+  useEffect(() => {
+    if (streaming && expanded && contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [item.content, streaming, expanded]);
+
+  const durationLabel = useMemo(() => {
     const endedAt = resolveThinkingEndedAt(item, now);
-    return formatThinkingDuration(item.createdAt, endedAt, item.streaming);
-  }, [item.createdAt, item.completedAt, item.streaming, now]);
+    return formatThinkingDuration(item.createdAt, endedAt, streaming);
+  }, [item.createdAt, item.completedAt, item.streaming, now, streaming]);
+
+  // WebUI: streaming → 思考中; done → 已思考（用时 …） — never "用时 0 秒"
+  const headerText = streaming
+    ? t('thinking.thinking')
+    : `${t('thinking.done')}${t('thinking.duration', { duration: durationLabel })}`;
+
+  if (!streaming && !hasContent) return null;
 
   return (
-    <div className="my-2">
-      <button
-        className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
-        onClick={() => setExpanded(!expanded)}
+    <div className={`thinking-block${streaming ? ' thinking-block-streaming' : ''}`}>
+      <div
+        className="thinking-block-header"
+        onClick={() => setExpandedOverride((prev) => (prev !== null ? !prev : !streaming))}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setExpandedOverride((prev) => (prev !== null ? !prev : !streaming));
+          }
+        }}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" className="opacity-60">
-          <path d="M8 1a1 1 0 01.993.883L9 2v5h5a1 1 0 01.117 1.993L14 9H9v5a1 1 0 01-1.993.117L7 14V9H2a1 1 0 01-.117-1.993L2 7h5V2a1 1 0 011-1z" />
-        </svg>
-        <span>{item.streaming ? '正在思考' : '已思考'}（用时 {durationText}）</span>
+        <span className="thinking-block-header-text">{headerText}</span>
+        {streaming ? <span className="thinking-dot" aria-hidden="true" /> : null}
         <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.5"
-          className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`thinking-block-toggle${expanded ? ' expanded' : ''}`}
+          aria-hidden="true"
         >
-          <path d="M6 3l5 5-5 5" />
+          <path d="M6 9l6 6 6-6" />
         </svg>
-      </button>
-      {expanded && (
-        <div className="mt-2 rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3 text-xs text-[var(--color-text-secondary)] leading-relaxed">
-          {item.content || '(无内容)'}
+      </div>
+      {expanded && hasContent ? (
+        <div ref={contentRef} className="thinking-block-content">
+          {content}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
 function ToolCallBlock({ item }) {
+  const t = useUiTranslate();
   const [expanded, setExpanded] = useState(false);
   const isCompleted = item.status === 'completed' || item.status === 'done';
   const isFailed = item.status === 'failed' || item.status === 'error';
@@ -299,7 +532,7 @@ function ToolCallBlock({ item }) {
           <path d="M8 1a1 1 0 01.993.883L9 2v5h5a1 1 0 01.117 1.993L14 9H9v5a1 1 0 01-1.993.117L7 14V9H2a1 1 0 01-.117-1.993L2 7h5V2a1 1 0 011-1z" />
         </svg>
         <span className="text-[var(--color-text-secondary)]">
-          {item.title || '工具调用'} — {item.kind || '执行中'}
+          {item.title || t('tool.call')} — {item.kind || t('tool.running')}
         </span>
         <span
           className="ml-auto rounded px-1.5 py-0 text-[10px] font-medium"
@@ -316,7 +549,7 @@ function ToolCallBlock({ item }) {
                 : 'var(--color-accent-blue)',
           }}
         >
-          {isCompleted ? '已完成' : isFailed ? '失败' : '执行中'}
+          {isCompleted ? t('tool.completed') : isFailed ? t('tool.failed') : t('tool.running')}
         </span>
         <svg
           width="12"
@@ -334,7 +567,9 @@ function ToolCallBlock({ item }) {
         <div className="mt-1.5 rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3 space-y-2">
           {item.rawInput ? (
             <div>
-              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">输入</div>
+              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">
+                {t('tool.input')}
+              </div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)]">
                 {typeof item.rawInput === 'string' ? item.rawInput : JSON.stringify(item.rawInput, null, 2)}
               </pre>
@@ -342,7 +577,9 @@ function ToolCallBlock({ item }) {
           ) : null}
           {item.rawOutput ? (
             <div>
-              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">输出</div>
+              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">
+                {t('tool.output')}
+              </div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)] max-h-48">
                 {typeof item.rawOutput === 'string' ? item.rawOutput : JSON.stringify(item.rawOutput, null, 2)}
               </pre>
@@ -360,6 +597,7 @@ function ToolCallBlock({ item }) {
 }
 
 function ExecutionGroup({ items, autoCollapse = false }) {
+  const t = useUiTranslate();
   const summary = executionGroupSummary(items);
   const toolItems = items.filter((item) => item?.type === 'tool_call');
   const internalEventCount = Math.max(0, items.length - toolItems.length);
@@ -399,7 +637,7 @@ function ExecutionGroup({ items, autoCollapse = false }) {
         >
           <path d="M2 4h12M2 8h8M2 12h10" />
         </svg>
-        <span className="font-medium text-[var(--color-text-primary)]">执行记录</span>
+        <span className="font-medium text-[var(--color-text-primary)]">{t('execution.title')}</span>
         <span className="truncate text-[var(--color-text-muted)]">{detail}</span>
         <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusClass}`}>
           {summary.status}
@@ -419,11 +657,11 @@ function ExecutionGroup({ items, autoCollapse = false }) {
           {toolItems.length ? (
             toolItems.map((item, index) => <TimelineItem key={item.id || index} item={item} />)
           ) : (
-            <div className="px-1 py-2 text-xs text-[var(--color-text-muted)]">本轮没有可展示的工具调用</div>
+            <div className="px-1 py-2 text-xs text-[var(--color-text-muted)]">{t('execution.emptyTools')}</div>
           )}
           {internalEventCount > 0 ? (
             <div className="px-1 py-2 text-[11px] text-[var(--color-text-muted)]">
-              已合并 {internalEventCount} 条内部进度（检查点、任务或目标状态）
+              {t('execution.mergedInternal', { n: internalEventCount })}
             </div>
           ) : null}
         </div>
@@ -433,12 +671,13 @@ function ExecutionGroup({ items, autoCollapse = false }) {
 }
 
 function EventDetails({ value }) {
+  const t = useUiTranslate();
   const [expanded, setExpanded] = useState(false);
   const details = useMemo(() => {
     if (!value || typeof value !== 'object') return '';
     try {
       const text = JSON.stringify(value, null, 2);
-      return text.length > 20000 ? text.slice(0, 20000) + '\n...详情已截断' : text;
+      return text.length > 20000 ? text.slice(0, 20000) + '\n...' : text;
     } catch (_) {
       return '';
     }
@@ -451,7 +690,7 @@ function EventDetails({ value }) {
         className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
         onClick={() => setExpanded(!expanded)}
       >
-        {expanded ? '收起详情' : '查看详情'}
+        {expanded ? t('tool.collapse') : t('tool.expand')}
       </button>
       {expanded ? (
         <pre className="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-[10px] leading-4 text-[var(--color-text-secondary)]">
@@ -463,8 +702,9 @@ function EventDetails({ value }) {
 }
 
 function ErrorTimelineCard({ item }) {
+  const t = useUiTranslate();
   const payload = item.meta || item.raw || {};
-  const message = item.content || payload.message || payload.error?.message || 'CodeBuddy 执行失败';
+  const message = item.content || payload.message || payload.error?.message || t('execution.failedDefault');
   return (
     <div className="my-3 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2.5">
       <div className="flex items-start gap-2">
@@ -482,7 +722,7 @@ function ErrorTimelineCard({ item }) {
           <path d="M8 4.5v4M8 11.5v.1" />
         </svg>
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-[var(--color-accent-red)]">执行失败</div>
+          <div className="text-xs font-medium text-[var(--color-accent-red)]">{t('execution.failedTitle')}</div>
           <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
             {message}
           </div>
@@ -494,14 +734,24 @@ function ErrorTimelineCard({ item }) {
 }
 
 function ArtifactTimelineCard({ item }) {
+  const t = useUiTranslate();
   const payload = item.meta || item.raw || {};
   const artifact = payload.artifact && typeof payload.artifact === 'object' ? payload.artifact : payload;
   const tasks = Array.isArray(artifact.tasks) ? artifact.tasks : [];
-  const title = artifact.title || artifact.name || artifact.type || 'CodeBuddy 产物';
-  const eventLabels = { created: '已创建', updated: '已更新', deleted: '已删除' };
-  const eventLabel = eventLabels[payload.event] || '产物';
+  const title = artifact.title || artifact.name || artifact.type || t('artifact.defaultTitle');
+  const eventLabels = {
+    created: t('artifact.created'),
+    updated: t('artifact.updated'),
+    deleted: t('artifact.deleted'),
+  };
+  const eventLabel = eventLabels[payload.event] || t('artifact.label');
   const summary = getPromptSuggestionText(artifact.description || artifact.content || artifact.text);
-  const statusLabels = { completed: '已完成', in_progress: '进行中', pending: '待处理', failed: '失败' };
+  const statusLabels = {
+    completed: t('artifact.status.completed'),
+    in_progress: t('artifact.status.in_progress'),
+    pending: t('artifact.status.pending'),
+    failed: t('artifact.status.failed'),
+  };
   return (
     <div className="my-3 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2.5">
       <div className="flex items-start gap-2">
@@ -547,7 +797,7 @@ function ArtifactTimelineCard({ item }) {
                     {task.status === 'completed' ? '✓' : task.status === 'failed' ? '×' : '•'}
                   </span>
                   <span className="min-w-0 flex-1 break-words text-[var(--color-text-secondary)]">
-                    {task.content || task.subject || task.title || task.id || '未命名任务'}
+                    {task.content || task.subject || task.title || task.id || t('artifact.taskUntitled')}
                   </span>
                   <span className="shrink-0 text-[10px] text-[var(--color-text-muted)]">
                     {statusLabels[task.status] || task.status || ''}
@@ -575,6 +825,7 @@ function consumeStoreError(fallback) {
   return message;
 }
 function ActivityTimelineCard({ item }) {
+  const t = useUiTranslate();
   const payload = item.meta || item.raw || {};
   const source =
     payload.checkpoint && typeof payload.checkpoint === 'object'
@@ -583,18 +834,22 @@ function ActivityTimelineCard({ item }) {
         ? payload.task
         : payload;
   const labels = {
-    checkpoint: '检查点',
-    taskCreated: '任务已创建',
-    taskStatus: '任务状态更新',
-    'goal-progress': '目标进度',
-    'goal-status': '目标状态更新',
-    question_answered: '问题已回答',
+    checkpoint: t('activity.checkpoint'),
+    taskCreated: t('activity.taskCreated'),
+    taskStatus: t('activity.taskStatus'),
+    'goal-progress': t('activity.goalProgress'),
+    'goal-status': t('activity.goalStatus'),
+    question_answered: t('activity.questionAnswered'),
   };
-  const eventLabels = { created: '已创建', updated: '已更新', reverted: '已回退' };
+  const eventLabels = {
+    created: t('activity.created'),
+    updated: t('activity.updated'),
+    reverted: t('activity.reverted'),
+  };
   const title =
     item.type === 'checkpoint'
-      ? '检查点' + (eventLabels[payload.event] ? ' · ' + eventLabels[payload.event] : '')
-      : labels[item.type] || 'CodeBuddy 动态';
+      ? t('activity.checkpoint') + (eventLabels[payload.event] ? ' · ' + eventLabels[payload.event] : '')
+      : labels[item.type] || t('activity.fallback');
   const summary =
     item.content ||
     source.title ||
@@ -620,19 +875,20 @@ function ActivityTimelineCard({ item }) {
 }
 
 function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
+  const t = useUiTranslate();
   const phase = typeof agentPhase === 'string' ? agentPhase : agentPhase?.type || agentPhase?.phase || '';
   const progressType = typeof progress === 'string' ? progress : progress?.type || '';
   const current = historyReplayActive ? 'history-replay' : progressType || phase;
   if (!current || ['idle', 'completed', 'done', 'ready'].includes(current)) return null;
   const labels = {
-    'history-replay': '正在恢复会话历史',
-    compacting: '正在压缩上下文',
-    thinking: '正在思考',
-    reasoning: '正在推理',
-    responding: '正在生成回复',
-    tool: '正在执行工具',
-    tool_use: '正在执行工具',
-    planning: '正在规划',
+    'history-replay': t('sessionActivity.historyReplay'),
+    compacting: t('sessionActivity.compacting'),
+    thinking: t('sessionActivity.thinking'),
+    reasoning: t('sessionActivity.reasoning'),
+    responding: t('sessionActivity.responding'),
+    tool: t('sessionActivity.tool'),
+    tool_use: t('sessionActivity.tool'),
+    planning: t('sessionActivity.planning'),
   };
   return (
     <div className="mb-3 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
@@ -643,29 +899,34 @@ function SessionActivityStatus({ historyReplayActive, agentPhase, progress }) {
 }
 
 function TeamStatusPanel({ teamState }) {
+  const t = useUiTranslate();
   if (!teamState) return null;
   const members = Array.isArray(teamState.members) ? teamState.members : [];
-  const teamName = teamState.teamName || teamState.name || 'CodeBuddy 团队';
+  const teamName = teamState.teamName || teamState.name || t('team.defaultName');
   const statusLabels = {
-    working: '工作中',
-    running: '工作中',
-    in_progress: '工作中',
-    idle: '空闲',
-    completed: '已完成',
-    failed: '失败',
-    waiting: '等待中',
+    working: t('team.status.working'),
+    running: t('team.status.working'),
+    in_progress: t('team.status.working'),
+    idle: t('team.status.idle'),
+    completed: t('team.status.completed'),
+    failed: t('team.status.failed'),
+    waiting: t('team.status.waiting'),
   };
   return (
     <div className="mb-3 border-b border-[var(--color-border-muted)] pb-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium text-[var(--color-text-primary)]">{teamName}</span>
-        {teamState.isAutoTeam ? <span className="text-[10px] text-[var(--color-text-muted)]">自动团队</span> : null}
-        <span className="text-[10px] text-[var(--color-text-muted)]">{members.length} 位成员</span>
+        {teamState.isAutoTeam ? (
+          <span className="text-[10px] text-[var(--color-text-muted)]">{t('team.auto')}</span>
+        ) : null}
+        <span className="text-[10px] text-[var(--color-text-muted)]">
+          {t('team.memberCount', { n: members.length })}
+        </span>
       </div>
       {members.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {members.map((member, index) => {
-            const name = member.name || member.agentName || member.role || '成员 ' + (index + 1);
+            const name = member.name || member.agentName || member.role || t('team.memberFallback', { n: index + 1 });
             const status = member.status || member.state || 'idle';
             const active = ['working', 'running', 'in_progress'].includes(status);
             return (
@@ -699,6 +960,7 @@ function TeamStatusPanel({ teamState }) {
 }
 
 function InterruptionCard({ item }) {
+  const t = useUiTranslate();
   const respondToInterruption = useStore((s) => s.respondToInterruption);
   const payload = item.meta || item.raw || {};
   const interruptionId =
@@ -706,18 +968,18 @@ function InterruptionCard({ item }) {
   const toolCallId = payload.toolCallId || item.raw?.toolCallId || item.toolCallId || null;
   const permissionOptions = payload.options || item.raw?.options || [];
   const toolInput = payload.toolInput && typeof payload.toolInput === 'object' ? payload.toolInput : {};
-  const toolName = payload.toolTitle || payload.toolName || item.title || '工具操作';
+  const toolName = payload.toolTitle || payload.toolName || item.title || t('interruption.defaultTool');
   const description = toolInput.description || payload.toolDescription || '';
   const command = typeof toolInput.command === 'string' ? toolInput.command : '';
   const expired = item.status === 'expired';
   const resolved = item.status === 'resolved';
   const resolution = payload.resolution;
   const resolutionLabels = {
-    allow: '已允许',
-    allowAll: '已始终允许',
-    deny: '已拒绝',
-    reject: '已拒绝',
-    rejectAndExitPlan: '已拒绝并退出计划',
+    allow: t('interruption.approved'),
+    allowAll: t('interruption.approvedAlways'),
+    deny: t('interruption.denied'),
+    reject: t('interruption.denied'),
+    rejectAndExitPlan: t('interruption.rejectAndExitPlan'),
   };
   const resolutionDenied = ['deny', 'reject', 'rejectAndExitPlan'].includes(resolution);
   const [busy, setBusy] = useState(false);
@@ -729,16 +991,16 @@ function InterruptionCard({ item }) {
     setError('');
     try {
       const ok = await respondToInterruption(interruptionId, decision, toolCallId);
-      if (!ok) setError(useStore.getState().error || '权限响应失败，请重试');
+      if (!ok) setError(useStore.getState().error || t('interruption.respondFailed'));
     } catch (responseError) {
-      setError(responseError?.message || '权限响应失败，请重试');
+      setError(responseError?.message || t('interruption.respondFailed'));
     } finally {
       setBusy(false);
     }
   };
 
   if (resolved || expired) {
-    const statusLabel = expired ? '已失效' : resolutionLabels[resolution] || '已处理';
+    const statusLabel = expired ? t('interruption.expired') : resolutionLabels[resolution] || t('interruption.resolved');
     return (
       <div className="my-2 flex min-w-0 items-center gap-2 border-y border-[var(--color-border-muted)] py-2 text-xs">
         <svg
@@ -749,7 +1011,7 @@ function InterruptionCard({ item }) {
         >
           <path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" />
         </svg>
-        <span className="shrink-0 font-medium text-[var(--color-text-primary)]">权限</span>
+        <span className="shrink-0 font-medium text-[var(--color-text-primary)]">{t('interruption.title')}</span>
         <span className="truncate text-[var(--color-text-muted)]" title={[toolName, description].filter(Boolean).join(' · ')}>
           {toolName}
           {description ? ` · ${description}` : ''}
@@ -782,10 +1044,12 @@ function InterruptionCard({ item }) {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-yellow)" aria-hidden="true">
           <path d="M8 1l7 13H1L8 1zm0 5v3m0 2v1" />
         </svg>
-        <div className="text-sm font-medium text-[var(--color-text-primary)]">需要权限 · {toolName}</div>
+        <div className="text-sm font-medium text-[var(--color-text-primary)]">
+          {t('interruption.needsPermission', { name: toolName })}
+        </div>
       </div>
       <div className="mb-3 text-xs leading-5 text-[var(--color-text-secondary)]">
-        {description || '该工具需要你的确认后才能继续。'}
+        {description || t('interruption.defaultDesc')}
       </div>
       {command ? (
         <pre className="mb-3 max-h-20 overflow-x-auto whitespace-pre-wrap break-words rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)]">
@@ -800,7 +1064,7 @@ function InterruptionCard({ item }) {
             style={{ background: 'var(--color-accent-blue)' }}
             onClick={() => resolve('allow')}
           >
-            {busy ? '处理中...' : '允许'}
+            {busy ? t('question.busy') : t('interruption.allow')}
           </button>
           {permissionOptions.some((option) =>
             ['allow_always', 'allowAll'].includes(typeof option === 'string' ? option : option.optionId || option.name),
@@ -810,7 +1074,7 @@ function InterruptionCard({ item }) {
               className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
               onClick={() => resolve('allowAll')}
             >
-              始终允许
+              {t('interruption.allowAll')}
             </button>
           ) : null}
           <button
@@ -818,7 +1082,7 @@ function InterruptionCard({ item }) {
             className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
             onClick={() => resolve('deny')}
           >
-            拒绝
+            {t('interruption.deny')}
           </button>
           {permissionOptions.some((option) =>
             ['reject_and_exit_plan', 'rejectAndExitPlan'].includes(
@@ -830,18 +1094,19 @@ function InterruptionCard({ item }) {
               className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
               onClick={() => resolve('rejectAndExitPlan')}
             >
-              拒绝并退出计划
+              {t('interruption.rejectAndExitPlan')}
             </button>
           ) : null}
         </div>
       ) : (
-        <div className="text-xs text-[var(--color-accent-red)]">权限请求缺少标识，无法响应</div>
+        <div className="text-xs text-[var(--color-accent-red)]">{t('interruption.missingId')}</div>
       )}
       {error ? <div className="mt-2 text-xs text-[var(--color-accent-red)]">{error}</div> : null}
     </div>
   );
 }
 function QuestionCard({ item }) {
+  const t = useUiTranslate();
   const submitQuestionAnswers = useStore((s) => s.submitQuestionAnswers);
   const cancelQuestionAnswers = useStore((s) => s.cancelQuestionAnswers);
   const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId;
@@ -864,9 +1129,9 @@ function QuestionCard({ item }) {
     setError('');
     try {
       const ok = await submitQuestionAnswers(toolCallId, answers);
-      if (!ok) setError(useStore.getState().error || '答案提交失败，请重试');
+      if (!ok) setError(useStore.getState().error || t('question.submitFailed'));
     } catch (submitError) {
-      setError(submitError?.message || '答案提交失败，请重试');
+      setError(submitError?.message || t('question.submitFailed'));
     } finally {
       setBusy(false);
     }
@@ -878,9 +1143,9 @@ function QuestionCard({ item }) {
     setError('');
     try {
       const ok = await cancelQuestionAnswers(toolCallId);
-      if (!ok) setError(useStore.getState().error || '取消问题失败，请重试');
+      if (!ok) setError(useStore.getState().error || t('question.cancelFailed'));
     } catch (cancelError) {
-      setError(cancelError?.message || '取消问题失败，请重试');
+      setError(cancelError?.message || t('question.cancelFailed'));
     } finally {
       setBusy(false);
     }
@@ -908,7 +1173,11 @@ function QuestionCard({ item }) {
         <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--color-accent-blue)">
           <path d="M8 1C4.1 1 1 4.1 1 8s3.1 7 7 7 7-3.1 7-7-3.1-7-7-7zm0 2.5c.7 0 1.3.6 1.3 1.3s-.6 1.3-1.3 1.3-1.3-.6-1.3-1.3.6-1.3 1.3-1.3zm1.5 9H6.5v-1h1V8H6.5V7h2.5v4.5H9.5V12z" />
         </svg>
-        <span className="text-sm font-medium text-[var(--color-text-primary)]">问题</span>
+        <span className="text-sm font-medium text-[var(--color-text-primary)]">
+          {questions.length > 1
+            ? t('question.titleWithCount', { count: questions.length })
+            : t('question.singleTitle')}
+        </span>
       </div>
       {resolved ? (
         <div
@@ -918,10 +1187,10 @@ function QuestionCard({ item }) {
           }
         >
           {item.status === 'expired'
-            ? '请求已失效，请重新发起对话'
+            ? t('question.expired')
             : item.status === 'cancelled'
-              ? '已取消'
-              : '答案已提交'}
+              ? t('question.cancelled')
+              : t('question.answered')}
         </div>
       ) : (
         <>
@@ -939,7 +1208,7 @@ function QuestionCard({ item }) {
                     <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)]">{question.header}</div>
                   ) : null}
                   <div className="mb-1 text-xs text-[var(--color-text-primary)]">
-                    {question.question || question.prompt || '问题 ' + (index + 1)}
+                    {question.question || question.prompt || t('question.fallback', { n: index + 1 })}
                   </div>
                   {options.length > 0 && question.multiSelect ? (
                     <div className="space-y-1">
@@ -979,7 +1248,7 @@ function QuestionCard({ item }) {
                       disabled={busy}
                       onChange={(event) => setAnswers((previous) => ({ ...previous, [key]: event.target.value }))}
                     >
-                      <option value="">请选择</option>
+                      <option value="">{t('question.selectPlaceholder')}</option>
                       {options.map((option, optionIndex) => {
                         const value = typeof option === 'string' ? option : option.value || option.id || option.label;
                         const label = typeof option === 'string' ? option : option.label || option.name || value;
@@ -996,7 +1265,7 @@ function QuestionCard({ item }) {
                       value={answers[key] || ''}
                       disabled={busy}
                       onChange={(event) => setAnswers((previous) => ({ ...previous, [key]: event.target.value }))}
-                      placeholder="输入你的答案..."
+                      placeholder={t('question.answerPlaceholder')}
                     />
                   )}
                 </div>
@@ -1011,7 +1280,7 @@ function QuestionCard({ item }) {
                 style={{ background: 'var(--color-accent-blue)' }}
                 onClick={submit}
               >
-                {busy ? '处理中...' : '提交答案'}
+                {busy ? t('question.busy') : t('question.submit')}
               </button>
               {cancellable ? (
                 <button
@@ -1019,12 +1288,12 @@ function QuestionCard({ item }) {
                   className="rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
                   onClick={cancel}
                 >
-                  取消
+                  {t('question.cancel')}
                 </button>
               ) : null}
             </div>
           ) : (
-            <div className="mt-3 text-xs text-[var(--color-accent-red)]">问题请求缺少标识，无法提交</div>
+            <div className="mt-3 text-xs text-[var(--color-accent-red)]">{t('question.missingId')}</div>
           )}
         </>
       )}
@@ -1043,18 +1312,22 @@ function DateSeparator({ label }) {
   );
 }
 
-const PROTOCOL_EVENT_LABELS = {
-  config_option_update: '配置更新',
-  session_info_update: '会话信息',
-  available_commands_update: '命令更新',
-  initialized: '已初始化',
-  status_change: '状态变更',
-  model_update: '模型更新',
-  mode_update: '模式更新',
-  current_mode_update: '模式更新',
-};
+function getProtocolEventLabel(type, t) {
+  const map = {
+    config_option_update: t('protocol.configOptionUpdate'),
+    session_info_update: t('protocol.sessionInfoUpdate'),
+    available_commands_update: t('protocol.availableCommandsUpdate'),
+    initialized: t('protocol.initialized'),
+    status_change: t('protocol.statusChange'),
+    model_update: t('protocol.modelUpdate'),
+    mode_update: t('protocol.modeUpdate'),
+    current_mode_update: t('protocol.modeUpdate'),
+  };
+  return map[type] || null;
+}
 
 const TimelineItem = React.memo(function TimelineItem({ item }) {
+  const t = useUiTranslate();
   if (item.type === 'execution_group') {
     return <ExecutionGroup items={item.items || []} autoCollapse={item.autoCollapse} />;
   }
@@ -1089,21 +1362,69 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <QuestionCard item={item} />;
   }
 
-  if (PROTOCOL_EVENT_LABELS[item.type]) {
+  const protocolLabel = getProtocolEventLabel(item.type, t);
+  if (protocolLabel) {
     return (
       <div className="flex items-center gap-3 my-4">
         <div className="flex-1 h-px bg-[var(--color-border-muted)]" />
-        <span className="text-xs text-[var(--color-text-muted)] flex-shrink-0">{PROTOCOL_EVENT_LABELS[item.type]}</span>
+        <span className="text-xs text-[var(--color-text-muted)] flex-shrink-0">{protocolLabel}</span>
         <div className="flex-1 h-px bg-[var(--color-border-muted)]" />
       </div>
     );
   }
 
   if (item.role === 'user') {
+    const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+    const images = attachments.filter((attachment) => attachment?.kind === 'image');
+    const files = attachments.filter((attachment) => attachment?.kind !== 'image');
+    const text = typeof item.content === 'string' ? item.content : '';
+    if (!text && images.length === 0 && files.length === 0) return null;
     return (
-      <div className="my-3 flex justify-end" data-chat-role="user">
-        <div className="max-w-[75%] rounded-2xl rounded-br-md bg-[var(--color-bg-user)] px-4 py-2.5 text-sm leading-relaxed text-white">
-          {item.content}
+      <div className="mb-6 flex justify-end" data-chat-role="user">
+        <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-tr-sm border border-transparent bg-[var(--color-bg-user)] px-5 py-3">
+          {images.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {images.map((attachment, index) => {
+                const src =
+                  attachment.url ||
+                  (attachment.data
+                    ? attachment.data.startsWith('data:')
+                      ? attachment.data
+                      : `data:${attachment.mimeType || 'image/png'};base64,${attachment.data}`
+                    : null);
+                if (!src) return null;
+                return (
+                  <MarkdownImage
+                    key={`${attachment.path || attachment.name || 'img'}-${index}`}
+                    src={src}
+                    alt={attachment.name || ''}
+                    variant="user"
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+          {files.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {files.map((attachment, index) => (
+                <div
+                  key={`${attachment.path || attachment.name || 'file'}-${index}`}
+                  className="flex max-w-[180px] items-center gap-1.5 rounded-lg border border-[var(--color-border-muted)]/30 bg-[var(--color-bg-primary)]/50 px-2.5 py-1.5"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                    <path d="M14 2v6h6" />
+                  </svg>
+                  <span className="truncate text-[12px] text-[var(--color-text-primary)]" title={attachment.name || attachment.path || ''}>
+                    {attachment.name || attachment.path || t('attachment.unnamedFile')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {text ? (
+            <p className="whitespace-pre-wrap break-words text-chat text-[var(--color-text-primary)]">{text}</p>
+          ) : null}
         </div>
       </div>
     );
@@ -1111,8 +1432,9 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
 
   if (item.role === 'assistant') {
     return (
-      <div className="group my-3">
-        <div className="text-sm leading-relaxed text-[var(--color-text-primary)] prose max-w-none">
+      <div className="group mb-2">
+        {/* WebUI: markdown-body text-chat text-text-primary */}
+        <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
           {item.content ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
               {item.content}
@@ -1132,6 +1454,8 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
 });
 
 export default function ReplicaChatView() {
+  const t = useUiTranslate();
+  // NOTE: remaining hooks follow; `t` used for WebUI chrome i18n
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -1156,7 +1480,10 @@ export default function ReplicaChatView() {
   const usage = useStore((s) => s.usage);
   const showTokensCounter = useStore((s) => Boolean(s.guiSettings?.showTokensCounter));
   const pasteImageEnabled = useStore((s) => Boolean(s.guiSettings?.enablePasteImageFromClipboard));
-  const promptSuggestionEnabled = useStore((s) => Boolean(s.guiSettings?.promptSuggestionEnabled));
+  // CLI setting enables runtime suggestions; GUI setting controls input-area display (either on is enough).
+  const promptSuggestionEnabled = useStore(
+    (s) => Boolean(s.guiSettings?.promptSuggestionEnabled || s.settings?.promptSuggestionEnabled),
+  );
   const promptSuggestion = useStore((s) => s.promptSuggestion);
   const clearPromptSuggestion = useStore((s) => s.clearPromptSuggestion);
   const teamState = useStore((s) => s.teamState);
@@ -1257,11 +1584,11 @@ export default function ReplicaChatView() {
     return items;
   }, [currentMode, modes]);
   const currentModeName =
-    modeOptions.find((m) => m.id === currentMode)?.name || getSessionModeLabel(currentMode, '始终询问');
+    modeOptions.find((m) => m.id === currentMode)?.name || getSessionModeLabel(currentMode, t('mode.default'));
   const effortOptions = useMemo(() => {
     const FALLBACK = [
-      { id: 'disabled', name: '关闭' },
-      { id: 'enabled', name: '默认' },
+      { id: 'disabled', name: t('composer.effort.disabled') },
+      { id: 'enabled', name: t('composer.effort.enabled') },
       { id: 'low', name: 'Low' },
       { id: 'medium', name: 'Medium' },
       { id: 'high', name: 'High' },
@@ -1274,7 +1601,12 @@ export default function ReplicaChatView() {
         const id = o.id || o.value;
         if (!id) return null;
         // 给 enabled/disabled 起可读档位名，其余沿用服务端 name
-        const name = id === 'disabled' ? '关闭' : id === 'enabled' ? '默认' : o.name || id;
+        const name =
+          id === 'disabled'
+            ? t('composer.effort.disabled')
+            : id === 'enabled'
+              ? t('composer.effort.enabled')
+              : o.name || id;
         return { id, name };
       })
       .filter(Boolean);
@@ -1282,15 +1614,15 @@ export default function ReplicaChatView() {
     // ultracode 始终作为附加项（复合模式，仅 /effort ultracode 触发，服务端 thought_level 不含此值）
     if (!base.some((o) => o.id === 'ultracode')) base.push({ id: 'ultracode', name: 'Ultracode' });
     return base;
-  }, [thoughtLevelOptions]);
+  }, [t, thoughtLevelOptions]);
   const currentEffortName = useMemo(() => {
-    if (!thoughtLevel) return '默认';
-    if (thoughtLevel === 'disabled') return '关闭';
-    if (thoughtLevel === 'enabled') return '默认';
+    if (!thoughtLevel) return t('composer.effort.enabled');
+    if (thoughtLevel === 'disabled') return t('composer.effort.disabled');
+    if (thoughtLevel === 'enabled') return t('composer.effort.enabled');
     if (thoughtLevel === 'ultracode') return 'Ultracode';
     const hit = effortOptions.find((o) => o.id === thoughtLevel);
     return hit ? hit.name : thoughtLevel;
-  }, [effortOptions, thoughtLevel]);
+  }, [effortOptions, t, thoughtLevel]);
   const promptSuggestionText = useMemo(() => getPromptSuggestionText(promptSuggestion), [promptSuggestion]);
 
   const applyPromptSuggestion = useCallback(() => {
@@ -1316,15 +1648,14 @@ export default function ReplicaChatView() {
   const canSend = connectionState === 'connected' && !accountLoginNeeded;
   const recoveryMessage =
     codeBuddyAccountAuthState === 'required'
-      ? codeBuddyAccountAuthError ||
-        '云端账号登录已失效（与本地会话连接无关）。点击下方按钮在浏览器完成一次授权即可，无需反复重试发送。'
+      ? codeBuddyAccountAuthError || t('recovery.accountExpired')
       : codeBuddyAccountAuthState === 'authenticating'
-        ? '已打开登录流程，请在浏览器完成授权。完成后会自动恢复当前会话，请勿重复点击。'
+        ? t('recovery.authInProgress')
         : codeBuddyAccountAuthState === 'error'
-          ? codeBuddyAccountAuthError || 'CodeBuddy 登录未完成。可再次点击登录；若浏览器未弹出，请检查是否被拦截。'
+          ? codeBuddyAccountAuthError || t('recovery.authIncomplete')
           : activeProject?.runtimeError ||
             recoveryError ||
-            (runtimeStatus === 'stopped' ? '项目运行时已停止。' : 'CodeBuddy 会话连接已断开。');
+            (runtimeStatus === 'stopped' ? t('recovery.runtimeStopped') : t('recovery.sessionDisconnected'));
 
   const changeSessionSetting = useCallback(
     async (kind, value) => {
@@ -1342,12 +1673,17 @@ export default function ReplicaChatView() {
       const projectId = activeProjectId;
       const threadId = activeThreadId;
       const requestId = ++sessionSelectionRequestRef.current;
-      const label = kind === 'model' ? '模型' : kind === 'mode' ? '模式' : '思考强度';
+      const label =
+        kind === 'model'
+          ? t('composer.label.model')
+          : kind === 'mode'
+            ? t('composer.label.mode')
+            : t('composer.label.effort');
       const isCurrent = () =>
         requestId === sessionSelectionRequestRef.current &&
         projectId === useStore.getState().activeProjectId &&
         threadId === useStore.getState().activeThreadId;
-      setSessionSelectionStatus({ type: 'busy', message: '正在切换' + label + '...' });
+      setSessionSelectionStatus({ type: 'busy', message: t('composer.switching', { label }) });
       try {
         let changed;
         if (kind === 'model') {
@@ -1378,12 +1714,12 @@ export default function ReplicaChatView() {
           else setShowEffortPicker(false);
         } else {
           setSessionSelectionStatus(null);
-          setChatError(consumeStoreError(label + '切换失败'));
+          setChatError(consumeStoreError(t('composer.switchFailed', { label })));
         }
       } catch (error) {
         if (isCurrent()) {
           setSessionSelectionStatus(null);
-          setChatError(error?.message || label + '切换失败');
+          setChatError(error?.message || t('composer.switchFailed', { label }));
         }
       } finally {
         if (sessionSelectionInFlightRef.current === operation) sessionSelectionInFlightRef.current = null;
@@ -1399,6 +1735,7 @@ export default function ReplicaChatView() {
       setMode,
       setModel,
       setThoughtLevel,
+      t,
     ],
   );
 
@@ -1417,16 +1754,16 @@ export default function ReplicaChatView() {
     setChatError(null);
     try {
       const cancelled = await cancelSession();
-      if (isCurrent() && !cancelled) setChatError(consumeStoreError('停止生成失败，请重试。'));
+      if (isCurrent() && !cancelled) setChatError(consumeStoreError(t('error.cancelFailed')));
     } catch (cancelError) {
-      if (isCurrent()) setChatError(consumeStoreError(cancelError?.message || '停止生成失败，请重试。'));
+      if (isCurrent()) setChatError(consumeStoreError(cancelError?.message || t('error.cancelFailed')));
     } finally {
       if (cancelInFlightRef.current === operation) {
         cancelInFlightRef.current = null;
         if (isCurrent()) setCancelBusy(false);
       }
     }
-  }, [activeProjectId, activeThreadId, cancelSession]);
+  }, [activeProjectId, activeThreadId, cancelSession, t]);
 
   const recoverConnection = async () => {
     if (!activeProjectId || recoveryInFlightRef.current) return;
@@ -1450,11 +1787,12 @@ export default function ReplicaChatView() {
         setChatError(
           useStore.getState().codeBuddyAccountAuthError ||
             currentError ||
-            (accountLoginNeeded ? 'CodeBuddy 登录未完成，请重试。' : '重新连接失败，请检查 CodeBuddy CLI 状态后重试。'),
+            (accountLoginNeeded ? t('error.loginIncomplete') : t('error.reconnectFailed')),
         );
       }
     } catch (error) {
-      if (isCurrent()) setChatError('重新连接失败: ' + (error?.message || '未知错误'));
+      if (isCurrent())
+        setChatError(t('error.reconnectFailedDetail', { message: error?.message || t('error.unknown') }));
     } finally {
       if (recoveryInFlightRef.current === operation) {
         recoveryInFlightRef.current = null;
@@ -1483,6 +1821,7 @@ export default function ReplicaChatView() {
         activePromptRunId,
         promptStartedAt,
         timeline,
+        t,
       }),
     [
       connectionState,
@@ -1492,6 +1831,7 @@ export default function ReplicaChatView() {
       activePromptRunId,
       promptStartedAt,
       timeline,
+      t,
     ],
   );
   const slashSuggestions = useMemo(
@@ -1545,7 +1885,7 @@ export default function ReplicaChatView() {
     const value = input.trim();
     if ((!value && pendingAttachments.length === 0) || sendLaunchInFlightRef.current) return;
     if (!canSend) {
-      setChatError('当前会话尚未连接，请先重新连接后再发送。');
+      setChatError(t('error.notConnected'));
       return;
     }
     const operation = {};
@@ -1562,15 +1902,16 @@ export default function ReplicaChatView() {
     try {
       const sent = await sendPrompt(value);
       if (isCurrent() && !sent) {
-        setChatError(consumeStoreError('发送失败，草稿和附件已恢复，可重新连接后再次发送。'));
+        setChatError(consumeStoreError(t('error.sendFailedRestored')));
       }
     } catch (err) {
-      if (isCurrent()) setChatError('发送消息失败: ' + (err.message || '未知错误'));
+      if (isCurrent())
+        setChatError(t('error.sendFailedDetail', { message: err.message || t('error.unknown') }));
     } finally {
       clearTimeout(releaseTimer);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }
-  }, [activeProjectId, activeThreadId, canSend, input, pendingAttachments.length, sendPrompt]);
+  }, [activeProjectId, activeThreadId, canSend, input, pendingAttachments.length, sendPrompt, t]);
 
   const resumePromptQueue = useCallback(async () => {
     if (queueActionInFlightRef.current || !activeThreadId || !canSend || isStreaming) return;
@@ -1588,16 +1929,16 @@ export default function ReplicaChatView() {
     try {
       const resumed = await drainThreadPromptQueue(threadId);
       if (!isCurrent()) return;
-      if (!resumed) setChatError(consumeStoreError('待发送队列暂时无法继续，请检查会话连接后重试。'));
+      if (!resumed) setChatError(consumeStoreError(t('error.queueResumeFailed')));
     } catch (error) {
-      if (isCurrent()) setChatError(error?.message || '继续发送队列失败');
+      if (isCurrent()) setChatError(error?.message || t('error.queueResumeFailedDetail'));
     } finally {
       if (queueActionInFlightRef.current === operation) {
         queueActionInFlightRef.current = null;
         if (isCurrent()) setQueueActionBusy(false);
       }
     }
-  }, [activeProjectId, activeThreadId, canSend, drainThreadPromptQueue, isStreaming]);
+  }, [activeProjectId, activeThreadId, canSend, drainThreadPromptQueue, isStreaming, t]);
 
   const movePromptInQueue = useCallback(
     async (promptId, direction) => {
@@ -1615,9 +1956,9 @@ export default function ReplicaChatView() {
       setChatError(null);
       try {
         const moved = await moveQueuedPrompt(threadId, promptId, direction);
-        if (isCurrent() && !moved) setChatError(consumeStoreError('调整待发送顺序失败，请重试。'));
+        if (isCurrent() && !moved) setChatError(consumeStoreError(t('error.queueReorderFailed')));
       } catch (error) {
-        if (isCurrent()) setChatError(error?.message || '调整待发送顺序失败');
+        if (isCurrent()) setChatError(error?.message || t('error.queueReorderFailed'));
       } finally {
         if (queueActionInFlightRef.current === operation) {
           queueActionInFlightRef.current = null;
@@ -1625,7 +1966,7 @@ export default function ReplicaChatView() {
         }
       }
     },
-    [activeProjectId, activeThreadId, moveQueuedPrompt],
+    [activeProjectId, activeThreadId, moveQueuedPrompt, t],
   );
 
   const removePromptFromQueue = useCallback(
@@ -1644,9 +1985,9 @@ export default function ReplicaChatView() {
       setChatError(null);
       try {
         const removed = await removeQueuedPrompt(threadId, promptId);
-        if (isCurrent() && !removed) setChatError(consumeStoreError('移除待发送提示失败，请重试。'));
+        if (isCurrent() && !removed) setChatError(consumeStoreError(t('error.queueRemoveFailed')));
       } catch (error) {
-        if (isCurrent()) setChatError(error?.message || '移除待发送提示失败');
+        if (isCurrent()) setChatError(error?.message || t('error.queueRemoveFailed'));
       } finally {
         if (queueActionInFlightRef.current === operation) {
           queueActionInFlightRef.current = null;
@@ -1654,7 +1995,7 @@ export default function ReplicaChatView() {
         }
       }
     },
-    [activeProjectId, activeThreadId, removeQueuedPrompt],
+    [activeProjectId, activeThreadId, removeQueuedPrompt, t],
   );
 
   const handlePaste = useCallback(
@@ -1676,7 +2017,7 @@ export default function ReplicaChatView() {
       setChatError(null);
       try {
         for (const file of files) {
-          if (file.size > 20 * 1024 * 1024) throw new Error('剪贴板图片超过 20MB 限制');
+          if (file.size > 20 * 1024 * 1024) throw new Error(t('error.pasteImageTooLarge'));
           const dataBase64 = await readClipboardImage(file);
           if (!isCurrent()) return;
           const added = await addClipboardImageAttachment({
@@ -1686,15 +2027,15 @@ export default function ReplicaChatView() {
             dataBase64,
           });
           if (!isCurrent()) return;
-          if (!added.length) throw new Error(useStore.getState().error || '粘贴图片失败');
+          if (!added.length) throw new Error(useStore.getState().error || t('error.pasteImageFailed'));
         }
       } catch (error) {
-        if (isCurrent()) setChatError(error?.message || '粘贴图片失败');
+        if (isCurrent()) setChatError(error?.message || t('error.pasteImageFailed'));
       } finally {
         if (pasteImageInFlightRef.current === operation) pasteImageInFlightRef.current = null;
       }
     },
-    [activeProjectId, activeThreadId, addClipboardImageAttachment, pasteImageEnabled],
+    [activeProjectId, activeThreadId, addClipboardImageAttachment, pasteImageEnabled, t],
   );
 
   const hasDraggedFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
@@ -1740,7 +2081,7 @@ export default function ReplicaChatView() {
         const result = await addDroppedAttachments(files);
         if (isCurrent() && result?.error) setChatError(result.error);
       } catch (error) {
-        if (isCurrent()) setChatError(error?.message || '读取拖放附件失败');
+        if (isCurrent()) setChatError(error?.message || t('error.dropFailed'));
       } finally {
         if (dropAttachmentsInFlightRef.current === operation) {
           dropAttachmentsInFlightRef.current = null;
@@ -1748,7 +2089,7 @@ export default function ReplicaChatView() {
         }
       }
     },
-    [activeProjectId, activeThreadId, addDroppedAttachments],
+    [activeProjectId, activeThreadId, addDroppedAttachments, t],
   );
 
   const handleKeyDown = useCallback(
@@ -1787,18 +2128,22 @@ export default function ReplicaChatView() {
   const timelineWithDates = useMemo(() => {
     let lastDay = '';
     return groupTimelineForDisplay(timeline).map((item, index) => {
-      const day = getDayLabel(item.createdAt);
+      const day = getDayLabel(item.createdAt, t);
       const showDate = day !== lastDay && index > 0;
       lastDay = day;
       return { item, showDate };
     });
-  }, [timeline]);
+  }, [t, timeline]);
   const recoveryNotice = connectionNeedsRecovery ? (
     <div
       className={`${timeline.length === 0 ? 'mt-16 ' : ''}mb-4 rounded-md border border-[rgba(248,113,113,0.3)] bg-[rgba(248,113,113,0.08)] px-4 py-4 text-center`}
     >
       <div className="text-sm font-medium text-[var(--color-accent-red)]">
-        {accountLoginNeeded ? '需要登录 CodeBuddy' : runtimeUnavailable ? '项目运行时不可用' : 'CodeBuddy 会话连接失败'}
+        {accountLoginNeeded
+          ? t('recovery.loginRequired')
+          : runtimeUnavailable
+            ? t('recovery.runtimeUnavailable')
+            : t('recovery.connectionFailed')}
       </div>
       <div className="mt-2 break-words text-xs leading-5 text-[var(--color-text-secondary)]">{recoveryMessage}</div>
       <button
@@ -1808,14 +2153,14 @@ export default function ReplicaChatView() {
         onClick={recoverConnection}
       >
         {codeBuddyAccountAuthState === 'authenticating'
-          ? '等待登录完成...'
+          ? t('recovery.waitLogin')
           : recovering
-            ? '正在恢复...'
+            ? t('recovery.recovering')
             : accountLoginNeeded
-              ? '登录 CodeBuddy'
+              ? t('recovery.login')
               : runtimeUnavailable
-                ? '重新启动并连接'
-                : '重新连接'}
+                ? t('recovery.restartConnect')
+                : t('recovery.reconnect')}
       </button>
     </div>
   ) : null;
@@ -1842,7 +2187,7 @@ export default function ReplicaChatView() {
                 <div className="flex flex-col items-center gap-3">
                   <div className="animate-spin w-6 h-6 border-2 border-[var(--color-border-default)] border-t-[var(--color-accent-blue)] rounded-full" />
                   <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
-                    正在加载对话...
+                    {t('chat.loading')}
                   </span>
                 </div>
               </div>
@@ -1850,17 +2195,22 @@ export default function ReplicaChatView() {
               recoveryNotice
             ) : (
               <div className="flex flex-col items-center justify-center pt-20">
-                <div className="mb-3 text-2xl font-semibold text-[var(--color-text-primary)]">CodeBuddy Code</div>
-                <div className="mb-4 text-sm text-[var(--color-text-secondary)]">今天有什么可以帮到你？</div>
+                <div className="mb-3 text-2xl font-semibold text-[var(--color-text-primary)]">{t('chat.empty.title')}</div>
+                <div className="mb-4 text-sm text-[var(--color-text-secondary)]">{t('chat.empty.subtitle')}</div>
                 <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-                  {['幻灯片生成', '深度研究', '文档处理', '数据分析'].map((tag) => (
+                  {[
+                    'chat.empty.tag.slides',
+                    'chat.empty.tag.research',
+                    'chat.empty.tag.docs',
+                    'chat.empty.tag.data',
+                  ].map((key) => (
                     <button
-                      key={tag}
+                      key={key}
                       type="button"
                       className="rounded-full bg-[var(--color-bg-secondary)] border border-[var(--color-border-muted)] px-3 py-1 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-border-default)] transition-colors"
-                      onClick={() => setInput(`帮我做一个${tag}任务`)}
+                      onClick={() => setInput(t('chat.empty.tagPrompt', { topic: t(key) }))}
                     >
-                      {tag}
+                      {t(key)}
                     </button>
                   ))}
                 </div>
@@ -1868,10 +2218,10 @@ export default function ReplicaChatView() {
             )
           ) : (
             <div>
-              <div className="text-xs text-[var(--color-text-muted)] text-center py-2">回答由 AI 生成，仅供参考</div>
+              <div className="text-xs text-[var(--color-text-muted)] text-center py-2">{t('chat.disclaimer')}</div>
               {timelineWithDates.map(({ item, showDate }, idx) => (
                 <React.Fragment key={item.id || idx}>
-                  {showDate && <DateSeparator label={getDayLabel(item.createdAt)} />}
+                  {showDate && <DateSeparator label={getDayLabel(item.createdAt, t)} />}
                   <TimelineItem item={item} />
                 </React.Fragment>
               ))}
@@ -1893,11 +2243,10 @@ export default function ReplicaChatView() {
                 style={{ color: 'var(--color-error)' }}
                 onClick={() => setChatError(null)}
               >
-                关闭
+                {t('composer.closeError')}
               </button>
             </div>
           )}
-          <ResponseActivityIndicator label={responseActivityLabel} startedAt={promptStartedAt} />
           <div ref={messagesEndRef} />
 
         </div>
@@ -1909,8 +2258,8 @@ export default function ReplicaChatView() {
             type="button"
             className="absolute bottom-3 left-1/2 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-card)] text-[var(--color-text-primary)] shadow-lg transition-colors hover:bg-[var(--color-bg-hover)]"
             onClick={jumpToLatest}
-            title="跳转到最新内容"
-            aria-label="跳转到最新内容"
+            title={t('chat.scrollToLatest')}
+            aria-label={t('chat.scrollToLatest')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M4 6l4 4 4-4" />
@@ -1918,6 +2267,9 @@ export default function ReplicaChatView() {
           </button>
         </div>
       ) : null}
+
+      {/* 固定在输入框上方，不随时间线滚动 */}
+      <ResponseActivityIndicator label={responseActivityLabel} startedAt={promptStartedAt} />
 
       <ChatComposer
         textareaRef={textareaRef}
@@ -2056,6 +2408,7 @@ const ChatComposer = React.memo(function ChatComposer({
   showTokensCounter,
   usage,
 }) {
+  const t = useUiTranslate();
   const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
   const resizeDragRef = useRef(null);
 
@@ -2141,14 +2494,14 @@ const ChatComposer = React.memo(function ChatComposer({
               className="shrink-0 rounded px-2 py-1 text-xs font-medium text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)]"
               onClick={applyPromptSuggestion}
             >
-              使用建议
+              {t('suggestion.apply')}
             </button>
             <button
               type="button"
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
               onClick={dismissPromptSuggestion}
-              title="关闭建议"
-              aria-label="关闭建议"
+              title={t('suggestion.dismiss')}
+              aria-label={t('suggestion.dismiss')}
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M3 3l10 10M13 3L3 13" />
@@ -2163,14 +2516,14 @@ const ChatComposer = React.memo(function ChatComposer({
                 key={attachment.path}
                 className="flex max-w-full items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-secondary)]"
               >
-                <span>{attachment.kind === 'image' ? '图片' : '文件'}</span>
+                <span>{attachment.kind === 'image' ? t('attachment.image') : t('attachment.file')}</span>
                 <span className="max-w-[220px] truncate" title={attachment.path}>
                   {attachment.name}
                 </span>
                 <button
                   className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
                   onClick={() => removePendingAttachment(attachment.path)}
-                  title="移除附件"
+                  title={t('attachment.remove')}
                 >
                   ×
                 </button>
@@ -2182,17 +2535,21 @@ const ChatComposer = React.memo(function ChatComposer({
           <div className="mb-2 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-3 py-2">
             <div className="mb-1 flex items-center justify-between gap-2">
               <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
-                待发送 {promptQueue.length}
+                {t('queue.title', { n: promptQueue.length })}
               </div>
               <button
                 className="rounded px-2 py-0.5 text-[10px] text-[var(--color-accent-blue)] hover:bg-[var(--color-bg-hover)] disabled:cursor-wait disabled:opacity-50"
                 disabled={queueActionBusy || !canSend || isStreaming}
                 onClick={resumePromptQueue}
                 title={
-                  !canSend ? '等待会话连接' : isStreaming ? '当前消息完成后会自动继续' : '发送队列中的下一条消息'
+                  !canSend
+                    ? t('queue.waitConnection')
+                    : isStreaming
+                      ? t('queue.waitStream')
+                      : t('queue.sendNext')
                 }
               >
-                {queueActionBusy ? '处理中...' : '继续发送'}
+                {queueActionBusy ? t('queue.busy') : t('queue.resume')}
               </button>
             </div>
             <div className="space-y-1">
@@ -2206,8 +2563,8 @@ const ChatComposer = React.memo(function ChatComposer({
                     className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
                     disabled={queueActionBusy || index === 0}
                     onClick={() => movePromptInQueue(item.id, 'up')}
-                    title="上移"
-                    aria-label="上移待发送提示"
+                    title={t('queue.moveUp')}
+                    aria-label={t('queue.moveUpAria')}
                   >
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M4 10l4-4 4 4" />
@@ -2217,8 +2574,8 @@ const ChatComposer = React.memo(function ChatComposer({
                     className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
                     disabled={queueActionBusy || index === promptQueue.length - 1}
                     onClick={() => movePromptInQueue(item.id, 'down')}
-                    title="下移"
-                    aria-label="下移待发送提示"
+                    title={t('queue.moveDown')}
+                    aria-label={t('queue.moveDownAria')}
                   >
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M4 6l4 4 4-4" />
@@ -2228,8 +2585,8 @@ const ChatComposer = React.memo(function ChatComposer({
                     className="flex h-5 w-5 items-center justify-center rounded text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-50"
                     disabled={queueActionBusy}
                     onClick={() => removePromptFromQueue(item.id)}
-                    title="移除待发送提示"
-                    aria-label="移除待发送提示"
+                    title={t('queue.remove')}
+                    aria-label={t('queue.remove')}
                   >
                     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M3 3l10 10M13 3L3 13" />
@@ -2251,15 +2608,15 @@ const ChatComposer = React.memo(function ChatComposer({
             className="chat-composer-resize-handle"
             role="separator"
             aria-orientation="horizontal"
-            aria-label="拖动调整输入框高度"
-            title="拖动调整输入框高度"
+            aria-label={t('composer.resize')}
+            title={t('composer.resize')}
             onPointerDown={beginComposerResize}
           >
             <span className="chat-composer-resize-grip" aria-hidden="true" />
           </div>
           {draggingAttachments || droppingAttachments ? (
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-lg bg-[var(--color-bg-secondary)]/95 text-sm font-medium text-[var(--color-accent-blue)]">
-              {droppingAttachments ? '正在读取附件...' : '释放以添加附件'}
+              {droppingAttachments ? t('attachment.dropReading') : t('attachment.dropRelease')}
             </div>
           ) : null}
           {slashSuggestions.length > 0 ? (
@@ -2300,7 +2657,13 @@ const ChatComposer = React.memo(function ChatComposer({
             onChange={(e) => setInput(e.target.value)}
             onPaste={handlePaste}
             onKeyDown={handleKeyDown}
-            placeholder={canSend ? '从一个想法开始...' : '会话恢复后即可发送，草稿会保留'}
+            placeholder={
+              canSend
+                ? isStreaming
+                  ? t('input.placeholderRunning')
+                  : t('input.placeholder')
+                : t('input.placeholderDisconnected')
+            }
             style={{ height: `${composerHeight}px` }}
             className="chat-composer-input w-full resize-none bg-transparent px-4 pt-2 pb-1 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-muted)]"
           />
@@ -2313,10 +2676,10 @@ const ChatComposer = React.memo(function ChatComposer({
                 disabled={droppingAttachments}
                 title={
                   capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image
-                    ? '添加文本文件或图片'
-                    : '添加文本文件（当前运行时未声明图片输入能力）'
+                    ? t('input.addImage')
+                    : t('input.addFile')
                 }
-                aria-label="添加附件"
+                aria-label={t('input.addFile')}
               >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
@@ -2369,7 +2732,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     setShowModelPicker(!showModelPicker);
                   }}
                 >
-                  {currentModelName || currentModel || '选择模型'}
+                  {currentModelName || currentModel || t('composer.selectModel')}
                 </button>
                 {showModelPicker && (
                   <>
@@ -2413,7 +2776,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     e.stopPropagation();
                     setShowEffortPicker(!showEffortPicker);
                   }}
-                  title="思考强度"
+                  title={t('composer.effort')}
                 >
                   {currentEffortName}
                 </button>
@@ -2453,7 +2816,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   style={{ background: 'var(--color-accent-red)' }}
                   disabled={cancelBusy}
                   onClick={cancelActiveSession}
-                  title={cancelBusy ? '正在停止生成' : '停止生成'}
+                  title={cancelBusy ? t('input.stopping') : t('input.stop')}
                 >
                   {cancelBusy ? (
                     <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white" />
@@ -2469,7 +2832,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   style={{ background: 'var(--color-accent-blue)' }}
                   onClick={onSubmit}
                   disabled={!canSend || (!input.trim() && pendingAttachments.length === 0)}
-                  title={!canSend ? '等待会话连接' : '发送'}
+                  title={t('input.send')}
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                     <path d="M15.854.146a.5.5 0 01.113.534l-5 14a.5.5 0 01-.927-.06L7.189 7.19.814 4.96a.5.5 0 01-.047-.927l14-5a.5.5 0 01.587.113z" />

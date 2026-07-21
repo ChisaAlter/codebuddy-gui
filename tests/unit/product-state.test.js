@@ -32,6 +32,31 @@ describe('product state sidebar fields', () => {
     expect(normalized.threadsById.t1.archivedAt).toBeNull();
   });
 
+  it('resets ephemeral response statuses on hydrate so messages are not permanently queued', () => {
+    const normalized = normalizeProductState({
+      projectsById: {
+        p1: { id: 'p1', preferences: {} },
+      },
+      projectOrder: ['p1'],
+      threadsById: {
+        t1: { id: 't1', projectId: 'p1', status: 'running' },
+        t2: { id: 't2', projectId: 'p1', status: 'waiting' },
+        t3: { id: 't3', projectId: 'p1', status: 'cancelling' },
+        t4: { id: 't4', projectId: 'p1', status: 'error' },
+        t5: { id: 't5', projectId: 'p1', status: 'idle' },
+      },
+      threadOrderByProject: { p1: ['t1', 't2', 't3', 't4', 't5'] },
+      activeProjectId: 'p1',
+      activeThreadId: 't1',
+    });
+
+    expect(normalized.threadsById.t1.status).toBe('idle');
+    expect(normalized.threadsById.t2.status).toBe('idle');
+    expect(normalized.threadsById.t3.status).toBe('idle');
+    expect(normalized.threadsById.t4.status).toBe('error');
+    expect(normalized.threadsById.t5.status).toBe('idle');
+  });
+
   it('backfills completedAt for finished thinking entries missing an end time', () => {
     const normalized = normalizeProductState({
       projectsById: {

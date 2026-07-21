@@ -454,7 +454,23 @@ export function createSessionsChatSlice(set, get, ctx) {
         workspacePath: project.workspacePath,
         connectionState: existingClient.connectionState,
       });
-      await get().updateThreadRecord(thread.id, { unread: false, lastOpenedAt: new Date().toISOString() });
+      // 复用已连接 client 时若没有进行中的 prompt，清掉磁盘/异常残留的 busy 态
+      const sessionStillBusy = Boolean(existingClient.hasActivePrompt?.(thread.sessionId));
+      if (!sessionStillBusy) {
+        const latestRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
+        get().patchThreadRuntime(
+          thread.id,
+          responseTerminalRuntimePatch({
+            timeline: closeAssistantStream(latestRuntime.timeline),
+            connectionState: existingClient.connectionState || 'connected',
+          }),
+        );
+      }
+      await get().updateThreadRecord(thread.id, {
+        unread: false,
+        lastOpenedAt: new Date().toISOString(),
+        ...(sessionStillBusy ? {} : { status: 'idle' }),
+      });
       return isScopedRequestCurrent(request, get());
     }
 
@@ -1461,12 +1477,32 @@ export function createSessionsChatSlice(set, get, ctx) {
       set({ error: '当前会话未连接' });
       return false;
     }
-    const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    let runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
     const attachments = runtime.pendingAttachments || [];
     const draftText = String(text || '');
     const content = String(text || '').trim() || (attachments.length ? '请查看附件。' : '');
     if (!content) return false;
-    if (RESPONSE_BUSY_STATUSES.has(thread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptQueue.length > 0) {
+    // 自愈：status=running/cancelling 但无 live prompt → 假 busy（常见于崩溃/重启残留），清掉再发。
+    // waiting 是权限/问答等用户输入态，不能清。
+    const sessionId = thread.sessionId || runtime.sessionId || get().sessionId;
+    const liveBusy =
+      Boolean(runtime.isAwaitingResponse) ||
+      Boolean(runtime.activePromptRunId) ||
+      Boolean(sessionId && client.hasActivePrompt?.(sessionId));
+    if (
+      (thread.status === 'running' || thread.status === 'cancelling') &&
+      !liveBusy &&
+      runtime.promptQueue.length === 0
+    ) {
+      get().patchThreadRuntime(
+        threadId,
+        responseTerminalRuntimePatch({ timeline: closeAssistantStream(runtime.timeline) }),
+      );
+      await get().updateThreadRecord(threadId, { status: 'idle' });
+      runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    }
+    const latestThread = get().threadsById[threadId] || thread;
+    if (RESPONSE_BUSY_STATUSES.has(latestThread.status) || runtime.isAwaitingResponse || runtime.activePromptRunId || runtime.promptQueue.length > 0) {
       return queuePromptQueueOperation(threadId, async () => {
         const latestThread = get().threadsById[threadId];
         const latestRuntime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
@@ -1523,10 +1559,17 @@ export function createSessionsChatSlice(set, get, ctx) {
       return false;
     }
     const project = get().projectsById[thread.projectId];
-    const attachmentLabel = attachments.length ? `\n\n[附件: ${attachments.map((item) => item.name).join(', ')}]` : '';
     const promptStartedAt = Date.now();
     const activePromptRunId = `run-${promptStartedAt}-${Math.random().toString(36).slice(2, 8)}`;
-    const timeline = pushUserMessage(runtime.timeline, `${content}${attachmentLabel}`, promptStartedAt);
+    // WebUI shows images/files inside the user bubble; keep timeline text as the prompt body only.
+    const timelineAttachments = (attachments || []).map((attachment) => ({
+      name: attachment.name || attachment.path,
+      path: attachment.path || null,
+      kind: attachment.kind === 'image' ? 'image' : 'text',
+      mimeType: attachment.mimeType || null,
+      data: attachment.data || null,
+    }));
+    const timeline = pushUserMessage(runtime.timeline, content, promptStartedAt, timelineAttachments);
     const promptEntryId = timeline[timeline.length - 1]?.id || null;
     get().patchThreadRuntime(threadId, {
       timeline,

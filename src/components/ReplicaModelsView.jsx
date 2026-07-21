@@ -1,10 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bot, ChevronDown, CirclePlus, Eye, EyeOff, FolderOpen, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
+import { Bot, CirclePlus, Eye, EyeOff, FolderOpen, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 import { useStore } from '../store';
+import { deleteCustomModel, saveCustomModel } from '../lib/ops';
 import ActionConfirmDialog from './ActionConfirmDialog';
 
 const INPUT_PRESETS = [32000, 64000, 128000, 256000];
 const OUTPUT_PRESETS = [8000, 16000, 32000, 64000];
+
+const MODEL_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+const DEFAULT_MAX_INPUT = '128000';
+const DEFAULT_MAX_OUTPUT = '16384';
+const DEFAULT_TEMPERATURE = '0.7';
 
 function emptyDraft() {
   return {
@@ -14,12 +20,13 @@ function emptyDraft() {
     vendor: 'Custom',
     url: '',
     apiKey: '',
-    maxInputTokens: '',
-    maxOutputTokens: '',
-    temperature: '',
+    maxInputTokens: DEFAULT_MAX_INPUT,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT,
+    temperature: DEFAULT_TEMPERATURE,
     supportsToolCall: true,
     supportsImages: false,
     supportsReasoning: false,
+    useCustomProtocol: false,
     hasApiKey: false,
   };
 }
@@ -33,12 +40,13 @@ function draftFromModel(model) {
     vendor: model.vendor || 'Custom',
     url: model.url || '',
     apiKey: model.apiKeyReference || '',
-    maxInputTokens: model.maxInputTokens ?? '',
-    maxOutputTokens: model.maxOutputTokens ?? '',
-    temperature: model.temperature ?? '',
+    maxInputTokens: model.maxInputTokens != null ? String(model.maxInputTokens) : '',
+    maxOutputTokens: model.maxOutputTokens != null ? String(model.maxOutputTokens) : '',
+    temperature: model.temperature != null ? String(model.temperature) : '',
     supportsToolCall: model.supportsToolCall !== false,
     supportsImages: Boolean(model.supportsImages),
     supportsReasoning: Boolean(model.supportsReasoning),
+    useCustomProtocol: Boolean(model.useCustomProtocol),
     hasApiKey: Boolean(model.hasApiKey),
   };
 }
@@ -140,16 +148,15 @@ function ModelEditorDialog({ draft, error, saving, onCancel, onChange, onSave })
 
         <div className="model-modal-body">
           <Field label="提供商">
-            <div className="model-provider-select" aria-label="提供商">
-              <span className="flex h-5 w-5 items-center justify-center text-[var(--color-text-secondary)]">
-                <CirclePlus size={17} />
-              </span>
-              <span className="flex-1">自定义 / Custom</span>
-              <ChevronDown size={16} />
-            </div>
+            <input
+              className="model-form-input"
+              value={draft.vendor}
+              placeholder="Custom"
+              onChange={(event) => onChange('vendor', event.target.value)}
+            />
           </Field>
 
-          <Field label="接口地址">
+          <Field label="接口 URL">
             <input
               className="model-form-input"
               autoFocus={!isEditing}
@@ -166,7 +173,7 @@ function ModelEditorDialog({ draft, error, saving, onCancel, onChange, onSave })
                 value={draft.apiKey}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={isEditing && draft.hasApiKey ? '留空以保留当前 API Key' : '输入 API Key 或 ${ENV_NAME}'}
+                placeholder={isEditing && draft.hasApiKey ? '留空则保留原密钥' : '输入 API Key 或 ${ENV_NAME}'}
                 onChange={(event) => onChange('apiKey', event.target.value)}
               />
               <button
@@ -179,16 +186,25 @@ function ModelEditorDialog({ draft, error, saving, onCancel, onChange, onSave })
               </button>
             </div>
             {isEditing && draft.hasApiKey && !draft.apiKey ? (
-              <span className="model-field-hint">当前密钥已安全保留，不会显示在页面中。</span>
+              <span className="model-field-hint">留空则保留原密钥（不会显示在页面中）。</span>
             ) : null}
           </Field>
 
-          <Field label="模型名称">
+          <Field label="模型 ID">
             <input
               className="model-form-input"
               value={draft.id}
-              placeholder="输入模型参数值，例如 gpt-4o 或 openai/gpt-4o"
+              placeholder="例如 gpt-4o 或 openai:gpt-4o"
               onChange={(event) => onChange('id', event.target.value)}
+            />
+          </Field>
+
+          <Field label="显示名称">
+            <input
+              className="model-form-input"
+              value={draft.name}
+              placeholder="可选，默认与模型 ID 相同"
+              onChange={(event) => onChange('name', event.target.value)}
             />
           </Field>
 
@@ -196,40 +212,57 @@ function ModelEditorDialog({ draft, error, saving, onCancel, onChange, onSave })
           <div className="model-capability-grid">
             <CapabilityCheckbox
               checked={draft.supportsToolCall}
-              label="工具调用"
+              label="支持工具调用"
               onChange={(value) => onChange('supportsToolCall', value)}
             />
             <CapabilityCheckbox
               checked={draft.supportsImages}
-              label="图片输入"
+              label="支持图片"
               onChange={(value) => onChange('supportsImages', value)}
             />
             <CapabilityCheckbox
               checked={draft.supportsReasoning}
-              label="思考模式"
+              label="支持推理"
               onChange={(value) => onChange('supportsReasoning', value)}
             />
-            <CapabilityCheckbox checked={false} disabled label="自定义协议" onChange={() => {}} />
+            <CapabilityCheckbox
+              checked={draft.useCustomProtocol}
+              label="自定义协议（不自动补 /chat/completions）"
+              onChange={(value) => onChange('useCustomProtocol', value)}
+            />
           </div>
 
           <div className="model-token-grid">
-            <Field label="输入">
+            <Field label="最大输入 Tokens">
               <TokenPresetInput
                 value={draft.maxInputTokens}
                 presets={INPUT_PRESETS}
-                placeholder="使用提供商默认值"
+                placeholder="128000"
                 onChange={(value) => onChange('maxInputTokens', value)}
               />
             </Field>
-            <Field label="输出">
+            <Field label="最大输出 Tokens">
               <TokenPresetInput
                 value={draft.maxOutputTokens}
                 presets={OUTPUT_PRESETS}
-                placeholder="使用提供商默认值"
+                placeholder="16384"
                 onChange={(value) => onChange('maxOutputTokens', value)}
               />
             </Field>
           </div>
+
+          <Field label="Temperature">
+            <input
+              className="model-form-input"
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value={draft.temperature}
+              placeholder="0.7"
+              onChange={(event) => onChange('temperature', event.target.value)}
+            />
+          </Field>
 
           {error ? (
             <div className="model-form-error" role="alert">
@@ -311,25 +344,94 @@ export default function ReplicaModelsView() {
     setEditorDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const buildRuntimeModelPayload = (draft, id, url) => {
+    const model = {
+      id,
+      name: (draft.name || '').trim() || id,
+      vendor: (draft.vendor || '').trim() || 'Custom',
+      url,
+      supportsToolCall: draft.supportsToolCall !== false,
+      supportsImages: Boolean(draft.supportsImages),
+      supportsReasoning: Boolean(draft.supportsReasoning),
+      useCustomProtocol: Boolean(draft.useCustomProtocol),
+    };
+    if (draft.apiKey?.trim()) model.apiKey = draft.apiKey.trim();
+    if (draft.maxInputTokens !== '' && Number.isFinite(Number(draft.maxInputTokens))) {
+      model.maxInputTokens = Number(draft.maxInputTokens);
+    }
+    if (draft.maxOutputTokens !== '' && Number.isFinite(Number(draft.maxOutputTokens))) {
+      model.maxOutputTokens = Number(draft.maxOutputTokens);
+    }
+    if (draft.temperature !== '' && Number.isFinite(Number(draft.temperature))) {
+      model.temperature = Number(draft.temperature);
+    }
+    return model;
+  };
+
   const save = async () => {
     if (!editorDraft || saving) return;
+    const id = editorDraft.id.trim();
+    const url = editorDraft.url.trim();
+    if (!id) {
+      setEditorError('请填写模型 ID');
+      return;
+    }
+    if (!MODEL_ID_PATTERN.test(id)) {
+      setEditorError('模型 ID 仅允许字母、数字与 . _ : -');
+      return;
+    }
+    if (!url) {
+      setEditorError('请填写接口 URL');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      setEditorError('URL 需以 http:// 或 https:// 开头');
+      return;
+    }
     setSaving(true);
     setEditorError('');
     try {
       if (!window.electronAPI?.saveModelConfig) throw new Error('模型保存接口不可用');
-      const name =
-        editorDraft.originalId && editorDraft.name && editorDraft.name !== editorDraft.originalId
-          ? editorDraft.name
-          : editorDraft.id.trim();
+      const name = (editorDraft.name || '').trim() || id;
+      const previousId = editorDraft.originalId || '';
       const next = await window.electronAPI.saveModelConfig({
         ...editorDraft,
-        id: editorDraft.id.trim(),
+        id,
         name,
-        preserveApiKey: Boolean(editorDraft.originalId),
+        url,
+        // 对齐 WebUI：默认不写入 availableModels 白名单
+        includeInAvailableModels: false,
+        preserveApiKey: Boolean(previousId),
       });
       setSnapshot(next);
       setEditorDraft(null);
-      setNotice({ type: 'dirty', message: '模型配置已保存。CodeBuddy 会自动热重载；若列表未更新，可重启当前运行时。' });
+
+      // 仅「新建」且填写了密钥时，再走运行时 save 触发 syncProductConfiguration。
+      // 编辑路径只用 Electron 写盘：CLI save 会整对象替换，易冲掉密钥/扩展字段。
+      const apiBase = useStore.getState().apiBase;
+      let runtimeSynced = false;
+      if (apiBase && !previousId && editorDraft.apiKey?.trim()) {
+        try {
+          await saveCustomModel(
+            {
+              model: buildRuntimeModelPayload(editorDraft, id, url),
+              visible: false,
+              global: true,
+            },
+            apiBase,
+          );
+          runtimeSynced = true;
+        } catch (_) {
+          runtimeSynced = false;
+        }
+      }
+
+      setNotice({
+        type: 'dirty',
+        message: runtimeSynced
+          ? '模型配置已保存，并已通知当前运行时刷新模型列表。'
+          : '模型配置已保存到 models.json。若会话模型列表未更新，请重启当前运行时。',
+      });
     } catch (error) {
       setEditorError(error?.message || '保存模型失败');
     } finally {
@@ -342,10 +444,28 @@ export default function ReplicaModelsView() {
     setDeleting(true);
     try {
       if (!window.electronAPI?.deleteModelConfig) throw new Error('模型删除接口不可用');
-      const next = await window.electronAPI.deleteModelConfig(deletingModel.id);
+      const modelId = deletingModel.id;
+      const next = await window.electronAPI.deleteModelConfig(modelId);
       setSnapshot(next);
       setDeletingModel(null);
-      setNotice({ type: 'dirty', message: `已删除 ${deletingModel.name || deletingModel.id}。模型列表会自动热重载。` });
+
+      const apiBase = useStore.getState().apiBase;
+      let runtimeSynced = false;
+      if (apiBase) {
+        try {
+          await deleteCustomModel(modelId, apiBase, true);
+          runtimeSynced = true;
+        } catch (_) {
+          runtimeSynced = false;
+        }
+      }
+
+      setNotice({
+        type: 'dirty',
+        message: runtimeSynced
+          ? `已删除 ${deletingModel.name || modelId}，并已通知当前运行时刷新。`
+          : `已删除 ${deletingModel.name || modelId}。模型列表会自动热重载。`,
+      });
     } catch (error) {
       setNotice({ type: 'error', message: error?.message || '删除模型失败' });
     } finally {
@@ -388,8 +508,8 @@ export default function ReplicaModelsView() {
       <main className="model-page">
         <div className="model-page-heading">
           <div>
-            <h1>模型</h1>
-            <p>管理用于 CodeBuddy 会话的 OpenAI 兼容模型</p>
+            <h1>自定义模型</h1>
+            <p>添加 OpenAI 兼容端点，支持增删改；数据保存在本机 ~/.codebuddy/models.json</p>
           </div>
           <button
             type="button"
@@ -473,9 +593,15 @@ export default function ReplicaModelsView() {
                   <div className="model-row-content">
                     <div className="model-row-name">{model.name || model.id}</div>
                     <div className="model-row-meta">
-                      {model.vendor && model.vendor !== 'Custom' ? `${model.vendor} · ` : ''}自定义
-                      {model.maxInputTokens ? ` · ${formatTokenValue(model.maxInputTokens)} 输入` : ''}
+                      <span className="font-mono">{model.id}</span>
+                      {model.vendor ? <span>· {model.vendor}</span> : null}
+                      {model.maxInputTokens ? <span>· {formatTokenValue(model.maxInputTokens)} 输入</span> : null}
                     </div>
+                    {model.url ? (
+                      <div className="model-row-url" title={model.url}>
+                        {model.url}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="model-row-actions">
                     <button

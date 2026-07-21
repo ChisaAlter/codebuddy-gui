@@ -137,6 +137,33 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(next[2]).toMatchObject({ role: 'assistant', content: '继续分析', streaming: true });
   });
 
+  it('无 messageId 的连续思考 chunk 合并到同一 streaming 段', () => {
+    let next = reduceAcpEvent([], 'agent_thought_chunk', { content: '先看结构' });
+    next = reduceAcpEvent(next, 'agent_thought_chunk', { content: '再读配置' });
+    next = reduceAcpEvent(next, 'agent_thought_chunk', { content: '然后总结' });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      type: 'thinking',
+      streaming: true,
+      content: '先看结构再读配置然后总结',
+    });
+  });
+
+  it('无 messageId 时，结束后的相邻思考仍追加到同一段', () => {
+    let next = reduceAcpEvent([], 'agent_thought_chunk', { content: '第一段' });
+    next = closeAssistantStream(next);
+    expect(next[0].streaming).toBe(false);
+    next = reduceAcpEvent(next, 'agent_thought_chunk', { content: '第二段' });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      type: 'thinking',
+      streaming: true,
+      content: '第一段第二段',
+    });
+  });
+
   it('保留模型合法输出的连续相同文本 chunk', () => {
     let next = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'repeat', content: '哈' });
     next = reduceAcpEvent(next, 'agent_message_chunk', { messageId: 'repeat', content: '哈' });
@@ -219,6 +246,16 @@ describe('pushUserMessage', () => {
     expect(orig).toHaveLength(1);
     expect(next).toHaveLength(2);
     expect(orig[0].content).toBe('a');
+  });
+
+  it('可附带图片/文件 attachments（WebUI 用户气泡）', () => {
+    const tl = pushUserMessage([], '见图', 1000, [
+      { name: 'a.png', path: '/tmp/a.png', kind: 'image', mimeType: 'image/png', data: 'abc' },
+      { name: 'note.txt', path: '/tmp/note.txt', kind: 'text' },
+    ]);
+    expect(tl[0].attachments).toHaveLength(2);
+    expect(tl[0].attachments[0]).toMatchObject({ kind: 'image', name: 'a.png', data: 'abc' });
+    expect(tl[0].attachments[1]).toMatchObject({ kind: 'text', name: 'note.txt' });
   });
 });
 
@@ -308,5 +345,77 @@ describe('execution timeline grouping', () => {
     expect(executionGroupSummary([
       { type: 'tool_call', status: 'failed' },
     ])).toMatchObject({ status: '有失败项', tone: 'error' });
+  });
+
+  it('merges consecutive thinking entries into one display card', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '/init' },
+      {
+        id: 't1',
+        type: 'thinking',
+        role: 'assistant',
+        content: '先看目录结构。',
+        streaming: false,
+        createdAt: 1000,
+        completedAt: 2000,
+      },
+      {
+        id: 't2',
+        type: 'thinking',
+        role: 'assistant',
+        content: '再读核心模块。',
+        streaming: false,
+        createdAt: 2100,
+        completedAt: 4000,
+      },
+      {
+        id: 't3',
+        type: 'thinking',
+        role: 'assistant',
+        content: '最后写 CODEBUDDY.md。',
+        streaming: false,
+        createdAt: 4100,
+        completedAt: 5000,
+      },
+      { id: 'answer', type: 'message', role: 'assistant', content: '完成', streaming: false },
+    ]);
+
+    const thinkingCards = grouped.filter((item) => item.type === 'thinking');
+    expect(thinkingCards).toHaveLength(1);
+    expect(thinkingCards[0]).toMatchObject({
+      content: '先看目录结构。\n\n再读核心模块。\n\n最后写 CODEBUDDY.md。',
+      streaming: false,
+      createdAt: 1000,
+      completedAt: 5000,
+    });
+    expect(thinkingCards[0].items).toHaveLength(3);
+  });
+
+  it('does not merge thinking across tool calls', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 't1', type: 'thinking', role: 'assistant', content: '准备读文件', streaming: false, createdAt: 1 },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Read' },
+      { id: 't2', type: 'thinking', role: 'assistant', content: '继续分析', streaming: false, createdAt: 2 },
+    ]);
+
+    const thinkingCards = grouped.filter((item) => item.type === 'thinking');
+    expect(thinkingCards).toHaveLength(2);
+    expect(thinkingCards.map((item) => item.content)).toEqual(['准备读文件', '继续分析']);
+    expect(grouped.some((item) => item.type === 'execution_group')).toBe(true);
+  });
+
+  it('keeps streaming flag when any merged thinking part is still open', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 't1', type: 'thinking', role: 'assistant', content: '已完成段', streaming: false, createdAt: 1, completedAt: 2 },
+      { id: 't2', type: 'thinking', role: 'assistant', content: '仍在流', streaming: true, createdAt: 3 },
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({
+      type: 'thinking',
+      streaming: true,
+      content: '已完成段\n\n仍在流',
+      completedAt: null,
+    });
   });
 });

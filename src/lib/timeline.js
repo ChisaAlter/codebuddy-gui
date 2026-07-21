@@ -80,6 +80,7 @@ export function createTimelineEntry(partial = {}) {
     rawInput: partial.rawInput || null,
     rawOutput: partial.rawOutput || null,
     locations: partial.locations || null,
+    attachments: Array.isArray(partial.attachments) ? partial.attachments : null,
   };
 }
 
@@ -146,17 +147,26 @@ function closeThinkingStream(timeline) {
   );
 }
 
-export function pushUserMessage(timeline, content, createdAt = Date.now()) {
-  return [
-    ...timeline,
-    createTimelineEntry({
-      type: 'message',
-      role: 'user',
-      content,
-      streaming: false,
-      createdAt,
-    }),
-  ];
+export function pushUserMessage(timeline, content, createdAt = Date.now(), attachments = null) {
+  const entry = {
+    type: 'message',
+    role: 'user',
+    content,
+    streaming: false,
+    createdAt,
+  };
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    entry.attachments = attachments.map((attachment) => ({
+      name: attachment?.name || attachment?.path || 'attachment',
+      path: attachment?.path || null,
+      kind: attachment?.kind === 'image' ? 'image' : 'text',
+      mimeType: attachment?.mimeType || null,
+      // Keep inline preview data when already loaded (not persisted long-term by design).
+      data: attachment?.data || null,
+      url: attachment?.url || null,
+    }));
+  }
+  return [...timeline, createTimelineEntry(entry)];
 }
 
 export function pushSystemEvent(timeline, type, payload) {
@@ -191,6 +201,43 @@ function isExecutionEvent(item) {
   return Array.isArray(artifact.tasks);
 }
 
+function mergeConsecutiveThinkingEntries(parts) {
+  const entries = Array.isArray(parts) ? parts.filter(Boolean) : [];
+  if (entries.length === 0) return null;
+  if (entries.length === 1) return entries[0];
+
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  const contentParts = entries
+    .map((item) => String(item?.content || '').trimEnd())
+    .filter((text) => text.length > 0);
+  const streaming = entries.some((item) => item?.streaming);
+  let completedAt = null;
+  if (!streaming) {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const value = Number(entries[i]?.completedAt);
+      if (Number.isFinite(value) && value > 0) {
+        completedAt = value;
+        break;
+      }
+    }
+  }
+
+  return {
+    ...first,
+    id: `thinking-group-${first.id || entries.length}`,
+    type: 'thinking',
+    role: 'assistant',
+    content: contentParts.join('\n\n'),
+    streaming,
+    createdAt: first.createdAt,
+    completedAt,
+    messageId: first.messageId ?? last.messageId ?? null,
+    items: entries,
+    meta: { ...(first.meta || {}), groupedThinkingCount: entries.length },
+  };
+}
+
 export function groupTimelineForDisplay(timeline) {
   const grouped = [];
   let turn = [];
@@ -200,6 +247,16 @@ export function groupTimelineForDisplay(timeline) {
     let index = 0;
     while (index < turn.length) {
       const item = turn[index];
+      if (item?.type === 'thinking') {
+        const cluster = [];
+        while (index < turn.length && turn[index]?.type === 'thinking') {
+          cluster.push(turn[index]);
+          index += 1;
+        }
+        const merged = mergeConsecutiveThinkingEntries(cluster);
+        if (merged) grouped.push(merged);
+        continue;
+      }
       if (!isExecutionEvent(item)) {
         grouped.push(item);
         index += 1;
@@ -354,12 +411,41 @@ function mergeAssistantChunk(timeline, payload, dedupeScope) {
   return next;
 }
 
+function findLastOpenThinking(timeline) {
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item?.type === 'thinking' && item.streaming) return item;
+  }
+  return null;
+}
+
+function findLastContiguousThinking(timeline) {
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item?.type === 'thinking') return item;
+    if (
+      isExecutionEvent(item) ||
+      item?.type === 'interruption' ||
+      item?.type === 'question' ||
+      (item?.type === 'message' && item?.role === 'assistant')
+    ) {
+      return null;
+    }
+  }
+  return null;
+}
+
 function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = null) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
-  const target = findLastByMessageId(next, 'thinking', messageId);
+  const content = getText(payload?.content) || (typeof payload?.message === 'string' ? payload.message : '');
+  let target = findLastByMessageId(next, 'thinking', messageId);
+  // No messageId: keep appending into the open (or last contiguous) thinking block so
+  // fragmented agent_thought_chunk events do not become one "已思考" card per sentence.
+  if (!target && !messageId) {
+    target = findLastOpenThinking(next) || findLastContiguousThinking(next);
+  }
   if (target) {
-    const content = getText(payload?.content);
     if (isRepeatedHistoryChunk(target, payload, content)) return next;
     if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
     const index = next.lastIndexOf(target);
@@ -387,13 +473,15 @@ function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = 
     }
     next[index] = {
       ...target,
-      content: target.content + content,
+      content: (target.content || '') + content,
       streaming: true,
       completedAt: null,
       meta: { ...(target.meta || {}), ...(payload || {}) },
+      messageId: target.messageId || messageId || null,
     };
     return next;
   }
+  if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
   const receivedAt = Date.now();
   const normalizedStartedAt = Number(thinkingStartedAt);
   const createdAt =
@@ -404,7 +492,7 @@ function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = 
     createTimelineEntry({
       type: 'thinking',
       role: 'assistant',
-      content: getText(payload?.content) || payload?.message || '',
+      content: content || getText(payload?.content) || payload?.message || '',
       streaming: true,
       createdAt,
       raw: payload,

@@ -58,6 +58,7 @@ describe('gui-settings', () => {
 
     expect(loadGuiSettings()).toEqual({
       theme: 'light',
+      locale: 'system',
       promptSuggestionEnabled: true,
       enablePasteImageFromClipboard: true,
       showTokensCounter: true,
@@ -95,6 +96,13 @@ describe('gui-settings', () => {
 
   it('normalizes unknown theme values', () => {
     expect(normalizeGuiSettings({ theme: 'neon' }).theme).toBe('dark');
+  });
+
+  it('normalizes locale modes', () => {
+    expect(normalizeGuiSettings({ locale: 'en' }).locale).toBe('en');
+    expect(normalizeGuiSettings({ locale: 'zh' }).locale).toBe('zh');
+    expect(normalizeGuiSettings({ locale: 'system' }).locale).toBe('system');
+    expect(normalizeGuiSettings({ locale: 'fr' }).locale).toBe('system');
   });
 
   it('saveGuiSettings only writes the preferences key', () => {

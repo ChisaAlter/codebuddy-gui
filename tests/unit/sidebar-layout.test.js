@@ -18,7 +18,9 @@ describe('ReplicaSidebar layout', () => {
 
     expect(appSource).toContain('app-shell flex h-full w-full min-w-0');
     expect(appSource).not.toContain('app-shell flex h-screen w-screen');
-    expect(cssSource).toMatch(/html,\s*body,\s*#root\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
+    // rem root stays on html (16px); body/#root carry width fill + WebUI 15px type
+    expect(cssSource).toMatch(/html\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
+    expect(cssSource).toMatch(/body,\s*#root\s*\{[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/);
     expect(cssSource).toMatch(/\.app-shell\s*\{[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*none;/);
   });
   it('pins collapsed and expanded widths against flex min-content growth', () => {
@@ -38,7 +40,8 @@ describe('ReplicaSidebar layout', () => {
 
   it('moves settings and keybindings out of the scrolling navigation into the footer', () => {
     expect(replicaSidebarMainGroups().map((group) => group.id)).not.toContain('preferences');
-    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['docs', 'models', 'settings', 'keybindings']);
+    // models page removed from footer — custom models live under Settings → 模型选择
+    expect(replicaSidebarFooterItems().map((item) => item.id)).toEqual(['docs', 'settings', 'keybindings']);
   });
 
   it('omits the redundant chat button from primary navigation', () => {

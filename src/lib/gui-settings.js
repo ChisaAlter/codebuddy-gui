@@ -8,6 +8,8 @@ const LEGACY_STORAGE_KEY = SETTINGS_CACHE_KEY;
 
 export const DEFAULT_GUI_SETTINGS = {
   theme: 'dark',
+  // WebUI locale mode: zh | en | system (resolved via navigator when system).
+  locale: 'system',
   promptSuggestionEnabled: false,
   enablePasteImageFromClipboard: false,
   showTokensCounter: false,
@@ -24,8 +26,10 @@ export function isGuiSettingKey(key) {
 export function normalizeGuiSettings(value) {
   const source = value && typeof value === 'object' ? value : {};
   const theme = ['dark', 'light', 'system'].includes(source.theme) ? source.theme : DEFAULT_GUI_SETTINGS.theme;
+  const locale = ['zh', 'en', 'system'].includes(source.locale) ? source.locale : DEFAULT_GUI_SETTINGS.locale;
   return {
     theme,
+    locale,
     promptSuggestionEnabled: source.promptSuggestionEnabled === true,
     enablePasteImageFromClipboard: source.enablePasteImageFromClipboard === true,
     showTokensCounter: source.showTokensCounter === true,
@@ -64,9 +68,20 @@ export function saveGuiSettings(value) {
   return normalized;
 }
 
+// Keys that must never be treated as CodeBuddy CLI /api/v1/settings values.
+// promptSuggestionEnabled is intentionally NOT stripped: WebUI stores it as a
+// user-scope CLI setting, while older GUI builds also kept a local display flag.
+const STRIP_FROM_BACKEND_SETTINGS = Object.freeze([
+  'theme',
+  'locale',
+  'enablePasteImageFromClipboard',
+  'showTokensCounter',
+  'desktopNotificationsEnabled',
+]);
+
 export function stripGuiSettings(settings) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return {};
   const next = { ...settings };
-  for (const key of GUI_SETTING_KEYS) delete next[key];
+  for (const key of STRIP_FROM_BACKEND_SETTINGS) delete next[key];
   return next;
 }
