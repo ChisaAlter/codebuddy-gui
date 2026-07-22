@@ -195,8 +195,16 @@ export class AcpRpcError extends Error {
 
 export function isAcpAuthenticationError(error) {
   if (!error) return false;
-  if (error.category === 'auth' || error.data?.category === 'auth') return true;
   const message = String(error.message || error.errorMessage || '');
+  // 网络/代理失败绝不能当成云端未登录（否则 GUI 会强制 re-auth 并 logout 有效 token）。
+  if (
+    error.category === 'network' ||
+    error.data?.category === 'network' ||
+    /\bECONNREFUSED\b|\b502\b|\b503\b|\b504\b|Bad Gateway|代理未启动|连接被拒绝/i.test(message)
+  ) {
+    return false;
+  }
+  if (error.category === 'auth' || error.data?.category === 'auth') return true;
   if (/authentication required|请.*登录|sign in to your account|auth-type:cli-external-link/i.test(message)) {
     return true;
   }
@@ -1019,9 +1027,12 @@ export class AcpClient {
           finish(reject, new Error(`ACP request idle timeout: ${payload.method}`));
         }, timeoutMs);
       };
-      if (payload.method === 'session/prompt') {
+      if (payload.method === 'session/prompt' || payload.method === 'authenticate') {
+        // authenticate 无 sessionId：用合成 key，便于侧栏「取消登录」打断等待。
         unregisterPrompt = this.trackActivePrompt(
-          payload.params?.sessionId,
+          payload.method === 'authenticate'
+            ? `__authenticate__${id}`
+            : payload.params?.sessionId,
           () => {
             finish(reject, new Error('ACP request cancelled by user'));
           },
@@ -1107,7 +1118,7 @@ export class AcpClient {
     let cancelledByUser = false;
     const unregisterPrompt = isLongRunning
       ? this.trackActivePrompt(
-          params?.sessionId,
+          method === 'authenticate' ? `__authenticate__${id}` : params?.sessionId,
           () => {
             cancelledByUser = true;
             controller.abort();

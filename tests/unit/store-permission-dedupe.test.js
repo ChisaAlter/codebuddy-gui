@@ -94,6 +94,7 @@ describe('store permission request dedupe and respond', () => {
     expect(state.timeline.filter((item) => item.type === 'interruption')).toHaveLength(1);
   });
 
+
   it('merges same interruptionId when toolCallId differs or is missing', () => {
     emitPermission({
       sessionUpdate: 'interruption_request',

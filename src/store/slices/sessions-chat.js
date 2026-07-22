@@ -10,6 +10,9 @@ import {
 } from '../../lib/product-state';
 import { visibleProjectThreads } from '../../lib/session-sidebar';
 import { deleteSession as apiDeleteSession, renameSession as apiRenameSession } from '../../lib/ops';
+import { saveGuiSettings } from '../../lib/gui-settings';
+import { classifyPromptRefusal, normalizeLastAccountUser } from '../../lib/account-auth';
+import { isCliPermissionBypassMode } from '../../lib/session-mode-labels';
 import { hasCompletePromptResponse, hasPromptRunActivity } from '../helpers/prompt-completion';
 import {
   emptyThreadRuntime,
@@ -455,6 +458,49 @@ export function createSessionsChatSlice(set, get, ctx) {
           }),
         );
       }
+      // 复用连接时 CLI 可能已漂移（登录/重启后）：把 GUI 会话偏好重新写回 CLI。
+      if (typeof existingClient.request === 'function' && !sessionStillBusy) {
+        const latestRuntime = get().threadRuntimeById[thread.id] || emptyThreadRuntime();
+        const modeId = latestRuntime.currentMode || thread.modeId || null;
+        const modelId = latestRuntime.currentModel || thread.modelId || null;
+        const thoughtLevel = latestRuntime.thoughtLevel || get().thoughtLevel || null;
+        const sessionId = thread.sessionId;
+        if (modeId) {
+          try {
+            await existingClient.request('session/set_mode', { sessionId, modeId });
+          } catch (modeError) {
+            console.warn(
+              `[session] reassert mode ${modeId} failed:`,
+              modeError?.message || modeError,
+            );
+          }
+        }
+        if (modelId) {
+          try {
+            await existingClient.request('session/set_model', { sessionId, modelId });
+          } catch (modelError) {
+            console.warn(
+              `[session] reassert model ${modelId} failed:`,
+              modelError?.message || modelError,
+            );
+          }
+        }
+        // ultracode 是 GUI 复合态，不是 CLI thought_level 字面量。
+        if (thoughtLevel && thoughtLevel !== 'ultracode') {
+          try {
+            await existingClient.request('session/set_config_option', {
+              sessionId,
+              configId: 'thought_level',
+              value: thoughtLevel,
+            });
+          } catch (thoughtError) {
+            console.warn(
+              `[session] reassert thought_level ${thoughtLevel} failed:`,
+              thoughtError?.message || thoughtError,
+            );
+          }
+        }
+      }
       await get().updateThreadRecord(thread.id, {
         unread: false,
         lastOpenedAt: new Date().toISOString(),
@@ -511,44 +557,124 @@ export function createSessionsChatSlice(set, get, ctx) {
         threadRuntime.models;
       const normalizedModels = normalizeModels(availableModels);
       const persistedModel = thread.modelId || threadRuntime.currentModel;
+      const cliCurrentModel =
+        loaded?.models?.currentModelId || init?.models?.currentModelId || configPatch.currentModel || null;
       const currentModel =
         resolveAvailableSelection(normalizedModels, persistedModel) ||
-        loaded?.models?.currentModelId ||
-        init?.models?.currentModelId ||
-        configPatch.currentModel;
+        resolveAvailableSelection(normalizedModels, cliCurrentModel) ||
+        cliCurrentModel;
       const availableModes =
         loaded?.modes?.availableModes || init?.modes?.availableModes || configPatch.modes || threadRuntime.modes;
       const normalizedModes = normalizeModes(availableModes);
       const persistedMode = thread.modeId || threadRuntime.currentMode;
-      const currentMode =
+      const cliCurrentMode =
+        loaded?.modes?.currentModeId || init?.modes?.currentModeId || configPatch.currentMode || null;
+      // 优先沿用会话已保存的 mode（如 fullAccess），否则用 CLI 当前 mode。
+      let currentMode =
         resolveAvailableSelection(normalizedModes, persistedMode) ||
-        loaded?.modes?.currentModeId ||
-        init?.modes?.currentModeId ||
-        configPatch.currentMode ||
+        resolveAvailableSelection(normalizedModes, cliCurrentMode) ||
+        cliCurrentMode ||
         'default';
+      let appliedModel = currentModel;
+      let appliedMode = currentMode;
       const resolvedSessionId = loaded?.sessionId || (recoveryError ? null : requestedSessionId) || null;
       const resolvedTitle = loaded?.title || loaded?.name || thread.title || '新对话';
       const stillActive = isScopedRequestCurrent(request, get());
+      const thoughtLevel = configPatch.thoughtLevel ?? threadRuntime.thoughtLevel ?? null;
+      const thoughtLevelOptions =
+        configPatch.thoughtLevelOptions || threadRuntime.thoughtLevelOptions || [];
+
+      // 权限/模型以 CLI 为准：本地偏好与 CLI 不一致时写回；失败则 UI 回落到 CLI 值。
+      if (stillActive && resolvedSessionId && typeof client?.request === 'function') {
+        if (appliedMode && appliedMode !== cliCurrentMode) {
+          try {
+            await client.request('session/set_mode', {
+              sessionId: resolvedSessionId,
+              modeId: appliedMode,
+            });
+          } catch (modeError) {
+            console.warn(
+              `[session] failed to sync mode ${appliedMode} to CLI:`,
+              modeError?.message || modeError,
+            );
+            appliedMode = cliCurrentMode || 'default';
+            if (isCliPermissionBypassMode(currentMode)) {
+              set({
+                error: `无法将权限模式切换为「${currentMode}」，已回落为 CLI 当前模式。请重试切换。`,
+              });
+            }
+          }
+        }
+        if (appliedModel && appliedModel !== cliCurrentModel) {
+          try {
+            await client.request('session/set_model', {
+              sessionId: resolvedSessionId,
+              modelId: appliedModel,
+            });
+          } catch (modelError) {
+            console.warn(
+              `[session] failed to sync model ${appliedModel} to CLI:`,
+              modelError?.message || modelError,
+            );
+            appliedModel = cliCurrentModel || appliedModel;
+          }
+        }
+        // 会话级思考档：若 runtime 仍有非 ultracode 偏好且与 CLI config 不同，写回。
+        const preferredThought =
+          threadRuntime.thoughtLevel && threadRuntime.thoughtLevel !== 'ultracode'
+            ? threadRuntime.thoughtLevel
+            : null;
+        const cliThought = configPatch.thoughtLevel ?? null;
+        if (preferredThought && preferredThought !== cliThought) {
+          try {
+            await client.request('session/set_config_option', {
+              sessionId: resolvedSessionId,
+              configId: 'thought_level',
+              value: preferredThought,
+            });
+          } catch (thoughtError) {
+            console.warn(
+              `[session] failed to sync thought_level ${preferredThought} to CLI:`,
+              thoughtError?.message || thoughtError,
+            );
+          }
+        }
+      }
+      currentMode = appliedMode;
+      const resolvedModel = appliedModel;
 
       if (stillActive) {
-        // 会话 ACP 连接成功 ≠ 云端账号已鉴权。这里只清理“已确认失效”的错误态，
-        // 绝不能无条件写成 authenticated，否则 prompt 401 后仍显示可发送并反复误导登录。
+        // 会话 ACP 连接/加载成功：若此前误标 required/error，可清掉。
+        // session/new|load 成功本身说明云端鉴权对当前 CLI 可用，优先恢复 authenticated
+        //（尤其磁盘已有 lastAccountUser 时），避免侧栏一直「需要登录」。
         const authState = get().codeBuddyAccountAuthState;
         const clearAuthFailure = authState === 'required' || authState === 'error';
+        const cachedUser =
+          normalizeLastAccountUser(get().codeBuddyAccountUser) ||
+          get().guiSettings?.lastAccountUser ||
+          null;
+        const restoreAuthenticated =
+          clearAuthFailure ||
+          authState === 'unknown' ||
+          authState === 'authenticating';
         set({
           sessionId: resolvedSessionId,
           sessionTitle: resolvedTitle,
-          currentModel,
+          currentModel: resolvedModel,
           models: normalizedModels,
           modes: normalizedModes,
           currentMode,
+          ...(thoughtLevel != null ? { thoughtLevel } : {}),
+          ...(thoughtLevelOptions.length ? { thoughtLevelOptions } : {}),
           connectionState: 'connected',
-          error: null,
-          ...(clearAuthFailure
+          ...(restoreAuthenticated
             ? {
-                codeBuddyAccountAuthState: 'unknown',
+                codeBuddyAccountAuthState: 'authenticated',
                 codeBuddyAccountAuthUrl: null,
                 codeBuddyAccountAuthError: null,
+                ...(cachedUser && !get().codeBuddyAccountUser
+                  ? { codeBuddyAccountUser: cachedUser }
+                  : {}),
               }
             : {}),
         });
@@ -557,10 +683,12 @@ export function createSessionsChatSlice(set, get, ctx) {
       get().patchThreadRuntime(thread.id, {
         sessionId: resolvedSessionId,
         connectionState: 'connected',
-        currentModel,
+        currentModel: resolvedModel,
         models: normalizedModels,
         modes: normalizedModes,
         currentMode,
+        ...(thoughtLevel != null ? { thoughtLevel } : {}),
+        ...(thoughtLevelOptions.length ? { thoughtLevelOptions } : {}),
         capabilities: init?.agentCapabilities || threadRuntime.capabilities || {},
         timeline: completedTimeline,
         isAwaitingResponse: false,
@@ -573,7 +701,7 @@ export function createSessionsChatSlice(set, get, ctx) {
       await get().updateThreadRecord(thread.id, {
         sessionId: resolvedSessionId,
         title: resolvedTitle,
-        modelId: currentModel || null,
+        modelId: resolvedModel || null,
         modeId: currentMode || 'default',
         status: 'idle',
         unread: false,
@@ -615,6 +743,17 @@ export function createSessionsChatSlice(set, get, ctx) {
         const stillActive = isScopedRequestCurrent(request, get());
         const authMessage = error?.message || '需要登录 CodeBuddy 云端账号';
         if (stillActive) {
+          // 不要清空 lastAccountUser：侧栏仍可显示「上次登录」用户名。
+          const lastUser =
+            normalizeLastAccountUser(get().codeBuddyAccountUser) ||
+            get().guiSettings?.lastAccountUser ||
+            null;
+          const saved = lastUser
+            ? saveGuiSettings({
+                ...(get().guiSettings || {}),
+                lastAccountUser: lastUser,
+              })
+            : get().guiSettings;
           set({
             // 保留连接以便应用内 authenticate；不要用 error 覆盖鉴权引导
             error: null,
@@ -623,6 +762,8 @@ export function createSessionsChatSlice(set, get, ctx) {
             codeBuddyAccountAuthUrl: null,
             codeBuddyAccountAuthError: authMessage,
             codeBuddyAccountAuthMethods: client.authMethods || [],
+            codeBuddyAccountUser: null,
+            guiSettings: saved || get().guiSettings,
           });
         }
         get().patchThreadRuntime(thread.id, {
@@ -1717,14 +1858,42 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
       if (result?.stopReason === 'refusal') {
         const message = promptResultErrorMessage(result);
-        const authFailed =
-          result?.category === 'auth' ||
-          /鉴权失败|authentication required|401|请.*登录|sign in|auth-type:cli-external-link/i.test(message);
+        // 必须显式鉴权类别/文案才算登录失效。网络 502/代理失败也是 refusal，绝不能踢登录。
+        // CLI 常把 category 塞进 errorMessage JSON（无顶层 category），统一走 classify。
+        const classifiedKind = classifyPromptRefusal(result).kind;
+        const refusalKind =
+          classifiedKind === 'auth' || classifiedKind === 'network'
+            ? classifiedKind
+            : result?.category === 'auth'
+              ? 'auth'
+              : result?.category === 'network' || result?.category === 'proxy'
+                ? 'network'
+                : /鉴权失败|authentication required|请.*登录|sign in to your account|auth-type:cli-external-link/i.test(
+                      message,
+                    )
+                  ? 'auth'
+                  : /502|503|504|ECONNREFUSED|代理|proxy|Bad Gateway|连接被拒绝|网络|模型请求失败/i.test(message)
+                    ? 'network'
+                    : 'refusal';
+        const authFailed = refusalKind === 'auth';
         if (authFailed) {
-          // 本地 ACP 已 connected，但云端 token 失效：只切到登录恢复，不把会话标成 error 循环
+          // 本地 ACP 已 connected，但云端 token 失效：只切到登录恢复。
+          // 保留 lastAccountUser，侧栏显示「上次登录 · 用户名」而不是空白未登录。
+          const lastUser =
+            normalizeLastAccountUser(get().codeBuddyAccountUser) ||
+            get().guiSettings?.lastAccountUser ||
+            null;
+          const saved = lastUser
+            ? saveGuiSettings({
+                ...(get().guiSettings || {}),
+                lastAccountUser: lastUser,
+              })
+            : get().guiSettings;
           set({
             codeBuddyAccountAuthState: 'required',
             codeBuddyAccountAuthError: message,
+            codeBuddyAccountUser: null,
+            guiSettings: saved || get().guiSettings,
             error: null,
           });
           await get().updateThreadRecord(threadId, {
@@ -1735,11 +1904,21 @@ export function createSessionsChatSlice(set, get, ctx) {
               authRequired: true,
             },
           });
+        } else {
+          // 网络/模型拒绝：保留账号态，只记线程错误，允许直接重试发送。
+          await get().updateThreadRecord(threadId, {
+            status: 'error',
+            metadata: {
+              ...(get().threadsById[threadId]?.metadata || {}),
+              lastError: message,
+              authRequired: false,
+            },
+          });
         }
         const refusalError = new Error(message);
         // 鉴权拒绝时恢复草稿，避免用户以为消息已发出却无回复
         refusalError.promptAccepted = !authFailed;
-        refusalError.category = authFailed ? 'auth' : 'refusal';
+        refusalError.category = authFailed ? 'auth' : refusalKind;
         throw refusalError;
       }
 

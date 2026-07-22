@@ -1,17 +1,36 @@
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const { resolveCodeBuddySpawnSpec } = require('./codebuddy-cli-path.cjs');
+const { resolveAccountLoginSiteForRuntime } = require('./codebuddy-auth-site.cjs');
 
 const CLI_UNAVAILABLE_MESSAGE = '未找到 CodeBuddy CLI。请先安装 CodeBuddy，并确认在命令行中可以直接运行 codebuddy。';
 
-function buildCodeBuddyRuntimeEnvironment(source = process.env) {
+/**
+ * @param {NodeJS.ProcessEnv} [source]
+ * @param {{ accountLoginSite?: 'cn' | 'global' | null }} [options]
+ * accountLoginSite:
+ *   - cn → CODEBUDDY_INTERNET_ENVIRONMENT=internal (China edition)
+ *   - global → unset (international default; never force ioa)
+ *   - omitted/null → detect from on-disk OAuth domain, else preserve process env
+ *
+ * Critical: disk auth domain must match product env. Forcing global while
+ * token domain is www.codebuddy.cn causes login-after-login loops.
+ */
+function buildCodeBuddyRuntimeEnvironment(source = process.env, options = {}) {
   // 不要默认强行注入 ioa：会覆盖 CLI 默认云端产品配置，导致已登录 token 以
   // auth-type:cli-external-link、token-type:undefined 形式被拒（401），GUI 反复要求登录。
-  // 仅当用户/环境已显式设置 CODEBUDDY_INTERNET_ENVIRONMENT 时才透传。
   const base = { ...source };
-  const internetEnv = String(source.CODEBUDDY_INTERNET_ENVIRONMENT || '').trim();
-  if (internetEnv) base.CODEBUDDY_INTERNET_ENVIRONMENT = internetEnv;
-  else delete base.CODEBUDDY_INTERNET_ENVIRONMENT;
+  const site = resolveAccountLoginSiteForRuntime(options?.accountLoginSite, source);
+  if (site === 'cn') {
+    base.CODEBUDDY_INTERNET_ENVIRONMENT = 'internal';
+  } else if (site === 'global') {
+    delete base.CODEBUDDY_INTERNET_ENVIRONMENT;
+  } else {
+    // null site: preserve non-empty process env only (advanced / legacy).
+    const internetEnv = String(source.CODEBUDDY_INTERNET_ENVIRONMENT || '').trim();
+    if (internetEnv) base.CODEBUDDY_INTERNET_ENVIRONMENT = internetEnv;
+    else delete base.CODEBUDDY_INTERNET_ENVIRONMENT;
+  }
   // Reuse CLI path resolution so packaged GUI inherits npm global PATH extras.
   return resolveCodeBuddySpawnSpec(['--serve'], base).env || base;
 }
@@ -92,7 +111,9 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     logger(`Starting CodeBuddy runtime project=${entry.projectId} cwd=${entry.cwd}`);
 
     const promise = new Promise((resolve, reject) => {
-      const runtimeEnv = buildCodeBuddyRuntimeEnvironment();
+      const runtimeEnv = buildCodeBuddyRuntimeEnvironment(process.env, {
+        accountLoginSite: entry.accountLoginSite || null,
+      });
       const spec = resolveCodeBuddySpawnSpec(['--serve'], runtimeEnv);
       const proc = spawn(spec.command, spec.args, {
         cwd: entry.cwd,
@@ -205,18 +226,30 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     return trackedPromise;
   }
 
-  async function ensure(projectId, cwd) {
+  async function ensure(projectId, cwd, options = {}) {
     if (!projectId) throw new Error('projectId is required');
     if (!cwd) throw new Error('project cwd is required');
+    // Always resolve against on-disk OAuth so spawn env matches token domain.
+    // null means "no forced site" (preserve process env only).
+    const accountLoginSite = resolveAccountLoginSiteForRuntime(options?.accountLoginSite, process.env);
     let entry = runtimes.get(projectId);
     try {
       if (!fs.statSync(cwd).isDirectory()) throw new Error('not a directory');
     } catch (_) {
       throw new Error(`项目目录不存在或不可访问: ${cwd}`);
     }
-    if (entry?.status === 'running' && entry.proc && !entry.proc.killed) return runtimeConnection(entry);
-    if (entry?.startPromise) return entry.startPromise;
-    if (entry && entry.cwd !== cwd) {
+    if (
+      entry?.status === 'running' &&
+      entry.proc &&
+      !entry.proc.killed &&
+      (entry.accountLoginSite || null) === accountLoginSite
+    ) {
+      return runtimeConnection(entry);
+    }
+    if (entry?.startPromise && (entry.accountLoginSite || null) === accountLoginSite) {
+      return entry.startPromise;
+    }
+    if (entry && (entry.cwd !== cwd || (entry.accountLoginSite || null) !== accountLoginSite)) {
       await stop(projectId);
       entry = null;
     }
@@ -224,6 +257,7 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
       entry = {
         projectId,
         cwd,
+        accountLoginSite,
         status: 'idle',
         port: null,
         password: null,
@@ -235,6 +269,8 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
         startedAt: null,
       };
       runtimes.set(projectId, entry);
+    } else {
+      entry.accountLoginSite = accountLoginSite;
     }
     return start(entry);
   }
@@ -257,10 +293,10 @@ function createCodeBuddyRuntimeManager({ net, logger = () => {}, onStatus = () =
     return emit(entry);
   }
 
-  async function restart(projectId, cwd) {
+  async function restart(projectId, cwd, options = {}) {
     await stop(projectId);
     runtimes.delete(projectId);
-    return ensure(projectId, cwd);
+    return ensure(projectId, cwd, options);
   }
 
   function list() {

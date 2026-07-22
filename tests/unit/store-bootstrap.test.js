@@ -259,7 +259,7 @@ describe('store bootstrap coordination', () => {
     });
   });
 
-  it('restarts the embedded runtime and bootstraps after account login', async () => {
+  it('bootstraps without killing runtime when login site is unchanged', async () => {
     const authenticate = vi.fn().mockResolvedValue({
       _meta: {
         'codebuddy.ai/userinfo': { userId: 'user-1', userName: 'user', userNickname: 'User' },
@@ -274,6 +274,10 @@ describe('store bootstrap coordination', () => {
     const restartProjectRuntime = vi.fn().mockResolvedValue(true);
     const bootstrap = vi.fn().mockResolvedValue(true);
     useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'global',
+      },
       restartProjectRuntime,
       bootstrap,
       getThreadClient: vi.fn().mockReturnValue(client),
@@ -281,17 +285,23 @@ describe('store bootstrap coordination', () => {
     });
 
     await expect(useStore.getState().authenticateCodeBuddyAccount()).resolves.toBe(true);
-    // 公有云优先 external；fixture 仅提供 iOA 时回退到 iOA
+    // fixture 仅提供 iOA 时回退到 iOA
     expect(authenticate).toHaveBeenCalledWith('iOA');
-    expect(restartProjectRuntime).toHaveBeenCalledWith('project-1', { deferInitializationUntilAuth: true });
+    // 站点未变：不要 post-login restart，以免冲掉刚写入的 token
+    expect(restartProjectRuntime).not.toHaveBeenCalled();
     expect(bootstrap).toHaveBeenCalledTimes(1);
     expect(useStore.getState()).toMatchObject({
       codeBuddyAccountAuthState: 'authenticated',
       codeBuddyAccountUser: { userId: 'user-1' },
     });
+    expect(useStore.getState().guiSettings?.lastAccountUser).toMatchObject({
+      userId: 'user-1',
+      userName: 'user',
+      userNickname: 'User',
+    });
   });
 
-  it('prefers external cloud login when multiple auth methods exist', async () => {
+  it('prefers internal for cn site and external for global when both exist', async () => {
     const authenticate = vi.fn().mockResolvedValue({
       _meta: { 'codebuddy.ai/userinfo': { userId: 'user-2' } },
     });
@@ -301,10 +311,15 @@ describe('store bootstrap coordination', () => {
       authMethods: [
         { id: 'iOA', name: 'Login with iOA' },
         { id: 'external', name: 'Login via external browser' },
+        { id: 'internal', name: 'Login via China site' },
       ],
       authenticate,
     };
     useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'cn',
+      },
       restartProjectRuntime: vi.fn().mockResolvedValue(true),
       bootstrap: vi.fn().mockResolvedValue(true),
       getThreadClient: vi.fn().mockReturnValue(client),
@@ -312,7 +327,142 @@ describe('store bootstrap coordination', () => {
       updateThreadRecord: vi.fn().mockResolvedValue(true),
     });
     await expect(useStore.getState().authenticateCodeBuddyAccount()).resolves.toBe(true);
+    expect(authenticate).toHaveBeenCalledWith('internal');
+
+    authenticate.mockClear();
+    useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'global',
+      },
+      codeBuddyAccountAuthState: 'required',
+      getThreadClient: vi.fn().mockReturnValue(client),
+      restartProjectRuntime: vi.fn().mockResolvedValue(true),
+      bootstrap: vi.fn().mockResolvedValue(true),
+    });
+    await expect(useStore.getState().authenticateCodeBuddyAccount({ site: 'global' })).resolves.toBe(
+      true,
+    );
     expect(authenticate).toHaveBeenCalledWith('external');
+  });
+
+  it('clears authenticating when cancelCodeBuddyAccountAuth is called', async () => {
+    let resolveAuth;
+    const authenticate = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveAuth = resolve;
+        }),
+    );
+    const client = {
+      connected: true,
+      initialized: true,
+      authMethods: [{ id: 'internal' }, { id: 'external' }],
+      authenticate,
+      cancelAllActivePrompts: vi.fn(),
+    };
+    useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'cn',
+      },
+      restartProjectRuntime: vi.fn().mockResolvedValue(true),
+      bootstrap: vi.fn().mockResolvedValue(true),
+      getThreadClient: vi.fn().mockReturnValue(client),
+      codeBuddyAccountAuthState: 'required',
+      updateThreadRecord: vi.fn().mockResolvedValue(true),
+    });
+    const pending = useStore.getState().authenticateCodeBuddyAccount({ site: 'cn' });
+    await Promise.resolve();
+    expect(useStore.getState().codeBuddyAccountAuthState).toBe('authenticating');
+    useStore.getState().cancelCodeBuddyAccountAuth();
+    expect(useStore.getState().codeBuddyAccountAuthState).toBe('required');
+    resolveAuth?.({ _meta: { 'codebuddy.ai/userinfo': { userId: 'late' } } });
+    await expect(pending).resolves.toBe(false);
+    expect(useStore.getState().codeBuddyAccountAuthState).toBe('required');
+  });
+
+  it('soft-recovers from disk OAuth without browser authenticate when token exists', async () => {
+    const authenticate = vi.fn().mockResolvedValue({
+      _meta: { 'codebuddy.ai/userinfo': { userId: 'should-not-run' } },
+    });
+    const client = {
+      connected: true,
+      initialized: true,
+      authMethods: [{ id: 'internal' }],
+      authenticate,
+    };
+    const bootstrap = vi.fn().mockResolvedValue(true);
+    window.electronAPI.getCliDiskAuth = vi.fn().mockResolvedValue({
+      site: 'cn',
+      domain: 'www.codebuddy.cn',
+      nickname: 'Chisa',
+      userId: 'disk-user',
+    });
+    useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'cn',
+        lastAccountUser: null,
+      },
+      restartProjectRuntime: vi.fn().mockResolvedValue(true),
+      bootstrap,
+      getThreadClient: vi.fn().mockReturnValue(client),
+      codeBuddyAccountAuthState: 'required',
+      updateThreadRecord: vi.fn().mockResolvedValue(true),
+    });
+
+    await expect(useStore.getState().authenticateCodeBuddyAccount()).resolves.toBe(true);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(bootstrap).toHaveBeenCalledTimes(1);
+    expect(useStore.getState()).toMatchObject({
+      codeBuddyAccountAuthState: 'authenticated',
+    });
+    expect(useStore.getState().guiSettings?.lastAccountUser).toMatchObject({
+      userId: 'disk-user',
+      userNickname: 'Chisa',
+    });
+  });
+
+  it('restarts runtime with selected site before authenticate when site is passed', async () => {
+    const authenticate = vi.fn().mockResolvedValue({
+      _meta: { 'codebuddy.ai/userinfo': { userId: 'user-3', userName: 'intl' } },
+    });
+    const client = {
+      connected: true,
+      initialized: true,
+      authMethods: [{ id: 'external' }],
+      authenticate,
+    };
+    const restartProjectRuntime = vi.fn().mockResolvedValue(true);
+    useStore.setState({
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        accountLoginSite: 'cn',
+        lastAccountUser: null,
+      },
+      restartProjectRuntime,
+      bootstrap: vi.fn().mockResolvedValue(true),
+      getThreadClient: vi.fn().mockReturnValue(client),
+      codeBuddyAccountAuthState: 'required',
+      updateThreadRecord: vi.fn().mockResolvedValue(true),
+      updateGuiSetting: async (key, value) => {
+        const next = { ...useStore.getState().guiSettings, [key]: value };
+        useStore.setState({ guiSettings: next });
+        return true;
+      },
+    });
+    await expect(useStore.getState().authenticateCodeBuddyAccount({ site: 'global' })).resolves.toBe(
+      true,
+    );
+    // 站点变化：pre-login restart；登录后 method/site 相对 previous 也可能再 restart 一次对齐 env
+    expect(restartProjectRuntime).toHaveBeenCalled();
+    expect(restartProjectRuntime).toHaveBeenCalledWith('project-1', {
+      deferInitializationUntilAuth: true,
+      accountLoginSite: 'global',
+    });
+    expect(authenticate).toHaveBeenCalledWith('external');
+    expect(useStore.getState().guiSettings.accountLoginSite).toBe('global');
   });
 });
 

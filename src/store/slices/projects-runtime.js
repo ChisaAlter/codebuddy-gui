@@ -468,9 +468,15 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
       if (!project || !window.electronAPI?.ensureProjectRuntime) return null;
       get().applyProjectRuntimeStatus({ projectId, status: 'starting' });
       try {
+        // Pass GUI preference; main process resolves against on-disk OAuth domain.
+        const accountLoginSite =
+          get().guiSettings?.accountLoginSite === 'cn' || get().guiSettings?.accountLoginSite === 'global'
+            ? get().guiSettings.accountLoginSite
+            : null;
         const runtime = await window.electronAPI.ensureProjectRuntime({
           projectId,
           cwd: project.workspacePath,
+          accountLoginSite,
         });
         await connectActiveProjectRuntime(set, get, projectId, runtime);
         get().applyProjectRuntimeStatus(runtime);
@@ -544,7 +550,14 @@ export function createProjectsRuntimeSlice(set, get, ctx) {
         setAuthToken(null);
       }
       try {
-        const runtime = await window.electronAPI.restartProjectRuntime({ projectId, cwd: project.workspacePath });
+        const preferredSite = options.accountLoginSite || get().guiSettings?.accountLoginSite;
+        const accountLoginSite =
+          preferredSite === 'cn' || preferredSite === 'global' ? preferredSite : null;
+        const runtime = await window.electronAPI.restartProjectRuntime({
+          projectId,
+          cwd: project.workspacePath,
+          accountLoginSite,
+        });
         get().applyProjectRuntimeStatus(runtime);
         const connected = await connectActiveProjectRuntime(set, get, projectId, runtime);
         if (connected && projectId === get().activeProjectId) {

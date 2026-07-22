@@ -1,4 +1,6 @@
 // GUI 偏好：主题、通知等本地 UI 开关。正式键与后端 settings 缓存分离。
+import { normalizeAccountLoginSite, normalizeLastAccountUser } from './account-auth';
+
 export const GUI_PREFERENCES_KEY = 'codebuddy-gui-preferences';
 // 后端 /api/v1/settings 的离线缓存键（历史也混放过 GUI 字段，仅作迁移源读取）。
 export const SETTINGS_CACHE_KEY = 'codebuddy-gui-settings';
@@ -14,6 +16,11 @@ export const DEFAULT_GUI_SETTINGS = {
   enablePasteImageFromClipboard: false,
   showTokensCounter: false,
   desktopNotificationsEnabled: true,
+  // Cloud account login site: cn (China) | global (international).
+  // Default global = same as bare CLI (no INTERNET_ENVIRONMENT), so disk OAuth survives GUI restart.
+  accountLoginSite: 'global',
+  // Last successful cloud userinfo for sidebar display only (not proof of auth).
+  lastAccountUser: null,
 };
 
 export const GUI_SETTING_KEYS = Object.freeze(Object.keys(DEFAULT_GUI_SETTINGS));
@@ -34,6 +41,8 @@ export function normalizeGuiSettings(value) {
     enablePasteImageFromClipboard: source.enablePasteImageFromClipboard === true,
     showTokensCounter: source.showTokensCounter === true,
     desktopNotificationsEnabled: source.desktopNotificationsEnabled !== false,
+    accountLoginSite: normalizeAccountLoginSite(source.accountLoginSite),
+    lastAccountUser: normalizeLastAccountUser(source.lastAccountUser),
   };
 }
 
@@ -77,6 +86,8 @@ const STRIP_FROM_BACKEND_SETTINGS = Object.freeze([
   'enablePasteImageFromClipboard',
   'showTokensCounter',
   'desktopNotificationsEnabled',
+  'accountLoginSite',
+  'lastAccountUser',
 ]);
 
 export function stripGuiSettings(settings) {

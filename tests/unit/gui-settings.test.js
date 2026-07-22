@@ -63,7 +63,22 @@ describe('gui-settings', () => {
       enablePasteImageFromClipboard: true,
       showTokensCounter: true,
       desktopNotificationsEnabled: false,
+      // missing key → soft default global (runtime still re-resolves from disk OAuth)
+      accountLoginSite: 'global',
+      lastAccountUser: null,
     });
+  });
+
+  it('normalizes accountLoginSite and lastAccountUser', () => {
+    expect(normalizeGuiSettings({ accountLoginSite: 'global' }).accountLoginSite).toBe('global');
+    expect(normalizeGuiSettings({ accountLoginSite: 'weird' }).accountLoginSite).toBe('global');
+    expect(normalizeGuiSettings({ accountLoginSite: 'cn' }).accountLoginSite).toBe('cn');
+    expect(
+      normalizeGuiSettings({
+        lastAccountUser: { userNickname: '  Ayase  ', userId: 'u1' },
+      }).lastAccountUser,
+    ).toEqual({ userNickname: 'Ayase', userId: 'u1' });
+    expect(normalizeGuiSettings({ lastAccountUser: { foo: 1 } }).lastAccountUser).toBeNull();
   });
 
   it('migrates GUI fields from legacy mixed settings cache once', () => {

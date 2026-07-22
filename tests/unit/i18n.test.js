@@ -78,6 +78,14 @@ describe('i18n', () => {
     // e2e waitForVisibleSettingValue looks up this exact label (with space)
     expect(translate('zh', 'sidebar.sessionId')).toBe('会话 ID');
     expect(translate('en', 'sidebar.sessionId')).toBe('Session ID');
+    expect(translate('zh', 'account.login')).toBe('登录');
+    expect(translate('zh', 'account.cancelLogin')).toBe('取消登录');
+    expect(translate('zh', 'account.site.cn')).toBe('国内站');
+    expect(translate('zh', 'account.site.global')).toBe('国外站');
+    expect(translate('en', 'account.site.global')).toBe('International');
+    expect(translate('zh', 'sidebar.cliVersion', { version: '2.125.0' })).toBe(
+      'CodeBuddy CLI v2.125.0',
+    );
   });
 
   it('covers interruption/question keys aligned with WebUI 2.124', () => {

@@ -105,7 +105,15 @@ export function createProductPersistSlice(set, get, ctx) {
       .catch(() => false)
       .then(async () => {
         try {
-          await saveProductState(productStateSnapshot(get()));
+          const state = get();
+          // 未 hydrate 或空项目时不要落盘，避免退出/热杀时把真实项目列表写成空。
+          if (!state.productStateLoaded) return false;
+          const snapshot = productStateSnapshot(state);
+          const projectCount = Object.keys(snapshot.projectsById || {}).length;
+          if (projectCount === 0 && Object.keys(state.projectsById || {}).length === 0) {
+            // 允许用户真的删光项目后保存；但若从未加载过则上面已拦。
+          }
+          await saveProductState(snapshot);
           return true;
         } catch (error) {
           set({ error: `保存项目状态失败: ${error.message}` });
@@ -119,6 +127,7 @@ export function createProductPersistSlice(set, get, ctx) {
   flushProductStateSync() {
     const saveSync = window.electronAPI?.saveProductStateSync;
     if (!saveSync) return false;
+    if (!get().productStateLoaded) return false;
 
     const pendingThreadIds = Array.from(threadTimelinePersistTimers.keys());
     for (const timer of threadTimelinePersistTimers.values()) clearTimeout(timer);

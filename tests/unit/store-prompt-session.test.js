@@ -408,6 +408,16 @@ describe('store prompt session selection', () => {
 
     await expect(useStore.getState().handleThreadSessionReset('thread-1', 'session-reset')).resolves.toBe(true);
 
+    // GUI 保留了 delegate/model，CLI 加载返回 default/hy3 → 必须写回 CLI
+    expect(resetRequest).toHaveBeenCalledWith('session/set_mode', {
+      sessionId: 'session-reset',
+      modeId: 'delegate',
+    });
+    expect(resetRequest).toHaveBeenCalledWith('session/set_model', {
+      sessionId: 'session-reset',
+      modelId: 'grok-4.5',
+    });
+
     const state = useStore.getState();
     expect(state.currentModel).toBe('grok-4.5');
     expect(state.currentMode).toBe('delegate');
@@ -536,6 +546,90 @@ describe('store prompt session selection', () => {
     expect(useStore.getState().threadsById['thread-1'].status).toBe('error');
     expect(useStore.getState().error).toContain('最终正文未送达');
     expect(useStore.getState().threadsById['thread-1'].draft).toBe('');
+  });
+
+  it('does not force re-login when prompt refusal is a network/proxy 502', async () => {
+    useStore.setState({
+      codeBuddyAccountAuthState: 'authenticated',
+      codeBuddyAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        lastAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      },
+    });
+    const html502 =
+      '502 <html><head><title>502 Bad Gateway</title></head></html> (proxy: http://127.0.0.1:10809 -> https://ayase.cn)';
+    request.mockResolvedValueOnce({
+      stopReason: 'refusal',
+      category: 'network',
+      errorMessage: html502,
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+
+    const state = useStore.getState();
+    expect(state.codeBuddyAccountAuthState).toBe('authenticated');
+    expect(state.codeBuddyAccountUser).toMatchObject({ userNickname: 'Chisa' });
+    expect(state.threadsById['thread-1'].metadata?.authRequired).not.toBe(true);
+    expect(String(state.error || state.threadsById['thread-1'].metadata?.lastError || '')).toMatch(
+      /502|网络|代理|模型请求失败/,
+    );
+  });
+
+  it('surfaces network details when CLI only embeds category inside errorMessage JSON', async () => {
+    useStore.setState({
+      codeBuddyAccountAuthState: 'authenticated',
+      codeBuddyAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        lastAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      },
+    });
+    const details =
+      '502 <html><head><title>502 Bad Gateway</title></head></html> (proxy: http://127.0.0.1:10809 -> https://ayase.cn)';
+    request.mockResolvedValueOnce({
+      stopReason: 'refusal',
+      // Real CLI shape: no top-level category; JSON errorMessage from RequestError.toErrorResponse().
+      errorMessage: JSON.stringify({
+        code: -32001,
+        message: `Network error: ${details}`,
+        data: { category: 'network', statusCode: 502, details, code: 502 },
+      }),
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+
+    const state = useStore.getState();
+    expect(state.codeBuddyAccountAuthState).toBe('authenticated');
+    expect(state.threadsById['thread-1'].metadata?.authRequired).not.toBe(true);
+    const err = String(state.error || state.threadsById['thread-1'].metadata?.lastError || '');
+    expect(err).toMatch(/HTTP 502|502/);
+    expect(err).toMatch(/不是登录失效|网络|代理|模型请求失败/);
+    expect(err).not.toMatch(/请求被拒绝/);
+    expect(err).not.toMatch(/<\s*html/i);
+  });
+
+  it('marks cloud auth required only for explicit auth refusals', async () => {
+    useStore.setState({
+      codeBuddyAccountAuthState: 'authenticated',
+      codeBuddyAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      guiSettings: {
+        ...(useStore.getState().guiSettings || {}),
+        lastAccountUser: { userNickname: 'Chisa', userId: 'u1' },
+      },
+    });
+    request.mockResolvedValueOnce({
+      stopReason: 'refusal',
+      category: 'auth',
+      errorMessage: 'Authentication required',
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', 'hello')).resolves.toBe(false);
+
+    const state = useStore.getState();
+    expect(state.codeBuddyAccountAuthState).toBe('required');
+    expect(state.threadsById['thread-1'].metadata?.authRequired).toBe(true);
+    expect(state.guiSettings?.lastAccountUser).toMatchObject({ userNickname: 'Chisa' });
   });
 
   it('queues a new message while the session is waiting for permission', async () => {

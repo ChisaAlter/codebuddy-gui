@@ -165,6 +165,22 @@ function createProductStateStore(userDataPath, logger = () => {}) {
 
   function save(value) {
     const normalized = normalizeProductState(value);
+    // 防护：空项目快照不得覆盖磁盘上已有项目（常见于退出时 hydrate 未完成就 beforeunload flush）。
+    const incomingCount = Object.keys(normalized.projectsById || {}).length;
+    if (incomingCount === 0 && fs.existsSync(stateFile)) {
+      try {
+        const existing = normalizeProductState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
+        const existingCount = Object.keys(existing.projectsById || {}).length;
+        if (existingCount > 0) {
+          logger(
+            `Refused to overwrite product-state with empty projects (disk has ${existingCount} project(s))`,
+          );
+          return existing;
+        }
+      } catch (error) {
+        logger(`Product state empty-overwrite guard read failed: ${error.message}`);
+      }
+    }
     const tempFile = `${stateFile}.tmp`;
     const backupFile = `${stateFile}.bak`;
     fs.mkdirSync(userDataPath, { recursive: true });

@@ -59,6 +59,16 @@ import {
   SETTINGS_CACHE_KEY,
   stripGuiSettings,
 } from './lib/gui-settings';
+import {
+  accountLoginSiteFromAuthMethodId,
+  classifyPromptRefusal,
+  formatNetworkOrProxyFailureMessage,
+  isCloudAuthFailureMessage,
+  isNetworkOrProxyFailureMessage,
+  normalizeAccountLoginSite,
+  normalizeLastAccountUser,
+  pickAuthMethodId,
+} from './lib/account-auth';
 import { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
 import {
   ACTIVE_THREAD_RUNTIME_KEYS,
@@ -77,6 +87,18 @@ import { createSessionsChatSlice } from './store/slices/sessions-chat';
 
 export { hasCompletePromptResponse } from './store/helpers/prompt-completion';
 export { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
+export {
+  formatCodeBuddyAccountLabel,
+  accountFooterPresentation,
+  normalizeAccountLoginSite,
+  pickAuthMethodId,
+  preferredAuthMethodIdsForSite,
+  classifyPromptRefusal,
+  formatNetworkOrProxyFailureMessage,
+  isCloudAuthFailureMessage,
+  isNetworkOrProxyFailureMessage,
+  unwrapPromptErrorPayload,
+} from './lib/account-auth';
 
 const conversations = new ConversationManager();
 let bootstrapOperation = null;
@@ -315,50 +337,41 @@ function cancelPendingTimelineActions(timeline) {
   });
 }
 function promptResultErrorMessage(result) {
-  const candidates = [
-    result?.errorMessage,
-    result?.error?.message,
-    result?.message,
-    result?.error,
-    result?.data?.message,
-    result?.data?.errorMessage,
-  ];
-  let raw = '';
-  for (const item of candidates) {
-    if (typeof item === 'string' && item.trim()) {
-      raw = item.trim();
-      break;
-    }
-    if (item && typeof item === 'object') {
-      const nested = item.message || item.errorMessage || item.error?.message;
-      if (typeof nested === 'string' && nested.trim()) {
-        raw = nested.trim();
-        break;
-      }
+  const classified = classifyPromptRefusal(result);
+  let raw = classified.message || '';
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      raw =
+        parsed?.message ||
+        parsed?.error?.message ||
+        parsed?.data?.details ||
+        parsed?.details ||
+        raw;
+    } catch (_) {
+      /* keep raw */
     }
   }
-  const stopReason = String(result?.stopReason || '').toLowerCase();
-  const looksLikeAuth =
-    result?.category === 'auth' ||
-    /authentication required|401|请.*登录|sign in|auth-type|token-type/i.test(raw || '');
-  const isAuthRefusal = result?.category === 'auth' || (stopReason === 'refusal' && (!raw || looksLikeAuth));
-  if (!raw) {
-    // CodeBuddy CLI 在鉴权失败时常只回 stopReason=refusal，不带 errorMessage
-    if (isAuthRefusal || stopReason === 'refusal') {
-      return 'CodeBuddy 云端账号未登录或登录已失效。请在应用内完成一次登录（浏览器授权），完成后会话会自动恢复。';
-    }
-    return '模型未能完成本轮回复';
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    raw = parsed?.message || parsed?.error?.message || raw;
-  } catch (_) {
-    /* keep raw */
-  }
-  if (/authentication required|401|请.*登录|sign in|auth-type|token-type/i.test(raw) || result?.category === 'auth') {
+  if (classified.kind === 'auth' || isCloudAuthFailureMessage(raw)) {
     return 'CodeBuddy 云端账号未登录或登录已失效。请在应用内完成一次登录（浏览器授权），完成后会话会自动恢复。';
   }
-  return raw;
+  if (classified.kind === 'network' || isNetworkOrProxyFailureMessage(raw) || isNetworkOrProxyFailureMessage(result?.errorMessage)) {
+    // Prefer compact host/proxy summary over raw "Network error: …html…" dumps.
+    return formatNetworkOrProxyFailureMessage(raw || result?.errorMessage || '', {
+      statusCode: classified.statusCode,
+    });
+  }
+  if (raw) {
+    // Strip giant HTML error pages from proxy/nginx for readable UI.
+    if (/<\s*html/i.test(raw) || raw.length > 500) {
+      return formatNetworkOrProxyFailureMessage(raw, { statusCode: classified.statusCode });
+    }
+    return raw;
+  }
+  if (String(result?.stopReason || '').toLowerCase() === 'refusal') {
+    return '模型未能完成本轮回复（请求被拒绝）。请重试；若持续失败请检查网络与模型配置。';
+  }
+  return '模型未能完成本轮回复';
 }
 
 function normalizeSessions(payload) {
@@ -565,6 +578,7 @@ export const useStore = create((set, get) => {
   codeBuddyAccountAuthError: null,
   codeBuddyAccountUser: null,
   codeBuddyAccountAuthMethods: [],
+  _accountAuthGeneration: 0,
   sessionId: null,
   sessionToken: null,
   currentModel: null,
@@ -1441,17 +1455,48 @@ export const useStore = create((set, get) => {
         const models = normalizeModels(loaded?.models?.availableModels || currentRuntime.models);
         const modes = normalizeModes(loaded?.modes?.availableModes || currentRuntime.modes);
         const persistedModel = currentRuntime.currentModel || currentThread.modelId;
-        const currentModel =
+        const cliCurrentModel = loaded?.models?.currentModelId || configPatch.currentModel || null;
+        let currentModel =
           resolveAvailableSelection(models, persistedModel) ||
-          loaded?.models?.currentModelId ||
-          configPatch.currentModel;
+          resolveAvailableSelection(models, cliCurrentModel) ||
+          cliCurrentModel;
         const persistedMode = currentRuntime.currentMode || currentThread.modeId;
-        const currentMode =
+        const cliCurrentMode = loaded?.modes?.currentModeId || configPatch.currentMode || null;
+        let currentMode =
           resolveAvailableSelection(modes, persistedMode) ||
-          loaded?.modes?.currentModeId ||
-          configPatch.currentMode ||
+          resolveAvailableSelection(modes, cliCurrentMode) ||
+          cliCurrentMode ||
           'default';
         const title = loaded?.title || loaded?.name || '新对话';
+        // 会话重置后 CLI 可能回到 default；GUI 保留的 mode/model 必须写回 CLI。
+        if (currentMode && currentMode !== cliCurrentMode) {
+          try {
+            await client.request('session/set_mode', {
+              sessionId: normalizedSessionId,
+              modeId: currentMode,
+            });
+          } catch (modeError) {
+            console.warn(
+              `[session-reset] failed to sync mode ${currentMode} to CLI:`,
+              modeError?.message || modeError,
+            );
+            currentMode = cliCurrentMode || 'default';
+          }
+        }
+        if (currentModel && currentModel !== cliCurrentModel) {
+          try {
+            await client.request('session/set_model', {
+              sessionId: normalizedSessionId,
+              modelId: currentModel,
+            });
+          } catch (modelError) {
+            console.warn(
+              `[session-reset] failed to sync model ${currentModel} to CLI:`,
+              modelError?.message || modelError,
+            );
+            currentModel = cliCurrentModel || currentModel;
+          }
+        }
         get().patchThreadRuntime(threadId, {
           connectionState: 'connected',
           models,
@@ -1461,6 +1506,10 @@ export const useStore = create((set, get) => {
           historyReplayActive: false,
           agentPhase: null,
           progress: null,
+          ...(configPatch.thoughtLevel != null ? { thoughtLevel: configPatch.thoughtLevel } : {}),
+          ...(configPatch.thoughtLevelOptions
+            ? { thoughtLevelOptions: configPatch.thoughtLevelOptions }
+            : {}),
         });
         set((state) => {
           const current = state.threadsById[threadId];
@@ -1486,6 +1535,10 @@ export const useStore = create((set, get) => {
                   currentMode,
                   connectionState: 'connected',
                   error: null,
+                  ...(configPatch.thoughtLevel != null ? { thoughtLevel: configPatch.thoughtLevel } : {}),
+                  ...(configPatch.thoughtLevelOptions
+                    ? { thoughtLevelOptions: configPatch.thoughtLevelOptions }
+                    : {}),
                 }
               : {}),
           };
@@ -1540,6 +1593,9 @@ export const useStore = create((set, get) => {
     if (bootstrapOperation) return bootstrapOperation;
     const operation = (async () => {
       const authRequest = ++authRequestVersion;
+      // Before starting runtime: align site with disk OAuth (e.g. www.codebuddy.cn → cn).
+      await get().syncAccountLoginSiteFromDiskAuth?.().catch?.(() => null);
+      if (authRequest !== authRequestVersion) return false;
       if (!routeListenerBound) {
         routeListenerBound = true;
         window.addEventListener('hashchange', () => {
@@ -1679,40 +1735,215 @@ export const useStore = create((set, get) => {
     ]);
   },
 
-  async authenticateCodeBuddyAccount() {
+  async setAccountLoginSite(site) {
+    const normalized = normalizeAccountLoginSite(site);
+    if (get().guiSettings?.accountLoginSite === normalized) return true;
+    return get().updateGuiSetting('accountLoginSite', normalized);
+  },
+
+  /**
+   * Align GUI site preference with on-disk CLI OAuth domain (www.codebuddy.cn → cn).
+   * Prevents spawn env fighting the token product environment.
+   */
+  async syncAccountLoginSiteFromDiskAuth() {
+    if (!window.electronAPI?.getCliDiskAuth) return null;
+    try {
+      const disk = await window.electronAPI.getCliDiskAuth();
+      const site =
+        disk?.site === 'cn' || disk?.site === 'global'
+          ? disk.site
+          : disk?.resolvedSite === 'cn' || disk?.resolvedSite === 'global'
+            ? disk.resolvedSite
+            : null;
+      if (!site) return null;
+      if (get().guiSettings?.accountLoginSite !== site) {
+        await get().setAccountLoginSite(site);
+      }
+      if (disk?.nickname || disk?.userId) {
+        const lastAccountUser = normalizeLastAccountUser({
+          userNickname: disk.nickname,
+          userId: disk.userId,
+        });
+        if (lastAccountUser) {
+          const nextGui = saveGuiSettings({
+            ...get().guiSettings,
+            accountLoginSite: site,
+            lastAccountUser,
+          });
+          set({ guiSettings: nextGui });
+        }
+      }
+      return site;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  async authenticateCodeBuddyAccount(options = {}) {
     if (get().codeBuddyAccountAuthState === 'authenticating') return false;
     const projectId = get().activeProjectId;
     const threadId = get().activeThreadId;
+    const requestedSite =
+      options?.site != null ? normalizeAccountLoginSite(options.site) : null;
+    // Prefer explicit menu choice; otherwise align with disk OAuth before deciding env.
+    if (!requestedSite) {
+      await get().syncAccountLoginSiteFromDiskAuth();
+    }
+    const previousSite = normalizeAccountLoginSite(get().guiSettings?.accountLoginSite);
+    const authGeneration = (get()._accountAuthGeneration || 0) + 1;
     set({
       codeBuddyAccountAuthState: 'authenticating',
       codeBuddyAccountAuthUrl: null,
       codeBuddyAccountAuthError: null,
+      _accountAuthGeneration: authGeneration,
       error: null,
     });
+    const isAuthCurrent = () =>
+      get()._accountAuthGeneration === authGeneration &&
+      get().codeBuddyAccountAuthState === 'authenticating';
+    const failAuth = (message, state = 'error') => {
+      if (!isAuthCurrent() && get()._accountAuthGeneration !== authGeneration) return false;
+      set({
+        codeBuddyAccountAuthState: state,
+        codeBuddyAccountAuthError: message || null,
+        codeBuddyAccountAuthUrl: null,
+      });
+      return false;
+    };
+    const markAuthenticatedFromDisk = (disk, accountLoginSite, authMethods = []) => {
+      const lastAccountUser = normalizeLastAccountUser({
+        userNickname: disk?.nickname,
+        userName: disk?.nickname,
+        userId: disk?.userId,
+      });
+      const nextGui = saveGuiSettings({
+        ...get().guiSettings,
+        accountLoginSite,
+        ...(lastAccountUser ? { lastAccountUser } : {}),
+      });
+      set({
+        codeBuddyAccountAuthState: 'authenticated',
+        codeBuddyAccountAuthUrl: null,
+        codeBuddyAccountAuthError: null,
+        codeBuddyAccountUser: lastAccountUser
+          ? {
+              userNickname: lastAccountUser.userNickname || lastAccountUser.userName,
+              userName: lastAccountUser.userName || lastAccountUser.userNickname,
+              userId: lastAccountUser.userId,
+            }
+          : get().codeBuddyAccountUser,
+        codeBuddyAccountAuthMethods: authMethods,
+        guiSettings: nextGui,
+      });
+      return lastAccountUser;
+    };
     try {
       if (!projectId || !threadId) throw new Error('请先选择一个项目和会话');
-      const client = conversations.peek(threadId) || get().getThreadClient(threadId);
+      if (requestedSite) {
+        await get().setAccountLoginSite(requestedSite);
+      }
+      if (!isAuthCurrent()) return false;
+      let accountLoginSite = normalizeAccountLoginSite(
+        requestedSite || get().guiSettings?.accountLoginSite || previousSite,
+      );
+      // 仅站点真正变化（或 force）时才重启进程，写入 CODEBUDDY_INTERNET_ENVIRONMENT。
+      // 站点未变时不要 kill 进程：authenticate 写入的 token 在当前 serve 进程内。
+      const siteChanged = requestedSite != null && requestedSite !== previousSite;
+      if (siteChanged || options.forceRuntimeRestart) {
+        const restartedForSite = await get().restartProjectRuntime(projectId, {
+          deferInitializationUntilAuth: true,
+          accountLoginSite,
+        });
+        if (!isAuthCurrent()) return false;
+        if (!restartedForSite) throw new Error(get().error || '切换登录站点后运行时重启失败');
+      }
+
+      // Soft recover: 磁盘已有有效 OAuth 且未强制重新登录时，先 dispose+bootstrap 复用 token，
+      // 不要调 authenticate（CLI 会 "User already logged in, logging out first" 毁掉会话）。
+      const forceBrowserLogin = options.forceBrowserLogin === true || siteChanged;
+      if (!forceBrowserLogin && window.electronAPI?.getCliDiskAuth) {
+        try {
+          const disk = await window.electronAPI.getCliDiskAuth();
+          const diskSite =
+            disk?.site === 'cn' || disk?.site === 'global'
+              ? disk.site
+              : disk?.resolvedSite === 'cn' || disk?.resolvedSite === 'global'
+                ? disk.resolvedSite
+                : null;
+          if (diskSite && (disk?.nickname || disk?.userId || disk?.domain)) {
+            if (diskSite) accountLoginSite = diskSite;
+            markAuthenticatedFromDisk(disk, accountLoginSite, []);
+            const thread = get().threadsById[threadId];
+            if (thread?.metadata?.authRequired || thread?.metadata?.lastError) {
+              await get().updateThreadRecord(threadId, {
+                metadata: {
+                  ...(thread.metadata || {}),
+                  authRequired: false,
+                  lastError: null,
+                },
+              });
+            }
+            await conversations.disposeAll();
+            const connected = await get().bootstrap();
+            if (!isAuthCurrent() && get()._accountAuthGeneration !== authGeneration) return false;
+            if (connected && get().codeBuddyAccountAuthState !== 'required') {
+              set({
+                codeBuddyAccountAuthState: 'authenticated',
+                codeBuddyAccountAuthError: null,
+              });
+              return true;
+            }
+            // bootstrap 仍报鉴权失败：继续走浏览器登录。
+            if (!isAuthCurrent()) {
+              set({
+                codeBuddyAccountAuthState: 'authenticating',
+                codeBuddyAccountAuthError: null,
+              });
+            }
+          }
+        } catch (_) {
+          /* fall through to browser authenticate */
+        }
+      }
+
+      let client = conversations.peek(threadId) || get().getThreadClient(threadId);
       if (!client) throw new Error('内置 CodeBuddy CLI 尚未就绪');
       if (!client.connected) await client.connect();
+      if (!isAuthCurrent()) return false;
       if (!client.initialized) await client.initialize();
-      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
+      if (!isAuthCurrent()) return false;
+      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) {
+        return failAuth('登录已取消（会话已切换）', 'required');
+      }
 
       const authMethods = Array.isArray(client.authMethods) ? client.authMethods : [];
-      // 公有云默认 cli-external-link → methodId=external；勿优先 iOA，否则企业内网登录页对公有云用户无效
-      const preferredMethodIds = ['external', 'cli-external-link', 'iOA', 'internal', 'selfhosted'];
-      const methodId =
-        preferredMethodIds.find((id) => authMethods.some((method) => method?.id === id)) ||
-        authMethods[0]?.id ||
-        'external';
+      // 国内站优先 internal；国外站优先 external。method 成功后以 method 校正站点偏好。
+      const methodId = pickAuthMethodId(authMethods, accountLoginSite);
       const result = await client.authenticate(methodId);
-      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) return false;
+      if (!isAuthCurrent()) return false;
+      if (projectId !== get().activeProjectId || threadId !== get().activeThreadId) {
+        return failAuth('登录已取消（会话已切换）', 'required');
+      }
+      const methodSite = accountLoginSiteFromAuthMethodId(methodId);
+      if (methodSite) accountLoginSite = methodSite;
+      // 登录成功后立刻与磁盘 auth 对齐（domain=www.codebuddy.cn → cn）
+      const diskSite = await get().syncAccountLoginSiteFromDiskAuth();
+      if (diskSite) accountLoginSite = diskSite;
+
       const userinfo = result?._meta?.['codebuddy.ai/userinfo'] || result?.userinfo || null;
+      const lastAccountUser = normalizeLastAccountUser(userinfo);
+      const nextGui = saveGuiSettings({
+        ...get().guiSettings,
+        accountLoginSite,
+        lastAccountUser,
+      });
       set({
         codeBuddyAccountAuthState: 'authenticated',
         codeBuddyAccountAuthUrl: null,
         codeBuddyAccountAuthError: null,
         codeBuddyAccountUser: userinfo,
         codeBuddyAccountAuthMethods: authMethods,
+        guiSettings: nextGui,
       });
       // 清掉会话上的鉴权失败标记，避免恢复后仍显示旧 lastError
       const thread = get().threadsById[threadId];
@@ -1725,50 +1956,134 @@ export const useStore = create((set, get) => {
           },
         });
       }
+      // 登录成功后：若站点相对登录前变化，必须重启 runtime 才能让后续 prompt 读到正确 env + token。
+      // 站点未变则只 dispose ACP 连接并 bootstrap，避免无谓 kill。
       await conversations.disposeAll();
-      const restarted = projectId
-        ? await get().restartProjectRuntime(projectId, { deferInitializationUntilAuth: true })
-        : true;
-      if (!restarted) throw new Error(get().error || 'CodeBuddy 运行时重启失败');
+      const needRuntimeRestartForSite =
+        siteChanged ||
+        options.forceRuntimeRestart ||
+        (methodSite && methodSite !== previousSite) ||
+        (diskSite && diskSite !== previousSite);
+      if (needRuntimeRestartForSite) {
+        const restarted = await get().restartProjectRuntime(projectId, {
+          deferInitializationUntilAuth: true,
+          accountLoginSite,
+        });
+        if (!restarted) throw new Error(get().error || '登录成功后运行时重启失败');
+      }
       const connected = await get().bootstrap();
       if (!connected) {
         const state = get();
-        if (state.codeBuddyAccountAuthState === 'required') return false;
+        if (state.codeBuddyAccountAuthState === 'required') {
+          // 会话恢复仍要登录：保留刚拿到的用户缓存，方便侧栏展示「上次登录」
+          if (lastAccountUser) {
+            const kept = saveGuiSettings({
+              ...get().guiSettings,
+              accountLoginSite,
+              lastAccountUser,
+            });
+            set({
+              guiSettings: kept,
+              codeBuddyAccountUser: userinfo || get().codeBuddyAccountUser,
+            });
+          }
+          return false;
+        }
         throw new Error(state.error || 'CodeBuddy 登录成功，但会话恢复失败');
       }
-      return true;
+      // bootstrap 可能把 auth 清成 unknown；若未再要求登录则保持 authenticated
+      if (get().codeBuddyAccountAuthState !== 'required' && get().codeBuddyAccountAuthState !== 'error') {
+        set({
+          codeBuddyAccountAuthState: 'authenticated',
+          codeBuddyAccountAuthError: null,
+          codeBuddyAccountUser: userinfo || get().codeBuddyAccountUser,
+        });
+      }
+      return get().codeBuddyAccountAuthState === 'authenticated';
     } catch (error) {
-      if (projectId !== get().activeProjectId) return false;
-      const message =
-        error?.type === 'timeout'
+      if (get()._accountAuthGeneration !== authGeneration) return false;
+      const cancelled =
+        /cancelled by user|登录已取消|ACP request cancelled/i.test(String(error?.message || ''));
+      const message = cancelled
+        ? '已取消登录'
+        : error?.type === 'timeout' || /idle timeout|timeout: authenticate/i.test(String(error?.message || ''))
           ? 'CodeBuddy 登录等待超时，请重新发起登录'
           : error?.message || 'CodeBuddy 登录失败';
       set({
-        codeBuddyAccountAuthState: 'error',
-        codeBuddyAccountAuthError: message,
+        codeBuddyAccountAuthState: cancelled ? 'required' : 'error',
+        codeBuddyAccountAuthError: cancelled ? null : message,
         codeBuddyAccountAuthUrl: null,
       });
       return false;
     }
   },
 
+  cancelCodeBuddyAccountAuth() {
+    const generation = (get()._accountAuthGeneration || 0) + 1;
+    const threadId = get().activeThreadId;
+    const client = threadId
+      ? conversations.peek(threadId) || get().getThreadClient?.(threadId)
+      : null;
+    try {
+      client?.cancelAllActivePrompts?.();
+    } catch (_) {
+      /* best-effort */
+    }
+    set({
+      _accountAuthGeneration: generation,
+      codeBuddyAccountAuthState: 'required',
+      codeBuddyAccountAuthError: null,
+      codeBuddyAccountAuthUrl: null,
+    });
+    return true;
+  },
+
   async refreshInfo() {
     const request = beginScopedRequest('info', get());
+    let payloadInfo = null;
     try {
       const payload = await fetchJson('/api/v1/info');
       if (!isScopedRequestCurrent(request, get())) return false;
-      set({ info: payload.data || payload, infoLoaded: true });
-      return true;
-    } catch (error) {
-      if (!window.electronAPI?.getCliMaintenanceInfo) throw error;
-      const cliInfo = await window.electronAPI.getCliMaintenanceInfo();
-      if (!isScopedRequestCurrent(request, get())) return false;
-      set((state) => ({
-        info: { ...(state.info || {}), version: cliInfo?.version || state.info?.version || null },
-        infoLoaded: true,
-      }));
+      payloadInfo = payload.data || payload || null;
+    } catch (_) {
+      payloadInfo = null;
+    }
+
+    const runtimeVersion =
+      payloadInfo &&
+      typeof payloadInfo === 'object' &&
+      payloadInfo.version != null &&
+      String(payloadInfo.version).trim()
+        ? String(payloadInfo.version).trim()
+        : null;
+
+    if (runtimeVersion) {
+      set({ info: payloadInfo, infoLoaded: true });
       return true;
     }
+
+    // 运行时 info 失败或无 version（未鉴权常见）时，用本机 CLI --version 回落。
+    let cliVersion = null;
+    if (window.electronAPI?.getCliMaintenanceInfo) {
+      try {
+        const cliInfo = await window.electronAPI.getCliMaintenanceInfo();
+        if (!isScopedRequestCurrent(request, get())) return false;
+        cliVersion = cliInfo?.version || null;
+      } catch (_) {
+        /* keep previous version if any */
+      }
+    }
+
+    if (!isScopedRequestCurrent(request, get())) return false;
+    set((state) => ({
+      info: {
+        ...(state.info || {}),
+        ...(payloadInfo && typeof payloadInfo === 'object' ? payloadInfo : {}),
+        version: cliVersion || state.info?.version || null,
+      },
+      infoLoaded: true,
+    }));
+    return true;
   },
 
   async refreshSettings() {
@@ -1897,6 +2212,31 @@ export const useStore = create((set, get) => {
               persistSettingsCache(next);
               return { settings: next, settingsLoaded: true };
             });
+          }
+          // 用户默认模型 / 推理努力：在已连接会话上同步到当前 ACP 会话，避免「设了但不生效」。
+          // 失败不回滚用户 settings（用户级已成功），仅 best-effort。
+          if (projectId === get().activeProjectId && get().sessionId && get().connectionState === 'connected') {
+            if (key === 'model' && value) {
+              try {
+                await get().setModel(String(value));
+              } catch (_) {
+                /* session may be busy */
+              }
+            }
+            if (key === 'reasoningEffort' && value) {
+              const level = String(value);
+              const options = get().thoughtLevelOptions || [];
+              const known =
+                options.some((item) => (item.id || item.value) === level) ||
+                ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'disabled', 'enabled'].includes(level);
+              if (known) {
+                try {
+                  await get().setThoughtLevel(level);
+                } catch (_) {
+                  /* session may be busy or option unsupported */
+                }
+              }
+            }
           }
           return true;
         } catch (err) {

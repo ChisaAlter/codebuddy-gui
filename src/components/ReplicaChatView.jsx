@@ -788,10 +788,21 @@ function EventDetails({ value }) {
   );
 }
 
+function isAuthRelatedMessage(message) {
+  return /鉴权|登录|authentication|sign in|auth-type:cli-external-link|云账号|云端账号|401/i.test(
+    String(message || ''),
+  );
+}
+
 function ErrorTimelineCard({ item }) {
   const t = useUiTranslate();
+  const accountLoginNeeded = useStore((s) =>
+    ['required', 'authenticating', 'error'].includes(s.codeBuddyAccountAuthState),
+  );
   const payload = item.meta || item.raw || {};
   const message = item.content || payload.message || payload.error?.message || t('execution.failedDefault');
+  // 已有「需要登录」恢复卡时，隐藏同文案的执行失败时间线条，避免三连红。
+  if (accountLoginNeeded && isAuthRelatedMessage(message)) return null;
   return (
     <div className="my-3 rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2.5">
       <div className="flex items-start gap-2">
@@ -1562,6 +1573,7 @@ export default function ReplicaChatView() {
   const codeBuddyAccountAuthState = useStore((s) => s.codeBuddyAccountAuthState);
   const codeBuddyAccountAuthError = useStore((s) => s.codeBuddyAccountAuthError);
   const authenticateCodeBuddyAccount = useStore((s) => s.authenticateCodeBuddyAccount);
+  const cancelCodeBuddyAccountAuth = useStore((s) => s.cancelCodeBuddyAccountAuth);
   const currentModel = useStore((s) => s.currentModel);
   const currentMode = useStore((s) => s.currentMode);
   const usage = useStore((s) => s.usage);
@@ -1876,7 +1888,10 @@ export default function ReplicaChatView() {
     setChatError(null);
     try {
       const recovered = accountLoginNeeded
-        ? await authenticateCodeBuddyAccount()
+        ? // 一键用侧栏已选站点；切站在侧栏账号菜单完成。
+          await authenticateCodeBuddyAccount({
+            site: useStore.getState().guiSettings?.accountLoginSite || 'global',
+          })
         : runtimeUnavailable
           ? await restartProjectRuntime(projectId)
           : await bootstrap();
@@ -2245,22 +2260,34 @@ export default function ReplicaChatView() {
             : t('recovery.connectionFailed')}
       </div>
       <div className="mt-2 break-words text-xs leading-5 text-[var(--color-text-secondary)]">{recoveryMessage}</div>
-      <button
-        type="button"
-        className="btn-primary mt-4 px-4 py-2 text-xs"
-        disabled={recovering || codeBuddyAccountAuthState === 'authenticating'}
-        onClick={recoverConnection}
-      >
-        {codeBuddyAccountAuthState === 'authenticating'
-          ? t('recovery.waitLogin')
-          : recovering
-            ? t('recovery.recovering')
-            : accountLoginNeeded
-              ? t('recovery.login')
-              : runtimeUnavailable
-                ? t('recovery.restartConnect')
-                : t('recovery.reconnect')}
-      </button>
+      <div className="mt-4 flex items-center justify-center gap-2">
+        <button
+          type="button"
+          className="btn-primary px-4 py-2 text-xs"
+          disabled={recovering || codeBuddyAccountAuthState === 'authenticating'}
+          onClick={recoverConnection}
+        >
+          {codeBuddyAccountAuthState === 'authenticating'
+            ? t('recovery.waitLogin')
+            : recovering
+              ? t('recovery.recovering')
+              : accountLoginNeeded
+                ? t('recovery.login')
+                : runtimeUnavailable
+                  ? t('recovery.restartConnect')
+                  : t('recovery.reconnect')}
+        </button>
+        {codeBuddyAccountAuthState === 'authenticating' ? (
+          <button
+            type="button"
+            className="btn-ghost px-3 py-2 text-xs"
+            onClick={() => cancelCodeBuddyAccountAuth?.()}
+            data-testid="chat-account-cancel"
+          >
+            {t('account.cancelLogin')}
+          </button>
+        ) : null}
+      </div>
     </div>
   ) : null;
 
@@ -2327,7 +2354,7 @@ export default function ReplicaChatView() {
             </div>
           )}
           {timeline.length > 0 ? recoveryNotice : null}
-          {chatError && (
+          {chatError && !(accountLoginNeeded && isAuthRelatedMessage(chatError)) ? (
             <div
               className="mx-0 mb-4 p-3 rounded-lg flex items-center justify-between"
               style={{
@@ -2345,7 +2372,7 @@ export default function ReplicaChatView() {
                 {t('composer.closeError')}
               </button>
             </div>
-          )}
+          ) : null}
           <div ref={messagesEndRef} />
 
         </div>

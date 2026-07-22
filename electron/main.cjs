@@ -1201,13 +1201,37 @@ const runtimeManager = createCodeBuddyRuntimeManager({
 
 ipcMain.handle('runtime:ensure', async (_event, request = {}) => {
   await ensureCodeBuddyCliCompatibleForRuntime();
-  return runtimeManager.ensure(request.projectId, request.cwd);
+  return runtimeManager.ensure(request.projectId, request.cwd, {
+    accountLoginSite: request.accountLoginSite,
+  });
 });
 ipcMain.handle('runtime:list', () => runtimeManager.list());
 ipcMain.handle('runtime:stop', (_event, projectId) => runtimeManager.stop(projectId));
 ipcMain.handle('runtime:restart', async (_event, request = {}) => {
   await ensureCodeBuddyCliCompatibleForRuntime();
-  return runtimeManager.restart(request.projectId, request.cwd);
+  return runtimeManager.restart(request.projectId, request.cwd, {
+    accountLoginSite: request.accountLoginSite,
+  });
+});
+ipcMain.handle('cliAuth:getDiskAuth', () => {
+  try {
+    const { readCodeBuddyDiskAuth, resolveAccountLoginSiteForRuntime } = require('./codebuddy-auth-site.cjs');
+    const disk = readCodeBuddyDiskAuth(process.env);
+    return {
+      ...disk,
+      resolvedSite: resolveAccountLoginSiteForRuntime(null, process.env),
+    };
+  } catch (error) {
+    return {
+      site: null,
+      domain: null,
+      userId: null,
+      nickname: null,
+      path: null,
+      resolvedSite: 'global',
+      error: error?.message || String(error),
+    };
+  }
 });
 ipcMain.handle('notification:consumeOpenThread', () => {
   const target = pendingNotificationTarget;

@@ -32,4 +32,17 @@ describe('store CLI info fallback', () => {
     expect(useStore.getState().info).toMatchObject({ version: '2.120.0' });
     expect(useStore.getState().infoLoaded).toBe(true);
   });
+
+  it('falls back to CLI maintenance version when runtime info omits version', async () => {
+    window.electronAPI.requestCodeBuddy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { name: 'codebuddy', version: null } }),
+    });
+    await expect(useStore.getState().refreshInfo()).resolves.toBe(true);
+    expect(window.electronAPI.getCliMaintenanceInfo).toHaveBeenCalled();
+    expect(useStore.getState().info).toMatchObject({ version: '2.120.0' });
+  });
 });

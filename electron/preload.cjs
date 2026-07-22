@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installDaemonService: (payload) => ipcRenderer.invoke('daemonService:install', payload),
   uninstallDaemonService: () => ipcRenderer.invoke('daemonService:uninstall'),
   getCliMaintenanceInfo: () => ipcRenderer.invoke('cliMaintenance:getInfo'),
+  getCliDiskAuth: () => ipcRenderer.invoke('cliAuth:getDiskAuth'),
   runCliDoctor: () => ipcRenderer.invoke('cliMaintenance:doctor'),
   updateCodeBuddyCli: () => ipcRenderer.invoke('cliMaintenance:update'),
   installCodeBuddyCli: (target) => ipcRenderer.invoke('cliMaintenance:install', target),

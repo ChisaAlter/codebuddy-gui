@@ -36,3 +36,19 @@ export function getSessionModeLabel(mode, fallback = '') {
     || id
     || fallback;
 }
+
+/**
+ * Modes that instruct the CLI itself to skip interactive permission prompts.
+ * GUI must call session/set_mode — do not silently auto-approve in the client.
+ */
+export function isCliPermissionBypassMode(mode) {
+  const key = normalizeModeKey(
+    typeof mode === 'string' ? mode : mode?.id || mode?.modeId || mode?.value || mode?.name,
+  );
+  return (
+    key === 'fullaccess' ||
+    key === 'fullaccessmode' ||
+    key === 'bypasspermissions' ||
+    key === 'bypasspermissionsmode'
+  );
+}

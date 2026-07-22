@@ -1,10 +1,310 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Bot } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import ProjectSessionTree from './ProjectSessionTree';
 import { useStore } from '../store';
 import { NAV_GROUPS } from '../lib/codebuddy-schema';
+import { accountFooterPresentation } from '../lib/account-auth';
+import { resolveLocaleMode, translate } from '../lib/i18n';
 import appIconUrl from '../../build/icon.png';
+
+function useSidebarTranslate() {
+  const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
+  const [systemTick, setSystemTick] = useState(0);
+  useEffect(() => {
+    if (localeMode !== 'system') return undefined;
+    const onChange = () => setSystemTick((value) => value + 1);
+    window.addEventListener('languagechange', onChange);
+    return () => window.removeEventListener('languagechange', onChange);
+  }, [localeMode]);
+  return useMemo(() => {
+    void systemTick;
+    const resolved = resolveLocaleMode(localeMode);
+    return (key, vars) => translate(resolved, key, vars);
+  }, [localeMode, systemTick]);
+}
+
+export function sidebarAccountDotClass(authState, presentationKind) {
+  if (authState === 'authenticating' || presentationKind === 'authenticating') {
+    return 'bg-[var(--color-accent-yellow)]';
+  }
+  if (authState === 'required' || authState === 'error' || presentationKind === 'needs_login') {
+    return 'bg-[var(--color-accent-red)]';
+  }
+  if (authState === 'authenticated' || presentationKind === 'authenticated') {
+    return 'bg-[var(--color-accent-green)]';
+  }
+  if (presentationKind === 'cached') return 'bg-[var(--color-accent-yellow)]';
+  return 'bg-[var(--color-text-muted)]';
+}
+
+function accountAvatarGlyph(label) {
+  const text = String(label || '').trim();
+  if (!text) return '?';
+  return Array.from(text)[0]?.toUpperCase() || '?';
+}
+
+/** WebUI-style identity card: avatar + name + CLI version in one footer block. */
+export function SidebarAccountFooter({
+  collapsed = false,
+  info = null,
+  connectionState = 'disconnected',
+}) {
+  const t = useSidebarTranslate();
+  const {
+    codeBuddyAccountAuthState,
+    codeBuddyAccountUser,
+    codeBuddyAccountAuthError,
+    guiSettings,
+    authenticateCodeBuddyAccount,
+    cancelCodeBuddyAccountAuth,
+  } = useStore(
+    useShallow((state) => ({
+      codeBuddyAccountAuthState: state.codeBuddyAccountAuthState,
+      codeBuddyAccountUser: state.codeBuddyAccountUser,
+      codeBuddyAccountAuthError: state.codeBuddyAccountAuthError,
+      guiSettings: state.guiSettings,
+      authenticateCodeBuddyAccount: state.authenticateCodeBuddyAccount,
+      cancelCodeBuddyAccountAuth: state.cancelCodeBuddyAccountAuth,
+    })),
+  );
+  const [menuOpen, setMenuOpen] = useState(false);
+  const presentation = accountFooterPresentation({
+    authState: codeBuddyAccountAuthState,
+    user: codeBuddyAccountUser,
+    lastUser: guiSettings?.lastAccountUser,
+    site: guiSettings?.accountLoginSite || 'global',
+  });
+  const siteLabel =
+    presentation.site === 'global' ? t('account.site.global') : t('account.site.cn');
+  const authenticating = presentation.kind === 'authenticating';
+  const accountDotClass = sidebarAccountDotClass(codeBuddyAccountAuthState, presentation.kind);
+  const versionLabel = info?.version
+    ? t('sidebar.cliVersion', { version: String(info.version).replace(/^v/i, '') })
+    : t('sidebar.cliVersionUnknown');
+  const connectionDotClass =
+    connectionState === 'connected'
+      ? 'bg-[var(--color-accent-green)]'
+      : connectionState === 'error'
+        ? 'bg-[var(--color-accent-red)]'
+        : 'bg-[var(--color-accent-yellow)]';
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [menuOpen]);
+
+  const pickSite = async (site) => {
+    setMenuOpen(false);
+    if (authenticating) return;
+    await authenticateCodeBuddyAccount({ site });
+  };
+
+  const openMenu = () => {
+    if (authenticating) return;
+    setMenuOpen((open) => !open);
+  };
+
+  const cancelLogin = (event) => {
+    event?.stopPropagation?.();
+    cancelCodeBuddyAccountAuth?.();
+    setMenuOpen(false);
+  };
+
+  let primaryLabel = t('account.notLoggedIn');
+  if (authenticating) primaryLabel = t('account.loggingIn');
+  else if (presentation.kind === 'authenticated') {
+    primaryLabel = presentation.label || t('account.loggedIn');
+  } else if (presentation.kind === 'cached') {
+    primaryLabel = presentation.label || t('account.cachedUser');
+  }
+
+  const statusParts = [versionLabel];
+  if (presentation.kind === 'authenticated' || presentation.kind === 'cached') {
+    statusParts.push(siteLabel);
+  }
+  if (presentation.kind === 'cached') statusParts.push(t('account.cachedUser'));
+  if (connectionState === 'error') statusParts.push(t('connection.error'));
+  const statusLabel = statusParts.filter(Boolean).join(' · ');
+
+  let summaryText = primaryLabel;
+  if (authenticating) summaryText = t('account.loggingIn');
+  else if (presentation.kind === 'authenticated' && presentation.label) {
+    summaryText = `${t('account.loggedIn')} · ${presentation.label} · ${siteLabel} · ${versionLabel}`;
+  } else if (presentation.kind === 'cached' && presentation.label) {
+    summaryText = `${t('account.cachedUser')} · ${presentation.label} · ${siteLabel} · ${versionLabel}`;
+  } else if (codeBuddyAccountAuthError) {
+    summaryText = `${t('account.notLoggedIn')} · ${versionLabel}`;
+  } else {
+    summaryText = `${primaryLabel} · ${versionLabel}`;
+  }
+
+  const menu = menuOpen ? (
+    <>
+      <button
+        type="button"
+        className="fixed inset-0 z-10"
+        style={{ left: collapsed ? 60 : 'var(--sidebar-width, 252px)' }}
+        onClick={() => setMenuOpen(false)}
+        aria-hidden="true"
+      />
+      <div
+        role="menu"
+        aria-label={t('account.menuLabel')}
+        data-testid="sidebar-account-site-menu"
+        className="composer-menu composer-menu--open absolute bottom-full left-0 z-20 mb-1 w-44"
+      >
+        <button
+          type="button"
+          role="menuitem"
+          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+          onClick={() => pickSite('cn')}
+        >
+          {t('account.site.cn')}
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+          onClick={() => pickSite('global')}
+        >
+          {t('account.site.global')}
+        </button>
+      </div>
+    </>
+  ) : null;
+
+  const avatar = (
+    <div className="sidebar-user-avatar" aria-hidden="true">
+      {presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
+        <span>{accountAvatarGlyph(presentation.label || primaryLabel)}</span>
+      ) : (
+        <img src={appIconUrl} alt="" />
+      )}
+      <span className={`sidebar-user-avatar-dot ${accountDotClass}`} title={connectionState} />
+    </div>
+  );
+
+  if (collapsed) {
+    return (
+      <div className="sidebar-user-collapsed" title={summaryText}>
+        <button
+          type="button"
+          className="sidebar-user-avatar"
+          style={{ border: '1px solid var(--color-border-muted)' }}
+          aria-label={
+            authenticating
+              ? t('account.cancelLogin')
+              : presentation.showLogin
+                ? t('account.login')
+                : summaryText
+          }
+          aria-haspopup={authenticating ? undefined : 'menu'}
+          aria-expanded={authenticating ? undefined : menuOpen}
+          onClick={authenticating ? cancelLogin : openMenu}
+          data-testid="sidebar-account-collapsed"
+        >
+          {presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
+            <span>{accountAvatarGlyph(presentation.label || primaryLabel)}</span>
+          ) : (
+            <img src={appIconUrl} alt="" />
+          )}
+          <span className={`sidebar-user-avatar-dot ${accountDotClass}`} />
+        </button>
+        {menu}
+      </div>
+    );
+  }
+
+  return (
+    <div className="sidebar-footer-identity relative" data-testid="sidebar-account-footer">
+      <div
+        className="sidebar-user-section"
+        data-disabled={authenticating ? 'true' : undefined}
+        role="button"
+        tabIndex={0}
+        title={summaryText}
+        aria-haspopup={authenticating ? undefined : 'menu'}
+        aria-expanded={authenticating ? undefined : menuOpen}
+        onClick={authenticating ? undefined : openMenu}
+        onKeyDown={(event) => {
+          if (authenticating) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openMenu();
+          }
+        }}
+      >
+        {avatar}
+        <div className="sidebar-user-info">
+          <div className="sidebar-user-name" data-testid="sidebar-account-name">
+            {primaryLabel}
+          </div>
+          <div className="sidebar-user-status" data-testid="sidebar-account-status" title={statusLabel}>
+            <span
+              className={`mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${connectionDotClass}`}
+              title={connectionState}
+            />
+            {statusLabel}
+          </div>
+        </div>
+        {authenticating ? (
+          <button
+            type="button"
+            className="sidebar-user-action sidebar-user-action--danger"
+            onClick={cancelLogin}
+            data-testid="sidebar-account-cancel"
+          >
+            {t('account.cancelLogin')}
+          </button>
+        ) : presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
+          <button
+            type="button"
+            className="sidebar-user-action sidebar-user-action--icon"
+            aria-label={t('account.switchSite')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              openMenu();
+            }}
+            data-testid="sidebar-account-login"
+            title={t('account.relogin')}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <circle cx="3" cy="8" r="1.5" />
+              <circle cx="8" cy="8" r="1.5" />
+              <circle cx="13" cy="8" r="1.5" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="sidebar-user-action"
+            aria-label={t('account.login')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              openMenu();
+            }}
+            data-testid="sidebar-account-login"
+          >
+            {t('account.login')}
+          </button>
+        )}
+      </div>
+      {menu}
+    </div>
+  );
+}
 
 const ITEM_ICONS = {
   chat: (
@@ -574,25 +874,11 @@ export default function ReplicaSidebar() {
 
       <div className="shrink-0 p-1.5">
         <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
-        {!sidebarCollapsed ? (
-          <div className="mt-1 flex items-center gap-2 border-t border-[var(--color-border-muted)] px-2.5 pt-2 text-[10px] text-[var(--color-text-muted)]">
-            <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`}
-            />
-            <span className="truncate">
-              CodeBuddy CLI {info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}
-            </span>
-          </div>
-        ) : (
-          <div
-            className="flex h-7 items-center justify-center"
-            title={`CodeBuddy CLI ${info?.version ? `v${String(info.version).replace(/^v/i, '')}` : '版本未知'}`}
-          >
-            <span
-              className={`h-2 w-2 rounded-full ${connectionState === 'connected' ? 'bg-[var(--color-accent-green)]' : connectionState === 'error' ? 'bg-[var(--color-accent-red)]' : 'bg-[var(--color-accent-yellow)]'}`}
-            />
-          </div>
-        )}
+        <SidebarAccountFooter
+          collapsed={sidebarCollapsed}
+          info={info}
+          connectionState={connectionState}
+        />
       </div>
     </aside>
   );
