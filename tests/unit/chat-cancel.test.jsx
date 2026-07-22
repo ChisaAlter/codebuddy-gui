@@ -54,6 +54,17 @@ vi.mock('../../src/store', () => ({
       ],
       setModel: vi.fn(),
       setMode: vi.fn(),
+      setThoughtLevel: vi.fn(),
+      thoughtLevel: 'enabled',
+      thoughtLevelOptions: [],
+      pendingAttachments: [],
+      chooseAttachments: vi.fn(),
+      removePendingAttachment: vi.fn(),
+      addDroppedAttachments: vi.fn(),
+      addClipboardImageAttachment: vi.fn(),
+      clearPromptSuggestion: vi.fn(),
+      promptSuggestion: null,
+      settings: {},
     });
   },
 }));

@@ -1,15 +1,5 @@
 import {
-  getApiBase,
-  setApiBase,
-  fetchJson,
-  requestCodeBuddy,
-  getAcpSessionToken,
-  getAuthToken,
   setAcpSessionToken,
-  checkAuth as apiCheckAuth,
-  authLogin as apiAuthLogin,
-  authLogout as apiAuthLogout,
-  setAuthToken,
   isAcpAuthenticationError,
 } from '../../lib/acp';
 import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent } from '../../lib/timeline';
@@ -50,7 +40,6 @@ export function createSessionsChatSlice(set, get, ctx) {
     resetFileWorkspace,
     // pure helpers from store module
     serializePromptQueue,
-    mergeAttachmentSelection,
     mergeTeamState,
     normalizeModels,
     normalizeModes,

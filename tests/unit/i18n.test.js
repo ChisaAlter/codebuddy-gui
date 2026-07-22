@@ -63,14 +63,21 @@ describe('i18n', () => {
     expect(translate('en', 'input.addAttachment')).toBe('Add attachment');
     expect(translate('zh', 'input.menu.image')).toBe('图片');
     expect(translate('zh', 'input.menu.file')).toBe('文件');
+    expect(translate('zh', 'input.imageCapabilityUnavailable')).toContain('图片输入能力');
+    expect(translate('en', 'input.imageCapabilityUnavailable')).toContain('image input');
     expect(translate('zh', 'input.deepThinking')).toBe('深度思考');
     expect(translate('zh', 'phase.modelRequesting')).toBe('等待模型响应');
     expect(translate('zh', 'phase.thinking')).toBe('正在思考');
     expect(translate('zh', 'queue.title', { n: 2 })).toBe('待发送 2');
     expect(translate('en', 'composer.effort')).toBe('Reasoning effort');
     expect(translate('zh', 'attachment.remove')).toBe('移除附件');
+    expect(translate('zh', 'suggestion.title')).toBe('CodeBuddy 建议');
+    expect(translate('en', 'suggestion.title')).toBe('CodeBuddy suggestion');
     expect(translate('zh', 'suggestion.dismiss')).toBe('关闭建议');
     expect(translate('zh', 'message.clickToEnlarge')).toBe('点击放大');
+    // e2e waitForVisibleSettingValue looks up this exact label (with space)
+    expect(translate('zh', 'sidebar.sessionId')).toBe('会话 ID');
+    expect(translate('en', 'sidebar.sessionId')).toBe('Session ID');
   });
 
   it('covers interruption/question keys aligned with WebUI 2.124', () => {

@@ -1,7 +1,22 @@
 import { requestCodeBuddy } from './acp';
 
-const VALID_SCOPES = new Set(['local', 'project', 'user']);
-const VALID_TYPES = new Set(['stdio', 'sse', 'http']);
+export const VALID_MCP_SCOPES = new Set(['local', 'project', 'user']);
+export const VALID_MCP_TYPES = new Set(['stdio', 'sse', 'http']);
+
+/** Client-side guard mirrored by addMcpServer / removeMcpServer before IPC. */
+export function validateMcpServerIdentity(name, scope) {
+  const normalizedName = String(name || '').trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedName)) {
+    throw new Error('名称只能包含字母、数字、连字符和下划线');
+  }
+  if (!VALID_MCP_SCOPES.has(scope)) throw new Error('MCP 配置作用域无效');
+  return normalizedName;
+}
+
+export function validateMcpConfig(config) {
+  if (!config || !VALID_MCP_TYPES.has(config.type)) throw new Error('MCP 传输类型无效');
+  return config;
+}
 
 async function requestMcp(path, body, timeoutMs = 30000) {
   const response = await requestCodeBuddy(`/internal/mcp/${path}`, {
@@ -28,16 +43,14 @@ export async function listMcpConfigs(cwd) {
 }
 
 export async function addMcpServer({ name, scope, config }) {
-  const normalizedName = String(name || '').trim();
-  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedName)) throw new Error('名称只能包含字母、数字、连字符和下划线');
-  if (!VALID_SCOPES.has(scope)) throw new Error('MCP 配置作用域无效');
-  if (!config || !VALID_TYPES.has(config.type)) throw new Error('MCP 传输类型无效');
+  const normalizedName = validateMcpServerIdentity(name, scope);
+  validateMcpConfig(config);
   await requestMcp('add-json', { name: normalizedName, scope, json: config });
   return normalizedName;
 }
 
 export async function removeMcpServer(name, scope) {
-  if (!name || !VALID_SCOPES.has(scope)) throw new Error('MCP 服务器名称或作用域无效');
+  if (!name || !VALID_MCP_SCOPES.has(scope)) throw new Error('MCP 服务器名称或作用域无效');
   await requestMcp('remove', { name, scope });
 }
 

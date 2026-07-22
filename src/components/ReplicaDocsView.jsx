@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { requestCodeBuddy } from '../lib/acp';
 import { useStore } from '../store';
 
-function docsLangFromLocale() {
+export function docsLangFromLocale() {
   try {
     const languages = Array.isArray(navigator.languages) ? navigator.languages : [];
     const candidates = [...languages, navigator.language].filter(Boolean);
@@ -13,7 +13,7 @@ function docsLangFromLocale() {
   return 'en';
 }
 
-function firstDocsLink(items) {
+export function firstDocsLink(items) {
   for (const item of Array.isArray(items) ? items : []) {
     if (item?.link) return item.link;
     if (item?.items?.length) {
@@ -24,14 +24,14 @@ function firstDocsLink(items) {
   return null;
 }
 
-function normalizeDocsPath(value) {
+export function normalizeDocsPath(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
   const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
   return withSlash.replace(/\/+/g, '/');
 }
 
-function extractHeadings(markdown) {
+export function extractHeadings(markdown) {
   const lines = String(markdown || '').split('\n');
   const headings = [];
   let inCode = false;

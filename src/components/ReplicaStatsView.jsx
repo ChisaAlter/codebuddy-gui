@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 
-function formatNumber(value) {
+export function formatNumber(value) {
   if (value == null || value === '') return '-';
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value);
@@ -10,7 +10,7 @@ function formatNumber(value) {
   return String(number);
 }
 
-function formatDuration(value) {
+export function formatDuration(value) {
   const milliseconds = Number(value);
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '-';
   if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
@@ -22,7 +22,7 @@ function formatDuration(value) {
   return `${hours} 小时 ${minutes % 60} 分`;
 }
 
-function formatDate(value) {
+export function formatDate(value) {
   if (!value) return '-';
   const date = new Date(String(value).length === 10 ? `${value}T00:00:00` : value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('zh-CN');

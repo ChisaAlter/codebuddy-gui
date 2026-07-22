@@ -1,19 +1,11 @@
 import React from 'react';
 import ActionConfirmDialog from './ActionConfirmDialog';
-import { cleanSandboxes, killSandbox, listSandboxes } from '../lib/sandbox';
+import { cleanSandboxes, killSandbox, listSandboxes, sandboxErrorMessage } from '../lib/sandbox';
 
 function formatDateTime(value) {
   if (!value) return '未知';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN');
-}
-
-function sandboxErrorMessage(error, fallback) {
-  const message = error?.message || fallback;
-  if (/E2B_API_KEY environment variable is required/i.test(message)) {
-    return `缺少 E2B_API_KEY。请先在启动 CodeBuddy GUI 的环境中配置该变量。CLI 返回：${message}`;
-  }
-  return message;
 }
 
 export default function ReplicaSandboxesView() {

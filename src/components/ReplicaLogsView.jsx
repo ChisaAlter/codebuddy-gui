@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
 
-function highlightText(text, term) {
+export function highlightText(text, term) {
   if (!term || typeof text !== 'string') return text;
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(`(${escaped})`, 'gi');

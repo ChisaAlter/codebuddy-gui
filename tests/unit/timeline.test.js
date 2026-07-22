@@ -74,6 +74,18 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(assistant.streaming).toBe(true);
   });
 
+  it('merge 命中时返回新对象，不原地改写旧 timeline 条目', () => {
+    const first = reduceAcpEvent([], 'agent_message_chunk', { messageId: 'm1', content: 'Hello' });
+    const firstAssistant = first.find((e) => e.role === 'assistant');
+    const second = reduceAcpEvent(first, 'agent_message_chunk', { messageId: 'm1', content: ' World' });
+    const secondAssistant = second.find((e) => e.role === 'assistant');
+
+    expect(second).not.toBe(first);
+    expect(secondAssistant).not.toBe(firstAssistant);
+    expect(firstAssistant.content).toBe('Hello');
+    expect(secondAssistant.content).toBe('Hello World');
+  });
+
   it('未知事件类型走 pushSystemEvent 返新数组不崩', () => {
     const tl = pushUserMessage([], 'x');
     const next = reduceAcpEvent(tl, 'unknown_event_type', { foo: 'bar' });

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import ReplicaBackgroundSessionsView from './ReplicaBackgroundSessionsView';
 
-function formatSince(startedAt) {
+export function formatSince(startedAt) {
   if (!startedAt) return '-';
   const started = new Date(startedAt).getTime();
   if (!Number.isFinite(started)) return '-';
@@ -12,7 +12,7 @@ function formatSince(startedAt) {
   return minutes > 0 ? `${minutes} 分钟` : '刚刚';
 }
 
-function statusLabel(status) {
+export function statusLabel(status) {
   if (status === 'running') return '运行中';
   if (status === 'starting') return '启动中';
   if (status === 'stopping') return '停止中';

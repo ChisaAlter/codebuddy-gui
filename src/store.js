@@ -11,7 +11,6 @@ import {
   authLogin as apiAuthLogin,
   authLogout as apiAuthLogout,
   setAuthToken,
-  isAcpAuthenticationError,
 } from './lib/acp';
 import { parseHashRoute, setHashRoute } from './lib/routes';
 import {
@@ -36,8 +35,6 @@ import {
   fetchTraceList,
   fetchWorkerLogs as fetchWorkerLogsApi,
   updateSettingByKey as updateSettingByKeyApi,
-  deleteSession as apiDeleteSession,
-  renameSession as apiRenameSession,
   fetchTaskTemplates as apiFetchTaskTemplates,
   refreshTaskTemplates as apiRefreshTaskTemplates,
   uninstallPlugin as apiUninstallPlugin,
@@ -48,33 +45,24 @@ import {
   removeMarketplace as apiRemoveMarketplace,
   fetchMarketplaces as apiFetchMarketplaces,
 } from './lib/ops';
-import { closeAssistantStream, pushUserMessage, reduceAcpEvent, resetSeenContent } from './lib/timeline';
+import { closeAssistantStream } from './lib/timeline';
 import {
   activeProject,
-  activeThread,
-  createProjectRecord,
   createThreadRecord,
   emptyProductState,
-  normalizeProductState,
-  productStateSnapshot,
 } from './lib/product-state';
 import { ConversationManager } from './lib/conversation-manager';
 import {
   isGuiSettingKey,
   loadGuiSettings,
-  normalizeGuiSettings,
   saveGuiSettings,
   SETTINGS_CACHE_KEY,
   stripGuiSettings,
 } from './lib/gui-settings';
-import { visibleProjectThreads } from './lib/session-sidebar';
-import { hasCompletePromptResponse, hasPromptRunActivity } from './store/helpers/prompt-completion';
 import { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
 import {
   ACTIVE_THREAD_RUNTIME_KEYS,
   emptyThreadRuntime,
-  responseTerminalRuntimePatch,
-  sessionActionItemMatches,
 } from './store/helpers/thread-runtime';
 import { createQueueHelpers } from './store/helpers/queues';
 import {
@@ -82,7 +70,6 @@ import {
   terminalStateFromProject,
   workspaceStateFromProject,
   workspaceStateSnapshot,
-  resetProjectRuntimeViews,
 } from './store/helpers/terminal-workspace-state';
 import { createProductPersistSlice } from './store/slices/product-persist';
 import { createProjectsRuntimeSlice } from './store/slices/projects-runtime';

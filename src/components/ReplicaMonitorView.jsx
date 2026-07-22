@@ -31,11 +31,11 @@ function WorkerCard({ worker }) {
   );
 }
 
-function unwrapPayload(payload) {
+export function unwrapPayload(payload) {
   return payload?.data ?? payload ?? null;
 }
 
-function formatDiskUsage(metrics) {
+export function formatDiskUsage(metrics) {
   if (!metrics) return '-';
   const usedGiB = Number.isFinite(Number(metrics.diskUsedGiB))
     ? Number(metrics.diskUsedGiB)

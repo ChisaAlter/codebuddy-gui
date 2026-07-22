@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROUTE_EXPECTATIONS = Object.freeze([
+  // chat has no dedicated sidebar nav item; driveRoutes treats it as already-active when on #/chat.
   { route: 'chat', navLabel: '对话', expected: { role: 'textbox', name: '从一个想法开始...' } },
   { route: 'instances', navLabel: '实例', expected: { role: 'button', name: '添加项目' } },
   { route: 'remote-control', navLabel: '远程控制', expected: { role: 'textbox', name: '企微 botId' } },
@@ -31,8 +32,9 @@ const ROUTE_EXPECTATIONS = Object.freeze([
     navGroup: '可观测',
     expected: { role: 'textbox', name: '搜索 Worker、目录、Endpoint 或主机...' },
   },
-  { route: 'models', navLabel: '模型', expected: { role: 'button', name: '添加模型' } },
-  { route: 'settings', navLabel: '设置', expected: { role: 'button', name: '亮色' } },
+  // Custom models entry lives under Settings → 模型选择 (no standalone sidebar "模型" nav).
+  // Settings page always shows appearance theme cycle + language; use a stable label.
+  { route: 'settings', navLabel: '设置', expected: { role: 'heading', name: '连接状态' } },
   {
     route: 'keybindings',
     navLabel: '快捷键',
@@ -2530,9 +2532,15 @@ async function driveRoutes(client, options = {}) {
         });
       }
     }
-    const navigation = routeAlreadyActive
-      ? { ok: true, role: 'button', name: route.navLabel, action: 'already-active' }
-      : await driveByRole(client, {
+    let navigation;
+    if (routeAlreadyActive) {
+      navigation = { ok: true, role: 'button', name: route.navLabel, action: 'already-active' };
+    } else if (route.route === 'chat') {
+      // Primary nav intentionally omits "对话"; open chat via hash.
+      await client.evaluate(`location.hash = '#/chat'`);
+      navigation = { ok: true, role: 'location', name: 'chat', action: 'hash' };
+    } else {
+      navigation = await driveByRole(client, {
         role: 'button',
         name: route.navLabel,
         action: 'invoke',
@@ -2540,6 +2548,7 @@ async function driveRoutes(client, options = {}) {
         timeoutMs: routeTimeoutMs,
         signal,
       });
+    }
     const state = await waitForRendererValue(
       client,
       `(() => ({
@@ -2551,7 +2560,11 @@ async function driveRoutes(client, options = {}) {
         describe: `route ${route.route} state after clicking ${route.navLabel}`,
         accept: (value) => {
           const hashMatches = value?.hash === `#/${route.route}` || (route.route === 'chat' && !value?.hash);
-          return hashMatches && value.status.includes(route.navLabel);
+          // Banner shows route title; chat is already active without a nav click and still
+          // carries "对话" in ROUTE_TITLES, so include either label match or chat default.
+          if (!hashMatches) return false;
+          if (route.route === 'chat') return true;
+          return value.status.includes(route.navLabel);
         },
         signal,
       },

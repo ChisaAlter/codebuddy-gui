@@ -3,18 +3,18 @@ import { useStore } from '../store';
 
 // ── 工具函数 ──
 
-function clampPercent(v) {
+export function clampPercent(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, n));
 }
 
-function finiteNumber(value, fallback = 0) {
+export function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
-function formatUptime(seconds) {
+export function formatUptime(seconds) {
   const value = Number(seconds);
   if (!Number.isFinite(value) || value < 0) return '--';
   seconds = value;
@@ -30,20 +30,20 @@ function formatUptime(seconds) {
   return parts.join(' ');
 }
 
-function formatBytes(mib) {
+export function formatBytes(mib) {
   const n = Number(mib);
   if (!Number.isFinite(n)) return '--';
   if (n >= 1024) return `${(n / 1024).toFixed(1)} GiB`;
   return `${n.toFixed(1)} MiB`;
 }
 
-function formatGiB(gib) {
+export function formatGiB(gib) {
   const n = Number(gib);
   if (!Number.isFinite(n)) return '--';
   return `${n.toFixed(1)} GiB`;
 }
 
-function formatSampleTime(value) {
+export function formatSampleTime(value) {
   const timestamp = Number(value);
   if (!Number.isFinite(timestamp)) return '--';
   const date = new Date(timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp);
@@ -265,7 +265,7 @@ function ErrorState({ message, onRetry }) {
 
 const MAX_HISTORY = 20;
 
-function pruneHistory(history) {
+export function pruneHistory(history) {
   if (history.length > MAX_HISTORY) return history.slice(history.length - MAX_HISTORY);
   return history;
 }

@@ -10,11 +10,11 @@ const PLUGIN_SCOPE_LABELS = {
   local: '项目本机',
 };
 
-function normalizedPluginScope(value) {
+export function normalizedPluginScope(value) {
   return Object.hasOwn(PLUGIN_SCOPE_LABELS, value) ? value : 'user';
 }
 
-function validMaintenancePluginId(value) {
+export function validMaintenancePluginId(value) {
   const plugin = String(value || '').trim();
   return plugin.length > 0 && plugin.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._/@-]*$/.test(plugin);
 }

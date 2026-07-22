@@ -3423,7 +3423,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('defines route coverage as route-specific visible controls rather than generic text length', () => {
-    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(20);
+    expect(driver.ROUTE_EXPECTATIONS).toHaveLength(19);
     for (const route of driver.ROUTE_EXPECTATIONS) {
       expect(route).toMatchObject({
         route: expect.any(String),
@@ -3436,8 +3436,9 @@ describe('desktop E2E harness public contract', () => {
     expect(new Set(driver.ROUTE_EXPECTATIONS.map((route) => route.route))).toEqual(new Set([
       'chat', 'instances', 'remote-control', 'tasks', 'archived', 'terminal', 'editor', 'changes',
       'plugins', 'mcp', 'sandboxes', 'stats', 'traces', 'monitor', 'metrics', 'logs', 'workers',
-      'models', 'settings', 'keybindings',
+      'settings', 'keybindings',
     ]));
+    expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'models')).toBeUndefined();
     expect(driver.ROUTE_EXPECTATIONS.find((route) => route.route === 'instances')?.expected).toEqual({
       role: 'button', name: '添加项目',
     });
@@ -3452,9 +3453,9 @@ describe('desktop E2E harness public contract', () => {
       'scripts/test/e2e-packaged.cjs',
     ]) {
       const script = fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');
-      expect(script, relativePath).toContain('routeResults.length === 20');
+      expect(script, relativePath).toContain('routeResults.length === 19');
       expect(script, relativePath).toContain("result.route === 'chat' && !result.state.hash");
-      expect(script, relativePath).not.toContain('routeResults.length === 19');
+      expect(script, relativePath).not.toContain('routeResults.length === 20');
     }
   });
 });

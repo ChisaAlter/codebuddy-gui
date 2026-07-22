@@ -88,7 +88,20 @@ function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-t
         exitTimerRef.current = null;
       }
     };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps -- only react to open; render is internal
+  // Only react to open; phase/render are menu-internal animation state.
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof onClose !== 'function') return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
 
   if (!render) return null;
 
@@ -101,6 +114,7 @@ function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-t
         aria-hidden="true"
       />
       <div
+        role="menu"
         data-testid={dataTestId}
         className={`composer-menu absolute z-20 ${phase === 'shown' ? 'composer-menu--open' : ''} ${className}`.trim()}
         {...rest}
@@ -2513,6 +2527,18 @@ const ChatComposer = React.memo(function ChatComposer({
   }, [showModePicker, showModelPicker, showEffortPicker]);
 
   useEffect(() => {
+    if (!showAttachMenu) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setShowAttachMenu(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showAttachMenu]);
+
+  useEffect(() => {
     try {
       localStorage.setItem(COMPOSER_HEIGHT_STORAGE_KEY, String(composerHeight));
     } catch (_) {}
@@ -2583,7 +2609,7 @@ const ChatComposer = React.memo(function ChatComposer({
               title={promptSuggestionText}
             >
               <span className="block text-[10px] font-medium uppercase text-[var(--color-accent-blue)]">
-                CodeBuddy 建议
+                {t('suggestion.title')}
               </span>
               <span className="mt-0.5 line-clamp-3 block whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-text-secondary)]">
                 {promptSuggestionText}
@@ -2784,6 +2810,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   title={t('input.addAttachment')}
                   aria-label={t('input.addAttachment')}
                   aria-expanded={showAttachMenu}
+                  aria-haspopup="menu"
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <path d="M5.5 8.5l4.2-4.2a2.1 2.1 0 013 3L7.2 12.8a3.2 3.2 0 01-4.5-4.5l5.1-5.1" />
@@ -2795,22 +2822,36 @@ const ChatComposer = React.memo(function ChatComposer({
                       className="fixed inset-0 z-10"
                       style={{ left: 'var(--sidebar-width, 252px)' }}
                       onClick={closeAttachMenu}
+                      aria-hidden="true"
                     />
-                    <div className="absolute bottom-full left-0 mb-1 z-20 w-36 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] shadow-xl py-1">
+                    <div
+                      role="menu"
+                      aria-label={t('input.addAttachment')}
+                      data-testid="composer-attach-menu"
+                      className="composer-menu composer-menu--open absolute bottom-full left-0 mb-1 z-20 w-36"
+                    >
                       <button
                         type="button"
+                        role="menuitem"
                         disabled={droppingAttachments || !imageCapability}
-                        title={t('input.addImage')}
-                        className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                        title={
+                          imageCapability
+                            ? t('input.addImage')
+                            : t('input.imageCapabilityUnavailable')
+                        }
+                        aria-label={t('input.addImage')}
+                        className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-40"
                         onClick={() => pickAttachments('image')}
                       >
                         {t('input.menu.image')}
                       </button>
                       <button
                         type="button"
+                        role="menuitem"
                         disabled={droppingAttachments}
                         title={t('input.addFile')}
-                        className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                        aria-label={t('input.addFile')}
+                        className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
                         onClick={() => pickAttachments('file')}
                       >
                         {t('input.menu.file')}
@@ -2846,6 +2887,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     <button
                       key={m.id}
                       type="button"
+                      role="menuitem"
                       disabled={sessionResponseBusy}
                       className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
                       style={{
@@ -2889,6 +2931,7 @@ const ChatComposer = React.memo(function ChatComposer({
                           <button
                             key={modelId}
                             type="button"
+                            role="menuitem"
                             disabled={sessionResponseBusy}
                             className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
                             style={{
@@ -2935,6 +2978,7 @@ const ChatComposer = React.memo(function ChatComposer({
                         <button
                           key={o.id}
                           type="button"
+                          role="menuitem"
                           disabled={sessionResponseBusy}
                           className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
                           style={{

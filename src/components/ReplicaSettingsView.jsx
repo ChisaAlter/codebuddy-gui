@@ -308,7 +308,7 @@ function SettingRow({ label, desc, control, feedback, t }) {
         </div>
         {desc ? <span className="settings-desc">{desc}</span> : null}
       </div>
-      <div className="flex shrink-0 items-center ml-3">{control}</div>
+      <div className="settings-control flex shrink-0 items-center ml-3">{control}</div>
     </div>
   );
 }
@@ -368,82 +368,6 @@ function JsonObjectEditor({ value, onSave, scopeKey }) {
       style={{ width: '100%', resize: 'vertical' }}
       aria-label="环境变量 JSON"
     />
-  );
-}
-
-function JsonArrayEditor({ value, onSave, ariaLabel, scopeKey }) {
-  const serialized = JSON.stringify(Array.isArray(value) ? value : [], null, 2);
-  const [draft, setDraft] = useState(serialized);
-  const [message, setMessage] = useState('');
-  const [saving, setSaving] = useState(false);
-  const mountedRef = useRef(true);
-  const saveInFlightRef = useRef(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      saveInFlightRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    saveInFlightRef.current = null;
-    setSaving(false);
-    setMessage('');
-    setDraft(serialized);
-  }, [scopeKey]);
-
-  useEffect(() => {
-    setDraft(serialized);
-  }, [serialized]);
-
-  const save = async () => {
-    if (saveInFlightRef.current) return;
-    let parsed;
-    try {
-      parsed = JSON.parse(draft || '[]');
-      if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
-        throw new Error('请输入字符串数组');
-      }
-    } catch (parseError) {
-      setMessage(parseError.message || 'JSON 格式无效');
-      return;
-    }
-    const operation = {};
-    saveInFlightRef.current = operation;
-    setSaving(true);
-    setMessage('');
-    let saved = false;
-    try {
-      saved = await onSave(parsed);
-    } catch (_) {
-      saved = false;
-    } finally {
-      if (mountedRef.current && saveInFlightRef.current === operation) {
-        saveInFlightRef.current = null;
-        setSaving(false);
-        setMessage(saved === false ? '保存失败，已恢复原值' : '已保存');
-      }
-    }
-  };
-
-  return (
-    <div className="w-72">
-      <textarea
-        rows={6}
-        value={draft}
-        onChange={(event) => { setDraft(event.target.value); setMessage(''); }}
-        className="w-full resize-y rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-tertiary)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent-blue)]"
-        aria-label={ariaLabel}
-      />
-      <div className="mt-2 flex items-center justify-end gap-2">
-        {message ? <span className={`mr-auto text-[11px] ${message === '已保存' ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'}`}>{message}</span> : null}
-        <button className="btn-primary px-3 py-1 text-xs" disabled={saving || draft === serialized} onClick={save}>
-          {saving ? '保存中...' : '保存'}
-        </button>
-      </div>
-    </div>
   );
 }
 

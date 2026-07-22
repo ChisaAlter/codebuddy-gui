@@ -17,7 +17,7 @@ import {
   shortcutFromKeyboardEvent,
 } from '../lib/gui-keybindings';
 
-function normalizeCliShortcut(value) {
+export function normalizeCliShortcut(value) {
   return String(value || '')
     .trim()
     .toLowerCase()
@@ -25,7 +25,7 @@ function normalizeCliShortcut(value) {
     .replace(/\s+/g, ' ');
 }
 
-function normalizeConfig(value) {
+export function normalizeConfig(value) {
   const config = value && typeof value === 'object' ? value : {};
   return {
     defaults: Array.isArray(config.defaults) ? config.defaults : [],
@@ -38,14 +38,14 @@ function normalizeConfig(value) {
   };
 }
 
-function cloneBindings(groups) {
+export function cloneBindings(groups) {
   return groups.map((group) => ({
     context: group.context,
     bindings: { ...(group.bindings || {}) },
   }));
 }
 
-function removeUserBinding(groups, context, shortcut) {
+export function removeUserBinding(groups, context, shortcut) {
   return cloneBindings(groups)
     .map((group) => {
       if (group.context !== context) return group;
@@ -56,7 +56,7 @@ function removeUserBinding(groups, context, shortcut) {
     .filter((group) => Object.keys(group.bindings).length > 0);
 }
 
-function upsertUserBinding(groups, context, shortcut, action) {
+export function upsertUserBinding(groups, context, shortcut, action) {
   const next = cloneBindings(groups);
   const group = next.find((item) => item.context === context);
   if (group) group.bindings[shortcut] = action;
@@ -64,7 +64,7 @@ function upsertUserBinding(groups, context, shortcut, action) {
   return next;
 }
 
-function buildEffectiveRows(defaultGroups, userGroups) {
+export function buildEffectiveRows(defaultGroups, userGroups) {
   const rows = new Map();
   for (const group of defaultGroups) {
     for (const [shortcut, action] of Object.entries(group.bindings || {})) {
@@ -95,7 +95,7 @@ function buildEffectiveRows(defaultGroups, userGroups) {
   ));
 }
 
-function warningMessage(warning) {
+export function warningMessage(warning) {
   if (typeof warning === 'string') return warning;
   return warning?.message || warning?.reason || warning?.key || JSON.stringify(warning);
 }

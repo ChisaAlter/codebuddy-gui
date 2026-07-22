@@ -392,21 +392,22 @@ export default function ReplicaSidebar() {
         {!sidebarCollapsed && (
           <div className="px-3 pb-2">
             <button
+              type="button"
+              aria-label="新对话"
               className="flex min-h-9 w-full items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
               disabled={newSessionBusy || projectNavigationBusy}
               onClick={async () => {
                 if (newSessionBusy || projectNavigationBusy) return;
                 setRoute('chat');
-                // 始终弹目录选择；若仍选当前工作区则在该项目下新建会话
                 const state = useStore.getState();
-                const prevPath = state.projectsById[state.activeProjectId]?.workspacePath?.toLowerCase() || '';
-                const result = await state.chooseWorkspace();
-                if (!result) return;
-                const next = useStore.getState();
-                const nextPath = next.projectsById[next.activeProjectId]?.workspacePath?.toLowerCase() || '';
-                if (prevPath && nextPath === prevPath) {
-                  await next.newSession();
+                // 已有活动项目：在当前项目下直接新建会话（与项目树 "+" 一致）。
+                // 无项目时才打开目录选择，避免每次「新对话」都弹出系统对话框，
+                // 也保证 e2e / 键盘用户能可靠创建会话。
+                if (state.activeProjectId) {
+                  await state.newSession();
+                  return;
                 }
+                await state.chooseWorkspace();
               }}
             >
               {newSessionBusy || projectNavigationBusy ? (
