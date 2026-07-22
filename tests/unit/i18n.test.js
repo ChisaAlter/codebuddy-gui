@@ -52,7 +52,7 @@ describe('i18n', () => {
     expect(translate('en', 'input.stop')).toBe('Stop');
     expect(translate('zh', 'cli.installedVersion')).toBe('已安装版本');
     expect(translate('en', 'cli.maintenance')).toBe('Maintenance');
-    expect(translate('zh', 'cli.compatStatus.desc', { min: '2.122.0', rec: '2.124.0' })).toContain('2.122.0');
+    expect(translate('zh', 'cli.compatStatus.desc', { min: '2.125.0', rec: '2.125.0' })).toContain('2.125.0');
   });
 
   it('covers remaining chat chrome: scroll/queue/attachment/effort/phase', () => {

@@ -868,7 +868,7 @@ export default function ReplicaSettingsView() {
   };
 
   const installRecommendedCli = async () => {
-    const target = cliInfo?.compat?.recommendedVersion || '2.122.0';
+    const target = cliInfo?.compat?.recommendedVersion || '2.125.0';
     await confirmCliInstall(target);
   };
 
@@ -1428,8 +1428,8 @@ export default function ReplicaSettingsView() {
                 t={t}
                 label={t('cli.compatStatus')}
                 desc={t('cli.compatStatus.desc', {
-                  min: cliCompat?.minVersion || '2.122.0',
-                  rec: cliCompat?.recommendedVersion || '2.122.0',
+                  min: cliCompat?.minVersion || '2.125.0',
+                  rec: cliCompat?.recommendedVersion || '2.125.0',
                 })}
                 control={<span className={`text-xs font-medium ${cliCompatTone}`}>{cliCompatLabel}</span>}
               />
@@ -1446,7 +1446,7 @@ export default function ReplicaSettingsView() {
                     >
                       {cliOperation === 'install'
                         ? t('cli.installing')
-                        : t('cli.installRecommended', { version: cliCompat?.recommendedVersion || '2.122.0' })}
+                        : t('cli.installRecommended', { version: cliCompat?.recommendedVersion || '2.125.0' })}
                     </button>
                   }
                 />
