@@ -14,7 +14,7 @@ function sha256(relativePath) {
 }
 
 describe('CodeBuddy branding icons', () => {
-  it('uses the brand icon asset throughout the renderer and Windows package', () => {
+  it('uses white tile for shell chrome and transparent mark inside the app', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     const appSource = fs.readFileSync(path.join(root, 'src', 'App.jsx'), 'utf8');
     const sidebarSource = fs.readFileSync(path.join(root, 'src', 'components', 'ReplicaSidebar.jsx'), 'utf8');
@@ -22,10 +22,17 @@ describe('CodeBuddy branding icons', () => {
 
     expect(packageJson.build.win.icon).toBe('build/icon.ico');
     expect(packageJson.build.files).toContain('build/icon.ico');
-    expect(appSource).toContain("import appIconUrl from '../build/icon.png'");
-    expect(sidebarSource).toContain("import appIconUrl from '../../build/icon.png'");
+    expect(packageJson.build.files).toContain('build/icon-mark.png');
+    // In-app UI uses transparent mark only.
+    expect(appSource).toContain("import appIconUrl from '../build/icon-mark.png'");
+    expect(sidebarSource).toContain("import appIconMarkUrl from '../../build/icon-mark.png'");
+    // Desktop / tray / window still use white-tile assets.
+    expect(mainSource).toContain("path.join(__dirname, '..', 'build', 'icon.png')");
     expect(mainSource).toContain("app.setAppUserModelId('com.codebuddy.gui.cathead')");
-    expect(sha256('build/icon.png')).toBe('8E73A06713B5DBF1E19F5D54BE30334FEDE0D2FEF4C7045E03E5DA5DAB2180AC');
-    expect(sha256('build/icon.ico')).toBe('71FBBAEF584DE05037FC4C4983BE766AC2331B1DD1B2348F204791E13B07BBCB');
+    // Rounded white tile + green mark (desktop / taskbar / tray).
+    expect(sha256('build/icon.png')).toBe('4AFFF4E20F31E9AA615D75155C79B885410EEE84B0A46C3C59D4BB55BCB96118');
+    expect(sha256('build/icon.ico')).toBe('41FA2BD811158A7D67717EBD28539C5E3892095BF1CC39BC545743A25DD51FBA');
+    // Transparent in-app mark (no white tile).
+    expect(sha256('build/icon-mark.png')).toBe('97AE192DEA62DF95602DBE7D502933A2C17BC074BD090148CBD80F6BE49562B3');
   });
 });

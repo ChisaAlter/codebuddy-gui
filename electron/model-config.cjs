@@ -95,9 +95,8 @@ function normalizeModelPayload(payload = {}) {
     vendor,
     url: normalizeEndpoint(payload.url),
     apiKey,
+    // Empty key on edit keeps the existing secret on disk (renderer never receives apiKey).
     preserveApiKey: payload.preserveApiKey !== false,
-    // WebUI 默认 visible:false：不把新模型写入 availableModels 白名单，避免遮蔽账号下发的官方模型
-    includeInAvailableModels: payload.includeInAvailableModels === true || payload.visible === true,
     maxInputTokens: finiteOptionalNumber(payload.maxInputTokens, '最大输入 Token', { min: 1, max: 100000000 }),
     maxOutputTokens: finiteOptionalNumber(payload.maxOutputTokens, '最大输出 Token', { min: 1, max: 100000000 }),
     temperature: finiteOptionalNumber(payload.temperature, 'Temperature', { integer: false, min: 0, max: 2 }),
@@ -220,16 +219,25 @@ function saveModelConfig(payload = {}, options = {}) {
   if (originalIndex >= 0) config.models.splice(originalIndex, 1, nextModel);
   else config.models.push(nextModel);
 
-  // 对齐 WebUI：默认不写入 availableModels 白名单；仅在改名时迁移已有白名单项，
-  // 或调用方显式 includeInAvailableModels/visible 时追加。
+  // CRITICAL: never create/append models.json availableModels for custom models.
+  // When that field is present, CLI treats it as a hard product whitelist and drops
+  // all account/built-in models (log: model ids collapse to only custom-local:…).
+  // Custom models belong in `models[]`; session picker membership is handled by CLI
+  // product-sync (runtime POST /models/custom/save visible), not this disk whitelist.
+  // Only migrate rename inside an existing whitelist if the user already had one.
   if (Array.isArray(config.availableModels)) {
-    const wasListed = Boolean(originalId && config.availableModels.includes(originalId));
-    config.availableModels = config.availableModels.filter((id) => id !== originalId && id !== normalized.id);
-    if (wasListed || normalized.includeInAvailableModels) {
-      config.availableModels.push(normalized.id);
+    if (originalId && originalId !== normalized.id) {
+      config.availableModels = config.availableModels.map((id) => (id === originalId ? normalized.id : id));
     }
-  } else if (normalized.includeInAvailableModels) {
-    config.availableModels = [normalized.id];
+    // Drop empty or custom-only whitelist (would hide account/built-in models).
+    const customIds = new Set(config.models.map((model) => model?.id).filter(Boolean));
+    const onlyCustom =
+      config.availableModels.length === 0 ||
+      config.availableModels.every((id) => customIds.has(id));
+    if (onlyCustom) {
+      config.availableModels = undefined;
+      if (config.raw && typeof config.raw === 'object') delete config.raw.availableModels;
+    }
   }
   writeModelConfig(config);
   return listModelConfig({ ...options, filePath });

@@ -1,5 +1,10 @@
 function createQuitRequestController(options = {}) {
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 8000;
+  // Soft timeout: force-exit if renderer never answers at all.
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 2500;
+  // Hard deadline: still force-exit if renderer acked but never confirm/cancel
+  // (e.g. hung persist). Long enough for a dirty-file dialog; short enough to
+  // feel snappy when the UI is wedged.
+  const hardDeadlineMs = Number.isFinite(options.hardDeadlineMs) ? options.hardDeadlineMs : 6000;
   const setTimer = options.setTimer || setTimeout;
   const clearTimer = options.clearTimer || clearTimeout;
   const now = options.now || Date.now;
@@ -12,6 +17,7 @@ function createQuitRequestController(options = {}) {
     const current = pending;
     pending = null;
     if (current.timer !== null) clearTimer(current.timer);
+    if (current.hardTimer !== null) clearTimer(current.hardTimer);
     return current;
   }
 
@@ -19,18 +25,29 @@ function createQuitRequestController(options = {}) {
     return Boolean(pending && requestId && pending.requestId === requestId);
   }
 
+  function armTimeout(requestId, kind) {
+    return setTimer(() => {
+      if (!matches(requestId)) return;
+      const current = pending;
+      if (!current) return;
+      if (kind === 'soft' && current.timer == null) return;
+      pending = null;
+      if (current.timer !== null) clearTimer(current.timer);
+      if (current.hardTimer !== null) clearTimer(current.hardTimer);
+      onTimeout(requestId);
+    }, kind === 'hard' ? hardDeadlineMs : timeoutMs);
+  }
+
   return {
     begin() {
       if (pending) return { started: false, requestId: pending.requestId };
       sequence += 1;
       const requestId = `quit-${now()}-${sequence}`;
-      let timer = null;
-      timer = setTimer(() => {
-        if (!matches(requestId) || pending.timer !== timer) return;
-        pending = null;
-        onTimeout(requestId);
-      }, timeoutMs);
-      pending = { requestId, timer };
+      pending = {
+        requestId,
+        timer: armTimeout(requestId, 'soft'),
+        hardTimer: armTimeout(requestId, 'hard'),
+      };
       return { started: true, requestId };
     },
 
@@ -42,8 +59,42 @@ function createQuitRequestController(options = {}) {
 
     acknowledge(requestId) {
       if (!matches(requestId)) return false;
+      // Soft timeout only: renderer is alive. Keep hard deadline so a hung
+      // confirm path cannot pin the process for tens of seconds.
       if (pending.timer !== null) clearTimer(pending.timer);
       pending.timer = null;
+      return true;
+    },
+
+    /**
+     * Pause the hard deadline while the renderer waits on a user dialog
+     * (dirty-file confirm). Soft timeout should already be cleared via acknowledge.
+     */
+    hold(requestId) {
+      if (!matches(requestId)) return false;
+      if (pending.timer !== null) clearTimer(pending.timer);
+      pending.timer = null;
+      if (pending.hardTimer !== null) clearTimer(pending.hardTimer);
+      pending.hardTimer = null;
+      return true;
+    },
+
+    /**
+     * Resume a short hard deadline after a user dialog (or before persist work).
+     */
+    resume(requestId, resumeMs) {
+      if (!matches(requestId)) return false;
+      if (pending.hardTimer !== null) clearTimer(pending.hardTimer);
+      const deadline = Number.isFinite(resumeMs) ? resumeMs : Math.min(hardDeadlineMs, 2500);
+      pending.hardTimer = setTimer(() => {
+        if (!matches(requestId)) return;
+        const current = pending;
+        if (!current) return;
+        pending = null;
+        if (current.timer !== null) clearTimer(current.timer);
+        if (current.hardTimer !== null) clearTimer(current.hardTimer);
+        onTimeout(requestId);
+      }, deadline);
       return true;
     },
 

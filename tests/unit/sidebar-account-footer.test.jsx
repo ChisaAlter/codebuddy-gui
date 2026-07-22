@@ -1,10 +1,12 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { version as desktopAppVersion } from '../../package.json';
 
 const mocks = vi.hoisted(() => ({
   authenticateCodeBuddyAccount: vi.fn().mockResolvedValue(true),
   cancelCodeBuddyAccountAuth: vi.fn(),
+  logout: vi.fn().mockResolvedValue(undefined),
   state: null,
 }));
 
@@ -42,6 +44,7 @@ function baseState(overrides = {}) {
     },
     authenticateCodeBuddyAccount: mocks.authenticateCodeBuddyAccount,
     cancelCodeBuddyAccountAuth: mocks.cancelCodeBuddyAccountAuth,
+    logout: mocks.logout,
     ...overrides,
   };
 }
@@ -65,6 +68,7 @@ describe('SidebarAccountFooter', () => {
     root = createRoot(container);
     mocks.authenticateCodeBuddyAccount.mockReset().mockResolvedValue(true);
     mocks.cancelCodeBuddyAccountAuth.mockReset();
+    mocks.logout.mockReset().mockResolvedValue(undefined);
     mocks.state = baseState();
   });
 
@@ -75,20 +79,34 @@ describe('SidebarAccountFooter', () => {
     container.remove();
   });
 
-  it('shows login control and site menu for needs_login', async () => {
+  it('shows Desktop product version only and no trailing ··· control', async () => {
     await act(async () => {
       root.render(
         <SidebarAccountFooter info={{ version: '2.125.0' }} connectionState="connected" />,
       );
     });
     expect(container.querySelector('[data-testid="sidebar-account-footer"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="sidebar-account-status"]')?.textContent).toMatch(
-      /2\.125\.0/,
-    );
-    const loginBtn = container.querySelector('[data-testid="sidebar-account-login"]');
-    expect(loginBtn?.textContent).toMatch(/登录/);
+    // CLI version is intentionally omitted from the identity card.
+    expect(container.querySelector('[data-testid="sidebar-account-cli-version"]')).toBeNull();
+    const gui = container.querySelector('[data-testid="sidebar-account-gui-version"]')?.textContent || '';
+    expect(gui).toContain('CodeBuddy Desktop');
+    expect(gui).toContain(`v${String(desktopAppVersion).replace(/^v/i, '')}`);
+    expect(gui).not.toContain('CodeBuddy CLI');
+    // No kebab / ··· action button.
+    expect(container.querySelector('.sidebar-user-action--icon')).toBeNull();
+    expect(container.querySelectorAll('.sidebar-user-avatar-dot')).toHaveLength(1);
+  });
+
+  it('opens site menu from the card when login is required', async () => {
     await act(async () => {
-      loginBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      root.render(
+        <SidebarAccountFooter info={{ version: '2.125.0' }} connectionState="connected" />,
+      );
+    });
+    const main = container.querySelector('[data-testid="sidebar-account-main"]');
+    expect(main).toBeTruthy();
+    await act(async () => {
+      main.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="sidebar-account-site-menu"]')).toBeTruthy();
     const cnItem = Array.from(container.querySelectorAll('[role="menuitem"]')).find((el) =>
@@ -101,7 +119,7 @@ describe('SidebarAccountFooter', () => {
     expect(mocks.authenticateCodeBuddyAccount).toHaveBeenCalledWith({ site: 'cn' });
   });
 
-  it('shows authenticated name with version status and site menu action', async () => {
+  it('shows logout in the popover when authenticated', async () => {
     mocks.state = baseState({
       codeBuddyAccountAuthState: 'authenticated',
       codeBuddyAccountUser: { userNickname: 'Ayase' },
@@ -119,18 +137,16 @@ describe('SidebarAccountFooter', () => {
     expect(container.querySelector('[data-testid="sidebar-account-name"]')?.textContent).toContain(
       'Ayase',
     );
-    expect(container.querySelector('[data-testid="sidebar-account-status"]')?.textContent).toMatch(
-      /2\.125\.0/,
-    );
-    expect(container.querySelector('[data-testid="sidebar-account-status"]')?.textContent).toContain(
-      '国外站',
-    );
-    const action = container.querySelector('[data-testid="sidebar-account-login"]');
-    expect(action).toBeTruthy();
+    const main = container.querySelector('[data-testid="sidebar-account-main"]');
     await act(async () => {
-      action.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      main.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(container.querySelector('[data-testid="sidebar-account-site-menu"]')).toBeTruthy();
+    const logoutBtn = container.querySelector('[data-testid="sidebar-account-logout"]');
+    expect(logoutBtn?.textContent).toMatch(/退出登录/);
+    await act(async () => {
+      logoutBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(mocks.logout).toHaveBeenCalled();
   });
 
   it('keeps cached user name when re-login is required', async () => {
@@ -151,6 +167,5 @@ describe('SidebarAccountFooter', () => {
     expect(container.querySelector('[data-testid="sidebar-account-name"]')?.textContent).toContain(
       'Chisa',
     );
-    expect(container.querySelector('[data-testid="sidebar-account-login"]')).toBeTruthy();
   });
 });

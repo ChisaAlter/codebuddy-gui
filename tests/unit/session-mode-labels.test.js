@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getSessionModeLabel,
   isCliPermissionBypassMode,
+  isFullAccessMode,
+  isUltracodeEffort,
 } from '../../src/lib/session-mode-labels';
 
 describe('session mode labels', () => {
@@ -20,5 +22,18 @@ describe('session mode labels', () => {
     expect(isCliPermissionBypassMode('acceptEdits')).toBe(false);
     expect(isCliPermissionBypassMode('plan')).toBe(false);
     expect(isCliPermissionBypassMode('auto')).toBe(false);
+  });
+
+  it('flags full access for orange composer highlight', () => {
+    expect(isFullAccessMode('fullAccess')).toBe(true);
+    expect(isFullAccessMode('fullAccessMode')).toBe(true);
+    expect(isFullAccessMode('bypassPermissions')).toBe(false);
+    expect(isFullAccessMode('default')).toBe(false);
+  });
+
+  it('flags ultracode effort for orange composer highlight', () => {
+    expect(isUltracodeEffort('ultracode')).toBe(true);
+    expect(isUltracodeEffort('Ultracode')).toBe(true);
+    expect(isUltracodeEffort('high')).toBe(false);
   });
 });

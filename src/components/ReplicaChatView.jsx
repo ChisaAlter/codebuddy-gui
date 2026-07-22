@@ -12,8 +12,12 @@ import {
   slashCommandKeyboardAction,
   slashCommandSelectionText,
 } from '../lib/chat-commands';
-import { getSessionModeLabel } from '../lib/session-mode-labels';
-import { executionGroupSummary, groupTimelineForDisplay } from '../lib/timeline';
+import {
+  getSessionModeLabel,
+  isFullAccessMode,
+  isUltracodeEffort,
+} from '../lib/session-mode-labels';
+import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
 
 function useResolvedTheme() {
@@ -40,9 +44,11 @@ function MarkdownTable(props) {
 }
 
 /** 切换 mode/model/effort 时 pill 文案 3D 翻转，不依赖 framer-motion */
-function FlipLabel({ value, className = '' }) {
+function FlipLabel({ value, className = '', special = false }) {
   return (
-    <span className={`composer-flip-label ${className}`.trim()}>
+    <span
+      className={`composer-flip-label${special ? ' composer-flip-label--special' : ''} ${className}`.trim()}
+    >
       <span key={value} className="composer-flip-label__text">
         {value}
       </span>
@@ -50,7 +56,8 @@ function FlipLabel({ value, className = '' }) {
   );
 }
 
-const COMPOSER_MENU_EXIT_MS = 160;
+// 与 CSS .composer-menu transition 同步（已放慢一倍：0.16s → 0.32s）
+const COMPOSER_MENU_EXIT_MS = 320;
 
 /** 带进出动画的 composer 下拉菜单（模式 / 模型 / 思考强度） */
 function ComposerAnimatedMenu({ open, onClose, className = '', children, 'data-testid': dataTestId, ...rest }) {
@@ -603,156 +610,347 @@ function ThinkingCard({ item }) {
   );
 }
 
+/** WebUI status dot — running pulse / failed red / completed green */
+function ToolStatusDot({ status }) {
+  if (status === 'running' || status === 'pending' || status === 'in_progress') {
+    return (
+      <span
+        className="tool-status-dot tool-status-dot--running"
+        aria-hidden="true"
+      />
+    );
+  }
+  if (status === 'failed' || status === 'error') {
+    return <span className="tool-status-dot tool-status-dot--failed" aria-hidden="true" />;
+  }
+  if (status === 'completed' || status === 'done') {
+    return <span className="tool-status-dot tool-status-dot--completed" aria-hidden="true" />;
+  }
+  return null;
+}
+
+function ToolKindIcon({ kind, completed }) {
+  const color = completed ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)';
+  const common = { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 1.75, className: 'shrink-0' };
+  const k = String(kind || '').toLowerCase();
+  if (k === 'read' || k === 'search' || k.includes('read') || k.includes('search') || k.includes('grep') || k.includes('glob')) {
+    return (
+      <svg {...common} aria-hidden="true">
+        <circle cx="11" cy="11" r="7" />
+        <path d="M20 20l-3.5-3.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (k === 'edit' || k === 'write' || k.includes('edit') || k.includes('write')) {
+    return (
+      <svg {...common} aria-hidden="true">
+        <path d="M12 20h9" strokeLinecap="round" />
+        <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (k === 'execute' || k === 'shell' || k.includes('bash') || k.includes('terminal') || k.includes('exec')) {
+    return (
+      <svg {...common} aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M7 9l3 3-3 3M12 15h5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  // default wrench / tool
+  return (
+    <svg {...common} aria-hidden="true">
+      <path d="M14.7 6.3a4 4 0 00-5.6 5.2L4 17l3 3 5.5-5.1a4 4 0 005.2-5.6l-2.5 2.5-2.5-2.5 2.5-2.5z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function formatToolPayload(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function toolCallDisplayTitle(item, t) {
+  return (
+    item?.title ||
+    item?.name ||
+    item?.toolName ||
+    item?.kind ||
+    t('tool.defaultName')
+  );
+}
+
+function toolCallSummary(item) {
+  const input = item?.rawInput;
+  if (input == null) return '';
+  if (typeof input === 'string') {
+    const oneLine = input.replace(/\s+/g, ' ').trim();
+    return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+  }
+  if (typeof input === 'object') {
+    const preferred =
+      input.command ||
+      input.path ||
+      input.file_path ||
+      input.filePath ||
+      input.pattern ||
+      input.query ||
+      input.url ||
+      input.description ||
+      null;
+    if (preferred) {
+      const text = String(preferred).replace(/\s+/g, ' ').trim();
+      return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    }
+  }
+  return '';
+}
+
 function ToolCallBlock({ item }) {
   const t = useUiTranslate();
-  const [expanded, setExpanded] = useState(false);
   const isCompleted = item.status === 'completed' || item.status === 'done';
   const isFailed = item.status === 'failed' || item.status === 'error';
+  const isRunning = !isCompleted && !isFailed;
+  const hasDetails = Boolean(item.rawInput || item.rawOutput || item.content);
+  // WebUI: auto-expand failed; expand running Write/edit; otherwise collapsed
+  const [expanded, setExpanded] = useState(
+    () => isFailed || ((item.kind === 'edit' || item.toolName === 'Write') && isRunning),
+  );
+
+  useEffect(() => {
+    if (isFailed) setExpanded(true);
+  }, [isFailed]);
+
+  const title = toolCallDisplayTitle(item, t);
+  const summary = toolCallSummary(item);
+  const canToggle = hasDetails && (isCompleted || isFailed || isRunning);
 
   return (
-    <div className="my-2">
+    <div className="tool-call-row mb-0.5">
       <button
-        className="flex items-center gap-2 w-full rounded-lg border border-[var(--color-border-muted)] px-3 py-1.5 text-xs transition-colors hover:bg-[var(--color-bg-hover)]"
-        onClick={() => setExpanded(!expanded)}
+        type="button"
+        onClick={() => canToggle && setExpanded((value) => !value)}
+        className={[
+          'flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left transition-colors',
+          canToggle ? 'cursor-pointer hover:bg-[var(--color-bg-hover)]/60' : 'cursor-default',
+        ].join(' ')}
+        aria-expanded={canToggle ? expanded : undefined}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" className="text-[var(--color-text-muted)]">
-          <path d="M8 1a1 1 0 01.993.883L9 2v5h5a1 1 0 01.117 1.993L14 9H9v5a1 1 0 01-1.993.117L7 14V9H2a1 1 0 01-.117-1.993L2 7h5V2a1 1 0 011-1z" />
-        </svg>
-        <span className="text-[var(--color-text-secondary)]">
-          {item.title || t('tool.call')} — {item.kind || t('tool.running')}
+        <ToolKindIcon kind={item.kind || item.toolName || item.title} completed={isCompleted && !isFailed} />
+        <span className={`tool-call-title truncate text-[13px] font-medium ${isCompleted && !isFailed ? 'is-done' : ''}`}>
+          {title}
         </span>
-        <span
-          className="ml-auto rounded px-1.5 py-0 text-[10px] font-medium"
-          style={{
-            background: isCompleted
-              ? 'var(--color-success-bg)'
-              : isFailed
-                ? 'var(--color-error-bg)'
-                : 'rgba(59,130,246,0.15)',
-            color: isCompleted
-              ? 'var(--color-accent-green)'
-              : isFailed
-                ? 'var(--color-accent-red)'
-                : 'var(--color-accent-blue)',
-          }}
-        >
-          {isCompleted ? t('tool.completed') : isFailed ? t('tool.failed') : t('tool.running')}
-        </span>
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          className={`text-[var(--color-text-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`}
-        >
-          <path d="M6 3l5 5-5 5" />
-        </svg>
+        {summary ? (
+          <span className={`tool-call-summary min-w-0 flex-1 truncate text-[12px] ${isCompleted && !isFailed ? 'is-done' : ''}`}>
+            {summary}
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        <ToolStatusDot status={item.status} />
+        {canToggle ? (
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className={`shrink-0 text-[var(--color-text-tertiary)] transition-transform duration-150 ${
+              expanded ? 'rotate-90' : ''
+            }`}
+            aria-hidden="true"
+          >
+            <path d="M6 3l5 5-5 5" />
+          </svg>
+        ) : null}
       </button>
-      {expanded && (
-        <div className="mt-1.5 rounded-lg border border-[var(--color-border-muted)] bg-[var(--color-bg-secondary)] p-3 space-y-2">
-          {item.rawInput ? (
-            <div>
-              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">
-                {t('tool.input')}
+      {canToggle && expanded ? (
+        <div className="tool-call-detail pl-5">
+          <div className="mb-1 mt-0.5 space-y-1.5">
+            {item.rawInput ? (
+              <div>
+                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+                  {t('tool.input')}
+                </div>
+                <pre className="tool-call-payload max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
+                  {formatToolPayload(item.rawInput)}
+                </pre>
               </div>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)]">
-                {typeof item.rawInput === 'string' ? item.rawInput : JSON.stringify(item.rawInput, null, 2)}
-              </pre>
-            </div>
-          ) : null}
-          {item.rawOutput ? (
-            <div>
-              <div className="mb-1 text-[10px] font-medium text-[var(--color-text-muted)] uppercase">
-                {t('tool.output')}
+            ) : null}
+            {item.rawOutput ? (
+              <div>
+                <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">
+                  {t('tool.output')}
+                </div>
+                <pre className="tool-call-payload max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md px-2.5 py-1.5 text-[11px] leading-4">
+                  {formatToolPayload(item.rawOutput)}
+                </pre>
               </div>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-[var(--color-bg-primary)] p-2 text-xs text-[var(--color-text-secondary)] max-h-48">
-                {typeof item.rawOutput === 'string' ? item.rawOutput : JSON.stringify(item.rawOutput, null, 2)}
+            ) : null}
+            {item.content && !item.rawInput && !item.rawOutput ? (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                {item.content}
               </pre>
-            </div>
-          ) : null}
-          {item.content && !item.rawInput && !item.rawOutput ? (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all text-xs text-[var(--color-text-secondary)]">
-              {item.content}
-            </pre>
-          ) : null}
+            ) : null}
+          </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
+function toolNameHistogram(toolItems) {
+  const counts = new Map();
+  for (const item of toolItems) {
+    const name = String(item?.toolName || item?.title || item?.name || item?.kind || 'tool').replace(/Tool$/, '');
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
+    .join(', ');
+}
+
 function ExecutionGroup({ items, autoCollapse = false }) {
   const t = useUiTranslate();
-  const summary = executionGroupSummary(items);
   const toolItems = items.filter((item) => item?.type === 'tool_call');
   const internalEventCount = Math.max(0, items.length - toolItems.length);
-  const latestTool = [...toolItems].reverse().find(Boolean);
-  const latestToolTitle = latestTool?.title || latestTool?.name || latestTool?.toolName || '';
-  const detail = summary.tone === 'running' && latestToolTitle ? `${summary.detail} · ${latestToolTitle}` : summary.detail;
-  const autoCollapseAppliedRef = useRef(autoCollapse);
-  const [expanded, setExpanded] = useState(false);
+  const toolCount = toolItems.length;
+  const failedCount = toolItems.filter((item) => ['failed', 'error'].includes(item?.status)).length;
+  const running = toolItems.some(
+    (item) => !['completed', 'done', 'failed', 'error'].includes(item?.status),
+  );
+  // WebUI: auto-collapse when ≥2 tools and turn finished (autoCollapse) and nothing running/failed pending UI
+  const preferCollapsed = Boolean(autoCollapse) && !running && toolCount >= 2;
+  const userOverrideRef = useRef(null);
+  const [expandedOverride, setExpandedOverride] = useState(null);
+  const expanded = expandedOverride !== null ? expandedOverride : !preferCollapsed;
 
   useEffect(() => {
-    if (!autoCollapse || autoCollapseAppliedRef.current) return;
-    autoCollapseAppliedRef.current = true;
-    setExpanded(false);
+    // When autoCollapse flips true after final answer, snap to collapsed unless user already toggled.
+    if (!autoCollapse) return;
+    if (userOverrideRef.current !== null) return;
+    setExpandedOverride(null);
   }, [autoCollapse]);
 
-  const statusClass =
-    summary.tone === 'error'
-      ? 'text-[var(--color-accent-red)] bg-[var(--color-error-bg)]'
-      : summary.tone === 'running'
-        ? 'text-[var(--color-accent-blue)] bg-[rgba(59,130,246,0.1)]'
-        : 'text-[var(--color-accent-green)] bg-[var(--color-success-bg)]';
+  const countLabel =
+    toolCount === 1
+      ? `1 ${t('tool.toolSingular')}`
+      : t('tool.toolsExecuted', { count: toolCount });
+  const nameHint = toolNameHistogram(toolItems);
+
+  const toggle = () => {
+    const next = !expanded;
+    userOverrideRef.current = next;
+    setExpandedOverride(next);
+  };
+
+  if (toolCount === 0 && internalEventCount === 0) return null;
+
+  // Single running/finished tool with no siblings: render the row directly (WebUI does not wrap in a summary).
+  if (toolCount === 1 && internalEventCount === 0 && !preferCollapsed) {
+    return (
+      <div className="execution-group mb-2 w-full">
+        <ToolCallBlock item={toolItems[0]} />
+      </div>
+    );
+  }
+
+  // WebUI only shows the “N 个工具已执行” chrome when the group is (or can be) collapsed.
+  // While tools are still running, just list the light rows with an optional left rail.
+  const showGroupChrome = preferCollapsed || expandedOverride !== null || (!running && toolCount >= 2);
 
   return (
-    <div className="my-3 border-y border-[var(--color-border-muted)]">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 py-2 text-left text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <svg
-          className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-muted)]"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <path d="M2 4h12M2 8h8M2 12h10" />
-        </svg>
-        <span className="font-medium text-[var(--color-text-primary)]">{t('execution.title')}</span>
-        <span className="truncate text-[var(--color-text-muted)]">{detail}</span>
-        <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusClass}`}>
-          {summary.status}
-        </span>
-        <svg
-          className={`h-3 w-3 shrink-0 text-[var(--color-text-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`}
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <path d="M6 3l5 5-5 5" />
-        </svg>
-      </button>
+    <div className="execution-group mb-2 flex w-full flex-col gap-0">
       {expanded ? (
-        <div className="border-t border-[var(--color-border-muted)] pb-1 pt-1">
-          {toolItems.length ? (
-            toolItems.map((item, index) => <TimelineItem key={item.id || index} item={item} />)
-          ) : (
-            <div className="px-1 py-2 text-xs text-[var(--color-text-muted)]">{t('execution.emptyTools')}</div>
-          )}
-          {internalEventCount > 0 ? (
-            <div className="px-1 py-2 text-[11px] text-[var(--color-text-muted)]">
-              {t('execution.mergedInternal', { n: internalEventCount })}
-            </div>
+        <>
+          {showGroupChrome ? (
+            <button
+              type="button"
+              onClick={toggle}
+              className="flex items-center gap-2 rounded-lg px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--color-bg-hover)]/50"
+              aria-expanded={true}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                className="shrink-0 text-[var(--color-text-tertiary)]"
+                aria-hidden="true"
+              >
+                <path d="M4 6l4 4 4-4" />
+              </svg>
+              <span className="text-[12px] text-[var(--color-text-tertiary)]">{countLabel}</span>
+              {failedCount > 0 ? (
+                <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-accent-red)]">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
+                  {t('tool.failedCount', { count: failedCount })}
+                </span>
+              ) : null}
+            </button>
           ) : null}
-        </div>
-      ) : null}
+          <div className={`relative ${toolCount > 1 || internalEventCount > 0 ? 'ml-1.5 pl-4' : ''}`}>
+            {toolCount > 1 || internalEventCount > 0 ? (
+              <div className="absolute bottom-1 left-0 top-1 w-px bg-[var(--color-border-default)]" aria-hidden="true" />
+            ) : null}
+            <div className="flex flex-col gap-0.5">
+              {toolItems.length ? (
+                toolItems.map((item, index) => <ToolCallBlock key={item.id || index} item={item} />)
+              ) : (
+                <div className="px-1 py-1 text-[12px] text-[var(--color-text-muted)]">{t('execution.emptyTools')}</div>
+              )}
+              {internalEventCount > 0 ? (
+                <div className="px-1 py-1 text-[11px] text-[var(--color-text-muted)]">
+                  {t('execution.mergedInternal', { n: internalEventCount })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={toggle}
+          className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-hover)]/50"
+          aria-expanded={false}
+          aria-label={countLabel}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            className="shrink-0 text-[var(--color-text-tertiary)]"
+            aria-hidden="true"
+          >
+            <path d="M6 3l5 5-5 5" />
+          </svg>
+          <span className="text-[12px] text-[var(--color-text-tertiary)]">{countLabel}</span>
+          {failedCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-accent-red)]">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
+              {t('tool.failedCount', { count: failedCount })}
+            </span>
+          ) : null}
+          {nameHint ? (
+            <span className="tool-group-hint min-w-0 flex-1 truncate text-[11px] opacity-0 transition-opacity group-hover:opacity-100">
+              {nameHint}
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
+        </button>
+      )}
     </div>
   );
 }
@@ -1460,6 +1658,11 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <QuestionCard item={item} />;
   }
 
+  // 历史会话里可能仍有 mode_update 条目；不在对话记录展示。
+  if (item.type === 'mode_update' || item.type === 'current_mode_update') {
+    return null;
+  }
+
   const protocolLabel = getProtocolEventLabel(item.type, t);
   if (protocolLabel) {
     return (
@@ -1530,7 +1733,7 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
 
   if (item.role === 'assistant') {
     return (
-      <div className="group mb-2">
+      <div className="chat-assistant-message group mb-2">
         {/* WebUI: markdown-body text-chat text-text-primary */}
         <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
           {item.content ? (
@@ -2890,7 +3093,11 @@ const ChatComposer = React.memo(function ChatComposer({
               <div className="relative">
                 <button
                   type="button"
-                  className="composer-picker-trigger flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors disabled:opacity-50"
+                  className={`composer-picker-trigger flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+                    isFullAccessMode(currentMode)
+                      ? 'composer-picker-trigger--special'
+                      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+                  }`}
                   disabled={connectionState !== 'connected' || sessionResponseBusy}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={(e) => {
@@ -2903,28 +3110,40 @@ const ChatComposer = React.memo(function ChatComposer({
                     <path d="M8 2c-1.5 0-3 .5-4 1.5l1.5 1.5C6.5 4.5 7.5 4 8 4c2 0 4 1.5 4 4h-1.5l2 2.5 2-2.5H13c0-2.5-2-4-5-4z" />
                     <path d="M8 14c1.5 0 3-.5 4-1.5L10.5 11C9.5 11.5 8.5 12 8 12c-2 0-4-1.5-4-4h1.5l-2-2.5-2 2.5H3c0 2.5 2 4 5 4z" />
                   </svg>
-                  <FlipLabel value={currentModeName} />
+                  <FlipLabel value={currentModeName} special={isFullAccessMode(currentMode)} />
                 </button>
                 <ComposerAnimatedMenu
                   open={showModePicker}
                   onClose={() => setShowModePicker(false)}
                   className="bottom-full left-0 mb-1 w-40"
                 >
-                  {modeOptions.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      role="menuitem"
-                      disabled={sessionResponseBusy}
-                      className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
-                      style={{
-                        color: m.id === currentMode ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
-                      }}
-                      onClick={() => changeSessionSetting('mode', m.id)}
-                    >
-                      {m.name}
-                    </button>
-                  ))}
+                  {modeOptions.map((m) => {
+                    const special = isFullAccessMode(m.id);
+                    const selected = m.id === currentMode;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        role="menuitem"
+                        disabled={sessionResponseBusy}
+                        className={`composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50${
+                          special ? ' composer-menu-item--special' : ''
+                        }${selected ? ' is-selected' : ''}`}
+                        style={
+                          special
+                            ? undefined
+                            : {
+                                color: selected
+                                  ? 'var(--color-accent-blue)'
+                                  : 'var(--color-text-secondary)',
+                              }
+                        }
+                        onClick={() => changeSessionSetting('mode', m.id)}
+                      >
+                        {m.name}
+                      </button>
+                    );
+                  })}
                 </ComposerAnimatedMenu>
               </div>
             </div>
@@ -2981,7 +3200,11 @@ const ChatComposer = React.memo(function ChatComposer({
                 <div className="relative min-w-0 shrink-0">
                   <button
                     type="button"
-                    className="composer-picker-trigger max-w-[min(7.5rem,24vw)] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                    className={`composer-picker-trigger max-w-[min(7.5rem,24vw)] truncate rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
+                      isUltracodeEffort(thoughtLevel)
+                        ? 'composer-picker-trigger--special'
+                        : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+                    }`}
                     disabled={connectionState !== 'connected' || sessionResponseBusy}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={(e) => {
@@ -2991,7 +3214,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     }}
                     title={t('composer.effort')}
                   >
-                    <FlipLabel value={currentEffortName} />
+                    <FlipLabel value={currentEffortName} special={isUltracodeEffort(thoughtLevel)} />
                   </button>
                   <ComposerAnimatedMenu
                     open={showEffortPicker}
@@ -3001,19 +3224,26 @@ const ChatComposer = React.memo(function ChatComposer({
                   >
                     {effortOptions.map((o) => {
                       const level = thoughtLevel || 'enabled';
+                      const special = isUltracodeEffort(o.id);
+                      const selected = o.id === level;
                       return (
                         <button
                           key={o.id}
                           type="button"
                           role="menuitem"
                           disabled={sessionResponseBusy}
-                          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
-                          style={{
-                            color:
-                              o.id === level
-                                ? 'var(--color-accent-blue)'
-                                : 'var(--color-text-secondary)',
-                          }}
+                          className={`composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50${
+                            special ? ' composer-menu-item--special' : ''
+                          }${selected ? ' is-selected' : ''}`}
+                          style={
+                            special
+                              ? undefined
+                              : {
+                                  color: selected
+                                    ? 'var(--color-accent-blue)'
+                                    : 'var(--color-text-secondary)',
+                                }
+                          }
                           onClick={() => changeSessionSetting('effort', o.id)}
                         >
                           {o.name}

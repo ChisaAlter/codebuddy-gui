@@ -6,7 +6,9 @@ import { useStore } from '../store';
 import { NAV_GROUPS } from '../lib/codebuddy-schema';
 import { accountFooterPresentation } from '../lib/account-auth';
 import { resolveLocaleMode, translate } from '../lib/i18n';
-import appIconUrl from '../../build/icon.png';
+// In-app mark only — no white tile (desktop / tray keep build/icon.png).
+import appIconMarkUrl from '../../build/icon-mark.png';
+import { version as desktopAppVersion } from '../../package.json';
 
 function useSidebarTranslate() {
   const localeMode = useStore((state) => state.guiSettings?.locale || 'system');
@@ -44,7 +46,7 @@ function accountAvatarGlyph(label) {
   return Array.from(text)[0]?.toUpperCase() || '?';
 }
 
-/** WebUI-style identity card: avatar + name + CLI version in one footer block. */
+/** Identity card: avatar + ID, full CLI/Desktop versions; click opens account popover. */
 export function SidebarAccountFooter({
   collapsed = false,
   info = null,
@@ -58,6 +60,7 @@ export function SidebarAccountFooter({
     guiSettings,
     authenticateCodeBuddyAccount,
     cancelCodeBuddyAccountAuth,
+    logout,
   } = useStore(
     useShallow((state) => ({
       codeBuddyAccountAuthState: state.codeBuddyAccountAuthState,
@@ -66,6 +69,7 @@ export function SidebarAccountFooter({
       guiSettings: state.guiSettings,
       authenticateCodeBuddyAccount: state.authenticateCodeBuddyAccount,
       cancelCodeBuddyAccountAuth: state.cancelCodeBuddyAccountAuth,
+      logout: state.logout,
     })),
   );
   const [menuOpen, setMenuOpen] = useState(false);
@@ -79,15 +83,19 @@ export function SidebarAccountFooter({
     presentation.site === 'global' ? t('account.site.global') : t('account.site.cn');
   const authenticating = presentation.kind === 'authenticating';
   const accountDotClass = sidebarAccountDotClass(codeBuddyAccountAuthState, presentation.kind);
-  const versionLabel = info?.version
-    ? t('sidebar.cliVersion', { version: String(info.version).replace(/^v/i, '') })
-    : t('sidebar.cliVersionUnknown');
-  const connectionDotClass =
+  // Desktop product version only in the identity card (CLI version lives in Settings / CLI maintenance).
+  const guiVersionRaw = String(desktopAppVersion || '').replace(/^v/i, '') || null;
+  const guiVersionLabel = guiVersionRaw
+    ? t('sidebar.guiVersionLine', { version: guiVersionRaw })
+    : t('sidebar.guiVersionUnknownLine');
+  const connectionLabel =
     connectionState === 'connected'
-      ? 'bg-[var(--color-accent-green)]'
-      : connectionState === 'error'
-        ? 'bg-[var(--color-accent-red)]'
-        : 'bg-[var(--color-accent-yellow)]';
+      ? t('connection.connected')
+      : connectionState === 'connecting'
+        ? t('connection.connecting')
+        : connectionState === 'error'
+          ? t('connection.error')
+          : t('connection.disconnected');
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -118,6 +126,16 @@ export function SidebarAccountFooter({
     setMenuOpen(false);
   };
 
+  const handleLogout = async (event) => {
+    event?.stopPropagation?.();
+    setMenuOpen(false);
+    try {
+      await logout?.();
+    } catch (error) {
+      console.warn('[account] logout failed', error);
+    }
+  };
+
   let primaryLabel = t('account.notLoggedIn');
   if (authenticating) primaryLabel = t('account.loggingIn');
   else if (presentation.kind === 'authenticated') {
@@ -126,25 +144,28 @@ export function SidebarAccountFooter({
     primaryLabel = presentation.label || t('account.cachedUser');
   }
 
-  const statusParts = [versionLabel];
+  const summaryParts = [primaryLabel];
   if (presentation.kind === 'authenticated' || presentation.kind === 'cached') {
-    statusParts.push(siteLabel);
+    summaryParts.push(siteLabel);
   }
-  if (presentation.kind === 'cached') statusParts.push(t('account.cachedUser'));
-  if (connectionState === 'error') statusParts.push(t('connection.error'));
-  const statusLabel = statusParts.filter(Boolean).join(' · ');
+  if (presentation.kind === 'cached') summaryParts.push(t('account.cachedUser'));
+  summaryParts.push(guiVersionLabel, connectionLabel);
+  if (codeBuddyAccountAuthError && presentation.kind === 'needs_login') {
+    summaryParts.push(String(codeBuddyAccountAuthError));
+  }
+  const summaryText = summaryParts.filter(Boolean).join(' · ');
 
-  let summaryText = primaryLabel;
-  if (authenticating) summaryText = t('account.loggingIn');
-  else if (presentation.kind === 'authenticated' && presentation.label) {
-    summaryText = `${t('account.loggedIn')} · ${presentation.label} · ${siteLabel} · ${versionLabel}`;
-  } else if (presentation.kind === 'cached' && presentation.label) {
-    summaryText = `${t('account.cachedUser')} · ${presentation.label} · ${siteLabel} · ${versionLabel}`;
-  } else if (codeBuddyAccountAuthError) {
-    summaryText = `${t('account.notLoggedIn')} · ${versionLabel}`;
-  } else {
-    summaryText = `${primaryLabel} · ${versionLabel}`;
-  }
+  const badgeTitle =
+    presentation.kind === 'authenticated'
+      ? t('account.loggedIn')
+      : presentation.kind === 'cached'
+        ? t('account.cachedUser')
+        : authenticating
+          ? t('account.loggingIn')
+          : t('account.notLoggedIn');
+
+  const loggedIn =
+    presentation.kind === 'authenticated' || presentation.kind === 'cached';
 
   const menu = menuOpen ? (
     <>
@@ -157,38 +178,80 @@ export function SidebarAccountFooter({
       />
       <div
         role="menu"
-        aria-label={t('account.menuLabel')}
+        aria-label={t('account.menuAccount')}
         data-testid="sidebar-account-site-menu"
-        className="composer-menu composer-menu--open absolute bottom-full left-0 z-20 mb-1 w-44"
+        className="composer-menu composer-menu--open sidebar-account-menu absolute bottom-full left-0 z-20 mb-1"
       >
-        <button
-          type="button"
-          role="menuitem"
-          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
-          onClick={() => pickSite('cn')}
-        >
-          {t('account.site.cn')}
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
-          onClick={() => pickSite('global')}
-        >
-          {t('account.site.global')}
-        </button>
+        {loggedIn ? (
+          <>
+            <button
+              type="button"
+              role="menuitem"
+              className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+              onClick={() => pickSite('cn')}
+            >
+              {t('account.site.cn')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+              onClick={() => pickSite('global')}
+            >
+              {t('account.site.global')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="composer-menu-item composer-menu-item--danger w-full px-3 py-1.5 text-left text-xs"
+              onClick={handleLogout}
+              data-testid="sidebar-account-logout"
+            >
+              {t('account.logout')}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              role="menuitem"
+              className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+              onClick={() => pickSite('cn')}
+              data-testid="sidebar-account-login"
+            >
+              {t('account.site.cn')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="composer-menu-item w-full px-3 py-1.5 text-left text-xs"
+              onClick={() => pickSite('global')}
+            >
+              {t('account.site.global')}
+            </button>
+          </>
+        )}
       </div>
     </>
   ) : null;
 
-  const avatar = (
-    <div className="sidebar-user-avatar" aria-hidden="true">
-      {presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
-        <span>{accountAvatarGlyph(presentation.label || primaryLabel)}</span>
-      ) : (
-        <img src={appIconUrl} alt="" />
-      )}
-      <span className={`sidebar-user-avatar-dot ${accountDotClass}`} title={connectionState} />
+  const avatarFace =
+    presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
+      <span className="sidebar-user-avatar-glyph">
+        {accountAvatarGlyph(presentation.label || primaryLabel)}
+      </span>
+    ) : (
+      <img src={appIconMarkUrl} alt="" className="sidebar-user-avatar-mark" />
+    );
+
+  const versionBlock = (
+    <div className="sidebar-user-versions" data-testid="sidebar-account-status">
+      <div className="sidebar-user-version-row" data-testid="sidebar-account-gui-version">
+        <span className="sidebar-user-version-key">{t('sidebar.versionKey.app')}</span>
+        <span className="sidebar-user-version-value">
+          {guiVersionRaw ? `v${guiVersionRaw}` : '—'}
+        </span>
+      </div>
     </div>
   );
 
@@ -198,7 +261,6 @@ export function SidebarAccountFooter({
         <button
           type="button"
           className="sidebar-user-avatar"
-          style={{ border: '1px solid var(--color-border-muted)' }}
           aria-label={
             authenticating
               ? t('account.cancelLogin')
@@ -211,12 +273,8 @@ export function SidebarAccountFooter({
           onClick={authenticating ? cancelLogin : openMenu}
           data-testid="sidebar-account-collapsed"
         >
-          {presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
-            <span>{accountAvatarGlyph(presentation.label || primaryLabel)}</span>
-          ) : (
-            <img src={appIconUrl} alt="" />
-          )}
-          <span className={`sidebar-user-avatar-dot ${accountDotClass}`} />
+          {avatarFace}
+          <span className={`sidebar-user-avatar-dot ${accountDotClass}`} title={badgeTitle} />
         </button>
         {menu}
       </div>
@@ -226,78 +284,53 @@ export function SidebarAccountFooter({
   return (
     <div className="sidebar-footer-identity relative" data-testid="sidebar-account-footer">
       <div
-        className="sidebar-user-section"
+        className="sidebar-user-card"
         data-disabled={authenticating ? 'true' : undefined}
-        role="button"
-        tabIndex={0}
-        title={summaryText}
-        aria-haspopup={authenticating ? undefined : 'menu'}
-        aria-expanded={authenticating ? undefined : menuOpen}
-        onClick={authenticating ? undefined : openMenu}
-        onKeyDown={(event) => {
-          if (authenticating) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            openMenu();
-          }
-        }}
+        data-auth={presentation.kind}
       >
-        {avatar}
-        <div className="sidebar-user-info">
-          <div className="sidebar-user-name" data-testid="sidebar-account-name">
-            {primaryLabel}
-          </div>
-          <div className="sidebar-user-status" data-testid="sidebar-account-status" title={statusLabel}>
-            <span
-              className={`mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle ${connectionDotClass}`}
-              title={connectionState}
-            />
-            {statusLabel}
-          </div>
-        </div>
         {authenticating ? (
-          <button
-            type="button"
-            className="sidebar-user-action sidebar-user-action--danger"
-            onClick={cancelLogin}
-            data-testid="sidebar-account-cancel"
-          >
-            {t('account.cancelLogin')}
-          </button>
-        ) : presentation.kind === 'authenticated' || presentation.kind === 'cached' ? (
-          <button
-            type="button"
-            className="sidebar-user-action sidebar-user-action--icon"
-            aria-label={t('account.switchSite')}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            onClick={(event) => {
-              event.stopPropagation();
-              openMenu();
-            }}
-            data-testid="sidebar-account-login"
-            title={t('account.relogin')}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <circle cx="3" cy="8" r="1.5" />
-              <circle cx="8" cy="8" r="1.5" />
-              <circle cx="13" cy="8" r="1.5" />
-            </svg>
-          </button>
+          <>
+            <div className="sidebar-user-main" data-testid="sidebar-account-main" title={summaryText}>
+              <div className="sidebar-user-avatar" aria-hidden="true">
+                {avatarFace}
+                <span className={`sidebar-user-avatar-dot ${accountDotClass}`} title={badgeTitle} />
+              </div>
+              <div className="sidebar-user-info">
+                <div className="sidebar-user-name" data-testid="sidebar-account-name">
+                  {primaryLabel}
+                </div>
+                {versionBlock}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="sidebar-user-action sidebar-user-action--danger"
+              onClick={cancelLogin}
+              data-testid="sidebar-account-cancel"
+            >
+              {t('account.cancelLogin')}
+            </button>
+          </>
         ) : (
           <button
             type="button"
-            className="sidebar-user-action"
-            aria-label={t('account.login')}
+            className="sidebar-user-main"
+            title={summaryText}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={(event) => {
-              event.stopPropagation();
-              openMenu();
-            }}
-            data-testid="sidebar-account-login"
+            onClick={openMenu}
+            data-testid="sidebar-account-main"
           >
-            {t('account.login')}
+            <div className="sidebar-user-avatar" aria-hidden="true">
+              {avatarFace}
+              <span className={`sidebar-user-avatar-dot ${accountDotClass}`} title={badgeTitle} />
+            </div>
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-name" data-testid="sidebar-account-name">
+                {primaryLabel}
+              </div>
+              {versionBlock}
+            </div>
           </button>
         )}
       </div>
@@ -305,6 +338,7 @@ export function SidebarAccountFooter({
     </div>
   );
 }
+
 
 const ITEM_ICONS = {
   chat: (
@@ -435,6 +469,7 @@ const ITEM_ICONS = {
 
 export function replicaSidebarWidthStyle(collapsed) {
   const width = collapsed ? 60 : 'clamp(220px, 21vw, 252px)';
+  // Width is animated via .sidebar-nav CSS transition; keep all three in sync for flex.
   return { width, minWidth: width, maxWidth: width };
 }
 
@@ -658,10 +693,10 @@ export default function ReplicaSidebar() {
             </svg>
           )}
         </span>
-        {!sidebarCollapsed ? <span className="truncate text-left">{item.label}</span> : null}
-        {!sidebarCollapsed && item.id === 'changes' && changesCount > 0 ? (
+        <span className="sidebar-expand-label truncate text-left">{item.label}</span>
+        {item.id === 'changes' && changesCount > 0 ? (
           <span
-            className="ml-auto rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
+            className="sidebar-expand-label ml-auto rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
             style={{ background: 'var(--color-accent-blue)' }}
           >
             {changesCount}
@@ -675,102 +710,117 @@ export default function ReplicaSidebar() {
     <aside
       role="navigation"
       aria-label="Main navigation"
+      data-collapsed={sidebarCollapsed ? 'true' : 'false'}
       className="sidebar-nav flex h-full shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-sidebar)] text-[var(--color-text-primary)]"
       style={replicaSidebarWidthStyle(sidebarCollapsed)}
     >
       {/* Brand */}
       <div className="titlebar-drag flex h-11 shrink-0 items-center gap-2 border-b border-[var(--color-border-muted)] px-3">
-        <img src={appIconUrl} alt="" className="h-7 w-7 rounded-md shadow-sm" />
-        {!sidebarCollapsed && (
-          <span className="text-sm font-semibold tracking-tight" style={{ color: 'var(--color-accent-brand)' }}>
-            CodeBuddy GUI
-          </span>
-        )}
+        <img src={appIconMarkUrl} alt="" className="h-7 w-7 shrink-0 object-contain" />
+        <span
+          className="sidebar-expand-label text-sm font-semibold tracking-tight"
+          style={{ color: 'var(--color-accent-brand)' }}
+        >
+          CodeBuddy Desktop
+        </span>
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden py-2.5">
-        {!sidebarCollapsed && (
-          <div className="px-3 pb-2">
-            <button
-              type="button"
-              aria-label="新对话"
-              className="flex min-h-9 w-full items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
-              disabled={newSessionBusy || projectNavigationBusy}
-              onClick={async () => {
-                if (newSessionBusy || projectNavigationBusy) return;
-                setRoute('chat');
-                const state = useStore.getState();
-                // 已有活动项目：在当前项目下直接新建会话（与项目树 "+" 一致）。
-                // 无项目时才打开目录选择，避免每次「新对话」都弹出系统对话框，
-                // 也保证 e2e / 键盘用户能可靠创建会话。
-                if (state.activeProjectId) {
-                  await state.newSession();
-                  return;
-                }
-                await state.chooseWorkspace();
-              }}
-            >
-              {newSessionBusy || projectNavigationBusy ? (
-                <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
-              ) : null}
-              {projectNavigationBusy ? '切换中...' : newSessionBusy ? '正在创建...' : '新对话'}
-            </button>
-          </div>
-        )}
+        <div
+          className={`sidebar-expand-panel${sidebarCollapsed ? ' is-collapsed' : ''}`}
+          aria-hidden={sidebarCollapsed ? 'true' : undefined}
+        >
+          <div className="sidebar-expand-panel-inner">
+            <div className="px-3 pb-2">
+              <button
+                type="button"
+                aria-label="新对话"
+                data-testid="sidebar-new-session"
+                tabIndex={sidebarCollapsed ? -1 : undefined}
+                className="sidebar-new-session-btn flex min-h-9 w-full items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] disabled:cursor-wait disabled:opacity-60"
+                disabled={newSessionBusy || projectNavigationBusy}
+                onClick={async () => {
+                  if (newSessionBusy || projectNavigationBusy) return;
+                  setRoute('chat');
+                  const state = useStore.getState();
+                  // 已有活动项目：在当前项目下直接新建会话（与项目树 "+" 一致）。
+                  // 无项目时才打开目录选择，避免每次「新对话」都弹出系统对话框，
+                  // 也保证 e2e / 键盘用户能可靠创建会话。
+                  if (state.activeProjectId) {
+                    await state.newSession();
+                    return;
+                  }
+                  await state.chooseWorkspace();
+                }}
+              >
+                {newSessionBusy || projectNavigationBusy ? (
+                  <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--color-text-muted)] border-t-transparent" />
+                ) : null}
+                {projectNavigationBusy ? '切换中...' : newSessionBusy ? '正在创建...' : '新对话'}
+              </button>
+            </div>
 
-        {!sidebarCollapsed && (
-          <div className="mb-2 px-3">
-            <ProjectSessionTree
-              projectsById={projectsById}
-              projectOrder={projectOrder}
-              threadsById={threadsById}
-              threadOrderByProject={threadOrderByProject}
-              activeProjectId={activeProjectId}
-              activeThreadId={activeThreadId}
-              projectNavigationBusy={projectNavigationBusy || projectActionBusy}
-              projectNavigationTargetId={projectNavigationTargetId}
-              onToggleProject={setProjectSidebarExpanded}
-              onActivateThread={activateSidebarThread}
-              onPinThread={setThreadPinned}
-              onArchiveThread={archiveThread}
-              onRenameThread={renameSidebarThread}
-              onDeleteThread={deleteSidebarThread}
-              onCreateProjectThread={createProjectThread}
-              onOpenProjectMenu={(event, project) => {
-                setProjectMenuPosition({ x: event.clientX, y: event.clientY });
-                setProjectMenuOpenId(project.id);
-              }}
-            />
-            {projectNavigationError ? (
-              <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{projectNavigationError}</div>
-            ) : null}
+            <div className="mb-2 px-3">
+              <ProjectSessionTree
+                projectsById={projectsById}
+                projectOrder={projectOrder}
+                threadsById={threadsById}
+                threadOrderByProject={threadOrderByProject}
+                activeProjectId={activeProjectId}
+                activeThreadId={activeThreadId}
+                projectNavigationBusy={projectNavigationBusy || projectActionBusy}
+                projectNavigationTargetId={projectNavigationTargetId}
+                onToggleProject={setProjectSidebarExpanded}
+                onActivateThread={activateSidebarThread}
+                onPinThread={setThreadPinned}
+                onArchiveThread={archiveThread}
+                onRenameThread={renameSidebarThread}
+                onDeleteThread={deleteSidebarThread}
+                onCreateProjectThread={createProjectThread}
+                onOpenProjectMenu={(event, project) => {
+                  setProjectMenuPosition({ x: event.clientX, y: event.clientY });
+                  setProjectMenuOpenId(project.id);
+                }}
+              />
+              {projectNavigationError ? (
+                <div className="mt-1 px-1 text-[10px] text-[var(--color-accent-red)]">{projectNavigationError}</div>
+              ) : null}
+            </div>
           </div>
-        )}
+        </div>
 
         {replicaSidebarMainGroups().map((group) => {
           const groupExpanded = sidebarCollapsed || expandedNavGroups[group.id];
           return (
             <div key={group.id} className="mb-1">
-              {!sidebarCollapsed && (
-                <button
-                  type="button"
-                  className="sidebar-section-title flex w-full items-center justify-between text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
-                  aria-expanded={Boolean(groupExpanded)}
-                  aria-label={`${groupExpanded ? '折叠' : '展开'}${group.title}`}
-                  onClick={() => setExpandedNavGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}
-                >
-                  <span>{group.title}</span>
-                  <svg
-                    className={`h-3 w-3 transition-transform ${groupExpanded ? 'rotate-90' : ''}`}
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
+              <div
+                className={`sidebar-expand-panel${sidebarCollapsed ? ' is-collapsed' : ''}`}
+                aria-hidden={sidebarCollapsed ? 'true' : undefined}
+              >
+                <div className="sidebar-expand-panel-inner">
+                  <button
+                    type="button"
+                    className="sidebar-section-title flex w-full items-center justify-between text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+                    aria-expanded={Boolean(groupExpanded)}
+                    aria-label={`${groupExpanded ? '折叠' : '展开'}${group.title}`}
+                    tabIndex={sidebarCollapsed ? -1 : undefined}
+                    onClick={() =>
+                      setExpandedNavGroups((current) => ({ ...current, [group.id]: !current[group.id] }))
+                    }
                   >
-                    <path d="M6 3l5 5-5 5" />
-                  </svg>
-                </button>
-              )}
+                    <span>{group.title}</span>
+                    <svg
+                      className={`h-3 w-3 transition-transform ${groupExpanded ? 'rotate-90' : ''}`}
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                    >
+                      <path d="M6 3l5 5-5 5" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
               {groupExpanded ? <div className="space-y-0.5 px-1.5">{group.items.map(renderNavItem)}</div> : null}
             </div>
           );
@@ -836,7 +886,7 @@ export default function ReplicaSidebar() {
               </div>
             ) : (
               <div className="mt-3 space-y-2 text-xs leading-5 text-[var(--color-text-secondary)]">
-                <p>“{projectDialog.project.name}”将从 CodeBuddy GUI 的项目列表中移除，项目文件不会从磁盘删除。</p>
+                <p>“{projectDialog.project.name}”将从 CodeBuddy Desktop 的项目列表中移除，项目文件不会从磁盘删除。</p>
                 {projectDialog.project.id === activeProjectId && fileDirty ? (
                   <p className="rounded-md border border-[rgba(239,68,68,0.35)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-[var(--color-accent-red)]">
                     {selectedFile ? `“${selectedFile}”` : '当前文件'}有未保存修改，继续移除会丢失这些修改。
@@ -872,7 +922,7 @@ export default function ReplicaSidebar() {
         </div>
       )}
 
-      <div className="shrink-0 p-1.5">
+      <div className="shrink-0 px-1.5 pb-1 pt-0.5">
         <div className="space-y-0.5">{replicaSidebarFooterItems().map(renderNavItem)}</div>
         <SidebarAccountFooter
           collapsed={sidebarCollapsed}

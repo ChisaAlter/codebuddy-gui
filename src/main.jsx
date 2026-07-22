@@ -63,7 +63,7 @@ class AppErrorBoundary extends React.Component {
     }
 
     componentDidCatch(error, info) {
-        console.error('CodeBuddy GUI render failed', error, info)
+        console.error('CodeBuddy Desktop render failed', error, info)
         reportRendererFailure('reactErrorBoundary', error, info?.componentStack || '')
     }
 
@@ -85,7 +85,7 @@ class AppErrorBoundary extends React.Component {
         return (
             <div className="flex h-screen w-screen items-center justify-center bg-[#111] px-6 text-white">
                 <div className="w-full max-w-xl">
-                    <div className="text-lg font-semibold">CodeBuddy GUI 无法加载</div>
+                    <div className="text-lg font-semibold">CodeBuddy Desktop 无法加载</div>
                     <div className="mt-2 break-words text-sm text-gray-300">{this.state.error.message || String(this.state.error)}</div>
                     <div className="mt-4 flex flex-wrap gap-2">
                         <button

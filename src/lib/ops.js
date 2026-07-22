@@ -403,7 +403,9 @@ export async function listCustomModels(baseUrl = '', global = true) {
 }
 
 /**
- * 保存自定义模型并触发 product sync（WebUI hQ，默认 visible:false）
+ * 保存自定义模型并触发 product sync（WebUI hQ）。
+ * Desktop 默认 visible:true，保证自定义模型进入会话可选列表；
+ * 显式传 visible:false 时保持 WebUI「不写白名单」行为。
  * @param {{model: object, previousId?: string, visible?: boolean, global?: boolean}} payload
  */
 export async function saveCustomModel(payload = {}, baseUrl = '') {
@@ -412,7 +414,7 @@ export async function saveCustomModel(payload = {}, baseUrl = '') {
     {
       model: payload.model,
       previousId: payload.previousId,
-      visible: payload.visible === true,
+      visible: payload.visible !== false,
       global: payload.global !== false,
     },
     baseUrl,

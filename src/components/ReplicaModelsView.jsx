@@ -399,23 +399,24 @@ export default function ReplicaModelsView() {
         id,
         name,
         url,
-        // 对齐 WebUI：默认不写入 availableModels 白名单
-        includeInAvailableModels: false,
-        preserveApiKey: Boolean(previousId),
+        // Never write models.json availableModels (would hide account/built-in models).
+        preserveApiKey: true,
+        originalId: previousId || undefined,
       });
       setSnapshot(next);
       setEditorDraft(null);
 
-      // 仅「新建」且填写了密钥时，再走运行时 save 触发 syncProductConfiguration。
-      // 编辑路径只用 Electron 写盘：CLI save 会整对象替换，易冲掉密钥/扩展字段。
+      // Always notify running CLI after disk write so custom models appear in pickers.
+      // Runtime save may omit apiKey on edit (preserve on disk); still pass current fields.
       const apiBase = useStore.getState().apiBase;
       let runtimeSynced = false;
-      if (apiBase && !previousId && editorDraft.apiKey?.trim()) {
+      if (apiBase) {
         try {
           await saveCustomModel(
             {
               model: buildRuntimeModelPayload(editorDraft, id, url),
-              visible: false,
+              previousId: previousId && previousId !== id ? previousId : undefined,
+              visible: true,
               global: true,
             },
             apiBase,
@@ -427,10 +428,10 @@ export default function ReplicaModelsView() {
       }
 
       setNotice({
-        type: 'dirty',
+        type: runtimeSynced ? 'success' : 'dirty',
         message: runtimeSynced
           ? '模型配置已保存，并已通知当前运行时刷新模型列表。'
-          : '模型配置已保存到 models.json。若会话模型列表未更新，请重启当前运行时。',
+          : '模型配置已保存到 models.json。若会话模型列表未更新，请点击下方「重启当前运行时」。',
       });
     } catch (error) {
       setEditorError(error?.message || '保存模型失败');

@@ -377,7 +377,7 @@ export default function ReplicaKeybindingsView() {
         <div className="mx-auto max-w-6xl">
           <section className="mb-8">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">CodeBuddy GUI</h3>
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">CodeBuddy Desktop</h3>
               <button className="btn-ghost text-xs" onClick={restoreGuiDefaults}>恢复 GUI 默认</button>
             </div>
             {guiError ? (

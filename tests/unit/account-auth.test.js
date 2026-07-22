@@ -3,9 +3,11 @@ import {
   accountFooterPresentation,
   classifyPromptRefusal,
   formatCodeBuddyAccountLabel,
+  formatCustomModelAuthFailureMessage,
   formatNetworkOrProxyFailureMessage,
   internetEnvironmentForAccountSite,
   isCloudAuthFailureMessage,
+  isCustomModelAuthFailureMessage,
   isNetworkOrProxyFailureMessage,
   normalizeAccountLoginSite,
   normalizeLastAccountUser,
@@ -133,5 +135,37 @@ describe('account-auth helpers', () => {
     expect(summary).toMatch(/HTTP 502/);
     expect(summary).toMatch(/不是登录失效/);
     expect(summary).not.toMatch(/<\s*html/i);
+  });
+
+  it('explains unknown provider model id from custom endpoints', () => {
+    const summary = formatNetworkOrProxyFailureMessage(
+      '502 unknown provider for model grok (abc/session)',
+      { statusCode: 502 },
+    );
+    expect(summary).toMatch(/不认识模型 ID「grok」/);
+    expect(summary).toMatch(/真实模型名/);
+    expect(summary).toMatch(/HTTP 502/);
+  });
+
+  it('classifies custom_model_auth 401 separately from cloud login failures', () => {
+    const customAuth =
+      '401 Authentication failed (401) for model "grok-4.5". The request was sent to http://ayase.cn:13001, which differs from the current product endpoint https://copilot.tencent.com. (token-length:1293)';
+    expect(isCustomModelAuthFailureMessage(customAuth)).toBe(true);
+    expect(isCloudAuthFailureMessage(customAuth)).toBe(false);
+    const classified = classifyPromptRefusal({
+      stopReason: 'refusal',
+      errorMessage: JSON.stringify({
+        code: -32603,
+        message: customAuth,
+        data: { category: 'custom_model_auth', statusCode: 401 },
+      }),
+    });
+    expect(classified.kind).toBe('custom_model_auth');
+    expect(classified.statusCode).toBe(401);
+    const summary = formatCustomModelAuthFailureMessage(customAuth);
+    expect(summary).toMatch(/自定义模型鉴权失败/);
+    expect(summary).toMatch(/grok-4\.5/);
+    expect(summary).toMatch(/不是 CodeBuddy 云端登录失效/);
+    expect(summary).toMatch(/API Key/);
   });
 });

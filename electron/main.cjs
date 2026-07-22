@@ -83,7 +83,7 @@ function showCloseToTrayHint() {
   if (!tray || typeof tray.displayBalloon !== 'function') return;
   try {
     tray.displayBalloon({
-      title: 'CodeBuddy GUI 仍在运行',
+      title: 'CodeBuddy Desktop 仍在运行',
       content: '窗口已隐藏到系统托盘。点击托盘图标可恢复，右键选择“完全退出”可关闭应用。',
       iconType: 'info',
       noSound: true,
@@ -99,7 +99,10 @@ let reallyQuitting = false;
 let quitRequestPreparing = false;
 let exitCleanupStarted = false;
 const quitRequestController = createQuitRequestController({
-  timeoutMs: 8000,
+  // No renderer answer → force quit quickly (was 8s; felt like “tray exit is stuck”).
+  timeoutMs: 2500,
+  // Renderer acked but never confirm/cancel (hung save / dialog path) → hard stop.
+  hardDeadlineMs: 6000,
   onTimeout(requestId) {
     if (reallyQuitting) return;
     logStartup(`Quit request timed out request=${requestId}; forcing application exit`);
@@ -185,6 +188,8 @@ function destroyTrayIcon(reason = 'exit') {
 }
 
 const finalExitController = createFinalExitController({
+  trayDelayMs: 50,
+  forceDelayMs: 1200,
   destroyTray: destroyTrayIcon,
   requestQuit(reason) {
     logStartup(`Electron app.quit requested reason=${reason}`);
@@ -1245,7 +1250,7 @@ ipcMain.handle('notification:showTaskResult', async (_event, payload = {}) => {
     return { shown: false, reason: 'window-focused' };
   }
 
-  const title = String(payload.title || 'CodeBuddy GUI')
+  const title = String(payload.title || 'CodeBuddy Desktop')
     .trim()
     .slice(0, 120);
   const body = String(payload.body || '')
@@ -1427,7 +1432,7 @@ ipcMain.handle('app:exportDiagnostics', async () => {
   const timestamp = new Date().toISOString();
   const fileTimestamp = timestamp.replace(/[:.]/g, '-');
   const saveOptions = {
-    title: '导出 CodeBuddy GUI 诊断报告',
+    title: '导出 CodeBuddy Desktop 诊断报告',
     defaultPath: `CodeBuddy-GUI-diagnostics-${fileTimestamp}.json`,
     filters: [{ name: 'JSON', extensions: ['json'] }],
   };
@@ -1566,7 +1571,7 @@ async function createWindow() {
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#000000',
-    title: 'CodeBuddy GUI',
+    title: 'CodeBuddy Desktop',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -1619,7 +1624,7 @@ async function createWindow() {
     try {
       const options = {
         type: 'error',
-        title: 'CodeBuddy GUI 界面异常退出',
+        title: 'CodeBuddy Desktop 界面异常退出',
         message: '应用界面进程已异常退出，错误已写入 crash.log。',
         detail: '可以重新加载界面，或先打开诊断目录获取日志。',
         buttons: ['重新加载界面', '打开诊断目录并重新加载', '退出应用'],
@@ -1697,7 +1702,7 @@ async function createWindow() {
     if (!isDev && mainWindow && !mainWindow.isDestroyed()) {
       try {
         dialog.showErrorBox(
-          'CodeBuddy GUI 加载失败',
+          'CodeBuddy Desktop 加载失败',
           `无法加载应用界面：\n\n${error?.message || error}\n\n启动日志已写入 userData/electron-startup.log，重启应用前建议反馈给开发者。`,
         );
       } catch (_) {}
@@ -1745,7 +1750,7 @@ function showOrCreateMainWindow() {
         .catch((error) => {
           logStartup(`Window creation failed: ${error?.stack || error}`);
           try {
-            dialog.showErrorBox('CodeBuddy GUI 启动失败', error?.message || String(error));
+            dialog.showErrorBox('CodeBuddy Desktop 启动失败', error?.message || String(error));
           } catch (_) {}
         })
         .finally(() => {
@@ -1760,6 +1765,17 @@ function showOrCreateMainWindow() {
   return mainWindow;
 }
 
+/**
+ * Ensure a BrowserWindow exists for quit IPC. Prefer not flashing a hidden-to-tray
+ * window into the foreground unless it is already visible / needs a dirty-file dialog.
+ */
+async function ensureMainWindowForQuit() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  const windowResult = showOrCreateMainWindow();
+  if (windowResult && typeof windowResult.then === 'function') await windowResult;
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+}
+
 async function requestApplicationQuit() {
   if (reallyQuitting) return;
   if (quitRequestPreparing || quitRequestController.hasPending()) {
@@ -1769,12 +1785,18 @@ async function requestApplicationQuit() {
     return;
   }
   quitRequestPreparing = true;
-  const windowResult = showOrCreateMainWindow();
   try {
-    if (windowResult && typeof windowResult.then === 'function') await windowResult;
-    if (!mainWindow || mainWindow.isDestroyed()) {
+    // Hidden tray apps can still receive IPC; avoid a full show/focus flash unless
+    // the renderer later reports dirty files (window:show) or the window is already open.
+    const window = await ensureMainWindowForQuit();
+    if (!window) {
       beginFinalApplicationExit('no-main-window');
       return;
+    }
+
+    if (window.isVisible()) {
+      if (window.isMinimized()) window.restore();
+      window.focus();
     }
 
     const { started, requestId } = quitRequestController.begin();
@@ -1791,6 +1813,10 @@ async function requestApplicationQuit() {
   }
 }
 
+ipcMain.on('window:show', () => {
+  showOrCreateMainWindow();
+});
+
 ipcMain.on('app:confirmQuit', (_event, requestId) => {
   if (!quitRequestController.confirm(requestId)) {
     logStartup(`Ignored stale quit confirmation request=${String(requestId || '')}`);
@@ -1806,6 +1832,24 @@ ipcMain.on('app:acknowledgeQuit', (_event, requestId) => {
     return;
   }
   logStartup(`Quit request acknowledged by renderer request=${requestId}`);
+});
+
+ipcMain.on('app:holdQuit', (_event, requestId) => {
+  if (!quitRequestController.hold(requestId)) {
+    logStartup(`Ignored stale quit hold request=${String(requestId || '')}`);
+    return;
+  }
+  logStartup(`Quit request held for user dialog request=${requestId}`);
+});
+
+ipcMain.on('app:resumeQuit', (_event, payload = {}) => {
+  const requestId = String(payload?.requestId || payload || '');
+  const resumeMs = Number.isFinite(payload?.resumeMs) ? payload.resumeMs : 2500;
+  if (!quitRequestController.resume(requestId, resumeMs)) {
+    logStartup(`Ignored stale quit resume request=${requestId}`);
+    return;
+  }
+  logStartup(`Quit request hard deadline resumed request=${requestId} resumeMs=${resumeMs}`);
 });
 
 ipcMain.on('app:cancelQuit', (_event, payload = {}) => {
@@ -2403,7 +2447,7 @@ process.on('uncaughtException', (err) => {
   writeCrashLog('uncaughtException', err);
   try {
     dialog.showErrorBox(
-      'CodeBuddy GUI 发生异常',
+      'CodeBuddy Desktop 发生异常',
       `程序遇到未捕获异常:\n\n${err?.message || err}\n\n崩溃日志已写入 userData/crash.log，重启应用前建议反馈给开发者。`,
     );
   } catch (_) {}
@@ -2488,11 +2532,11 @@ app.whenReady().then(async () => {
   try {
     const trayIconPath = path.join(__dirname, '..', 'build', 'icon.png');
     tray = new Tray(trayIconPath);
-    tray.setToolTip('CodeBuddy GUI');
+    tray.setToolTip('CodeBuddy Desktop');
     tray.on('click', showOrCreateMainWindow);
     tray.on('balloon-click', showOrCreateMainWindow);
     const menu = Menu.buildFromTemplate([
-      { label: '打开 CodeBuddy GUI', click: showOrCreateMainWindow },
+      { label: '打开 CodeBuddy Desktop', click: showOrCreateMainWindow },
       { type: 'separator' },
       {
         label: '完全退出',

@@ -62,6 +62,7 @@ import {
 import {
   accountLoginSiteFromAuthMethodId,
   classifyPromptRefusal,
+  formatCustomModelAuthFailureMessage,
   formatNetworkOrProxyFailureMessage,
   isCloudAuthFailureMessage,
   isNetworkOrProxyFailureMessage,
@@ -94,8 +95,10 @@ export {
   pickAuthMethodId,
   preferredAuthMethodIdsForSite,
   classifyPromptRefusal,
+  formatCustomModelAuthFailureMessage,
   formatNetworkOrProxyFailureMessage,
   isCloudAuthFailureMessage,
+  isCustomModelAuthFailureMessage,
   isNetworkOrProxyFailureMessage,
   unwrapPromptErrorPayload,
 } from './lib/account-auth';
@@ -352,6 +355,11 @@ function promptResultErrorMessage(result) {
       /* keep raw */
     }
   }
+  if (classified.kind === 'custom_model_auth') {
+    return formatCustomModelAuthFailureMessage(raw || result?.errorMessage || '', {
+      statusCode: classified.statusCode,
+    });
+  }
   if (classified.kind === 'auth' || isCloudAuthFailureMessage(raw)) {
     return 'CodeBuddy 云端账号未登录或登录已失效。请在应用内完成一次登录（浏览器授权），完成后会话会自动恢复。';
   }
@@ -369,6 +377,14 @@ function promptResultErrorMessage(result) {
     return raw;
   }
   if (String(result?.stopReason || '').toLowerCase() === 'refusal') {
+    // Prefer any residual CLI detail already classified; generic fallback last.
+    const residual = String(result?.errorMessage || result?.message || '').trim();
+    if (residual && /unknown provider for model/i.test(residual)) {
+      return formatNetworkOrProxyFailureMessage(residual, { statusCode: classified.statusCode });
+    }
+    if (residual && /custom_model_auth|Authentication failed.*for model/i.test(residual)) {
+      return formatCustomModelAuthFailureMessage(residual, { statusCode: classified.statusCode });
+    }
     return '模型未能完成本轮回复（请求被拒绝）。请重试；若持续失败请检查网络与模型配置。';
   }
   return '模型未能完成本轮回复';

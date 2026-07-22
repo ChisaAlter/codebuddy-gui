@@ -34,7 +34,7 @@ const {
 } = require('./evidence-writer.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-const unpackedExe = path.join(projectRoot, 'dist', 'win-unpacked', 'CodeBuddy GUI.exe');
+const unpackedExe = path.join(projectRoot, 'dist', 'win-unpacked', 'CodeBuddy Desktop.exe');
 const runStamp = safeSegment(process.env.CODEBUDDY_E2E_RUN_ID || new Date().toISOString(), 'run');
 const evidenceRoot = path.join(projectRoot, '.omo', 'evidence', 'task-1-runs');
 const screenshotRoot = path.join(projectRoot, '.omo', 'evidence', 'task-1-screenshots');

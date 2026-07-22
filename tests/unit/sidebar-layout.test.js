@@ -32,6 +32,17 @@ describe('ReplicaSidebar layout', () => {
     });
   });
 
+  it('animates sidebar width and keeps expanded panels mountable for smooth collapse', () => {
+    const sidebarSource = fs.readFileSync(path.join(testRoot, 'src', 'components', 'ReplicaSidebar.jsx'), 'utf8');
+    const cssSource = fs.readFileSync(path.join(testRoot, 'src', 'index.css'), 'utf8');
+    expect(sidebarSource).toMatch(/data-collapsed=\{sidebarCollapsed \? 'true' : 'false'\}/);
+    expect(sidebarSource).toContain('sidebar-expand-panel');
+    expect(sidebarSource).toContain('sidebar-expand-label');
+    expect(cssSource).toMatch(/\.sidebar-nav\s*\{[\s\S]*?transition:[\s\S]*?width/);
+    expect(cssSource).toContain('.sidebar-expand-panel.is-collapsed');
+    expect(cssSource).toMatch(/prefers-reduced-motion:\s*reduce/);
+  });
+
   it('keeps the long workspace and observability groups folded by default', () => {
     expect(replicaSidebarGroupInitiallyExpanded('primary')).toBe(true);
     expect(replicaSidebarGroupInitiallyExpanded('workspace')).toBe(false);

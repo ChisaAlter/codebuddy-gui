@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 const require = createRequire(import.meta.url);
 const { createFinalExitController } = require('../../electron/final-exit-controller.cjs');
 
-function createHarness() {
+function createHarness(options = {}) {
   const timers = [];
   const clearTimer = vi.fn((timer) => {
     timer.cleared = true;
@@ -13,8 +13,8 @@ function createHarness() {
   const requestQuit = vi.fn();
   const forceExit = vi.fn();
   const controller = createFinalExitController({
-    trayDelayMs: 150,
-    forceDelayMs: 3000,
+    trayDelayMs: options.trayDelayMs ?? 50,
+    forceDelayMs: options.forceDelayMs ?? 1200,
     destroyTray,
     requestQuit,
     forceExit,
@@ -40,7 +40,7 @@ describe('final Electron exit controller', () => {
     expect(harness.destroyTray).toHaveBeenCalledWith('tray-menu');
     expect(harness.requestQuit).not.toHaveBeenCalled();
 
-    harness.runTimer(150);
+    harness.runTimer(50);
     expect(harness.requestQuit).toHaveBeenCalledWith('tray-menu');
   });
 
@@ -48,7 +48,7 @@ describe('final Electron exit controller', () => {
     const harness = createHarness();
     harness.controller.start('tray-menu');
 
-    harness.runTimer(3000);
+    harness.runTimer(1200);
 
     expect(harness.forceExit).toHaveBeenCalledWith('tray-menu');
   });
@@ -59,8 +59,8 @@ describe('final Electron exit controller', () => {
     expect(harness.controller.start('second')).toBe(false);
 
     harness.controller.complete();
-    harness.runTimer(150);
-    harness.runTimer(3000);
+    harness.runTimer(50);
+    harness.runTimer(1200);
 
     expect(harness.clearTimer).toHaveBeenCalledTimes(2);
     expect(harness.requestQuit).not.toHaveBeenCalled();

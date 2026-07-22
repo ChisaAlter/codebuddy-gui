@@ -86,6 +86,15 @@ describe('reduceAcpEvent - timeline 归并', () => {
     expect(secondAssistant.content).toBe('Hello World');
   });
 
+  it('mode_update / current_mode_update 不写入对话 timeline', () => {
+    const tl = pushUserMessage([], 'hello');
+    const nextMode = reduceAcpEvent(tl, 'mode_update', { currentModeId: 'fullAccess' });
+    const nextCurrent = reduceAcpEvent(tl, 'current_mode_update', { currentModeId: 'plan' });
+    expect(nextMode).toBe(tl);
+    expect(nextCurrent).toBe(tl);
+    expect(nextMode.some((e) => e.type === 'mode_update')).toBe(false);
+  });
+
   it('未知事件类型走 pushSystemEvent 返新数组不崩', () => {
     const tl = pushUserMessage([], 'x');
     const next = reduceAcpEvent(tl, 'unknown_event_type', { foo: 'bar' });

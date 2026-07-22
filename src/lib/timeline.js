@@ -680,9 +680,12 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
 
   if (eventType === 'initialized') return timeline; // 系统内部事件，不渲染到对话
 
+  // 模式切换已在输入栏展示；不在对话记录里刷「模式更新」分隔线。
+  if (eventType === 'mode_update' || eventType === 'current_mode_update') return timeline;
+
   if (eventType === 'session_end' || payload?.sessionUpdate === 'session_end') return timeline;
 
-  if (eventType === 'status_change' || eventType === 'model_update' || eventType === 'mode_update' || eventType === 'current_mode_update') {
+  if (eventType === 'status_change' || eventType === 'model_update') {
     return pushSystemEvent(timeline, eventType, payload);
   }
 

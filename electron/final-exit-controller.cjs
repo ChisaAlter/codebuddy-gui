@@ -1,6 +1,8 @@
 function createFinalExitController(options = {}) {
-  const trayDelayMs = Number.isFinite(options.trayDelayMs) ? options.trayDelayMs : 150;
-  const forceDelayMs = Number.isFinite(options.forceDelayMs) ? options.forceDelayMs : 3000;
+  // Destroy tray immediately, then give Electron a brief moment to run before-quit.
+  const trayDelayMs = Number.isFinite(options.trayDelayMs) ? options.trayDelayMs : 50;
+  // Hard kill if app.quit() stalls (runtime stop / window close).
+  const forceDelayMs = Number.isFinite(options.forceDelayMs) ? options.forceDelayMs : 1200;
   const setTimer = options.setTimer || setTimeout;
   const clearTimer = options.clearTimer || clearTimeout;
   const destroyTray = options.destroyTray || (() => {});

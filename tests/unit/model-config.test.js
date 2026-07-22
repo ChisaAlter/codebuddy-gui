@@ -75,7 +75,6 @@ describe('model config storage', () => {
           relatedModels: { lite: 'custom-lite' },
         },
       ],
-      availableModels: ['custom-old'],
       customTopLevel: true,
     });
 
@@ -95,8 +94,9 @@ describe('model config storage', () => {
 
     const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     expect(written.customTopLevel).toBe(true);
-    // 改名时迁移已有白名单项；不因编辑而新增白名单
-    expect(written.availableModels).toEqual(['custom-new']);
+    // Disk must not create availableModels — that field becomes a hard CLI whitelist
+    // and would hide all built-in / account models.
+    expect(written.availableModels).toBeUndefined();
     expect(written.models[0]).toMatchObject({
       id: 'custom-new',
       apiKey: 'sk-existing',
@@ -106,36 +106,51 @@ describe('model config storage', () => {
     expect(fs.existsSync(`${filePath}.bak`)).toBe(true);
   });
 
-  it('does not append new models to availableModels by default (WebUI visible:false)', () => {
+  it('never appends custom models to availableModels (keeps built-in models visible)', () => {
     const filePath = createTempConfig({
       models: [{ id: 'keep' }],
-      availableModels: ['keep'],
     });
     saveModelConfig(
       {
         id: 'openai:gpt-4o',
         url: 'https://api.example.com/v1/chat/completions',
         apiKey: 'sk-new',
+        visible: true,
+        includeInAvailableModels: true,
       },
       { filePath },
     );
     const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     expect(written.models.map((model) => model.id)).toEqual(['keep', 'openai:gpt-4o']);
-    expect(written.availableModels).toEqual(['keep']);
+    expect(written.availableModels).toBeUndefined();
   });
 
-  it('appends availableModels only when explicitly requested', () => {
-    const filePath = createTempConfig({ models: [], availableModels: [] });
+  it('strips degenerate availableModels that only lists custom model ids', () => {
+    const filePath = createTempConfig({
+      models: [
+        {
+          id: 'grok-4.5',
+          url: 'http://example/v1',
+          apiKey: 'sk-keep',
+        },
+      ],
+      availableModels: ['grok-4.5'],
+    });
     saveModelConfig(
       {
-        id: 'listed',
-        url: 'https://api.example.com/v1/chat/completions',
-        visible: true,
+        originalId: 'grok-4.5',
+        id: 'grok-4.5',
+        url: 'http://example/v1',
+        apiKey: '',
+        preserveApiKey: true,
+        maxInputTokens: 256000,
       },
       { filePath },
     );
     const written = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    expect(written.availableModels).toEqual(['listed']);
+    expect(written.availableModels).toBeUndefined();
+    expect(written.models[0].apiKey).toBe('sk-keep');
+    expect(written.models[0].maxInputTokens).toBe(256000);
   });
 
   it('persists useCustomProtocol and validates model id charset', () => {

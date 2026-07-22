@@ -52,3 +52,16 @@ export function isCliPermissionBypassMode(mode) {
     key === 'bypasspermissionsmode'
   );
 }
+
+/** 输入栏高亮：完全访问（与 bypass 同类的高风险模式） */
+export function isFullAccessMode(mode) {
+  const key = normalizeModeKey(
+    typeof mode === 'string' ? mode : mode?.id || mode?.modeId || mode?.value || mode?.name,
+  );
+  return key === 'fullaccess' || key === 'fullaccessmode';
+}
+
+/** 思考强度 Ultracode 复合档 */
+export function isUltracodeEffort(level) {
+  return normalizeModeKey(level) === 'ultracode';
+}

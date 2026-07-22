@@ -117,17 +117,56 @@ export function isNetworkOrProxyFailureMessage(value) {
   );
 }
 
+/**
+ * Custom-model endpoint auth failure (wrong/missing models.json apiKey).
+ * Must not be treated as CodeBuddy cloud login expiry.
+ */
+export function isCustomModelAuthFailureMessage(value) {
+  const message = String(value || '');
+  if (!message) return false;
+  if (/custom_model_auth/i.test(message)) return true;
+  if (/differs from the current product endpoint/i.test(message)) return true;
+  // "401 Authentication failed (401) for model "grok-4.5""
+  if (/Authentication failed\s*\(?\s*401\s*\)?\s*for model/i.test(message)) return true;
+  if (/Missing API key/i.test(message) && /model|custom|endpoint/i.test(message)) return true;
+  return false;
+}
+
 /** Explicit cloud-account auth failure (not generic model/network refusal). */
 export function isCloudAuthFailureMessage(value) {
   const message = String(value || '');
   if (!message) return false;
   if (isNetworkOrProxyFailureMessage(message)) return false;
+  // Custom endpoint 401s look like "Authentication failed" — not cloud login.
+  if (isCustomModelAuthFailureMessage(message)) return false;
   return (
     /authentication required|鉴权失败|请.*登录|sign in to your account|auth-type:cli-external-link|token-type:undefined/i.test(
       message,
     ) ||
-    // Real HTTP 401 auth, not a request id that happens to contain digits.
-    /(?:^|[^\d])401(?:[^\d]|$)|status(?:Code)?["']?\s*[:=]\s*401/i.test(message)
+    // Real HTTP 401 cloud auth, not custom-model endpoint failures above.
+    (/(?:^|[^\d])401(?:[^\d]|$)|status(?:Code)?["']?\s*[:=]\s*401/i.test(message) &&
+      !/for model\s+"/i.test(message))
+  );
+}
+
+/** UI copy for custom model API key / endpoint auth failures. */
+export function formatCustomModelAuthFailureMessage(raw, extras = {}) {
+  const text = String(raw || '');
+  const modelId =
+    extras.modelId ||
+    text.match(/for model\s+"([^"]+)"/i)?.[1] ||
+    text.match(/for model\s+([^\s(,;]+)/i)?.[1] ||
+    null;
+  const endpoint =
+    text.match(/sent to\s+(https?:\/\/[^\s,]+)/i)?.[1] ||
+    text.match(/https?:\/\/(?!127\.0\.0\.1|localhost)[^\s"'<>]+/i)?.[0] ||
+    null;
+  const parts = ['自定义模型鉴权失败（HTTP 401）'];
+  if (modelId) parts.push(`模型 ${modelId}`);
+  if (endpoint) parts.push(endpoint);
+  return (
+    parts.join(' · ') +
+    '。这不是 CodeBuddy 云端登录失效；请在「模型配置」里为该自定义模型填写正确的 API Key，保存后新建会话或重启运行时再试。'
   );
 }
 
@@ -197,6 +236,15 @@ export function formatNetworkOrProxyFailureMessage(raw, extras = {}) {
     text.match(/\bHTTP\s*([45]\d\d)\b/i)?.[1] ||
     text.match(/\b(502|503|504|408)\b/)?.[1] ||
     null;
+  // Upstream custom proxy: "unknown provider for model grok"
+  const unknownProvider = text.match(/unknown provider for model\s+([^\s(,;]+)/i)?.[1] || null;
+  if (unknownProvider) {
+    return (
+      `自定义模型端点不认识模型 ID「${unknownProvider}」` +
+      (status ? `（HTTP ${status}）` : '') +
+      '。请把 models.json 里的 id 改成该端点 /v1/models 返回的真实模型名（例如 grok-4.5），保存后重启运行时再试。'
+    );
+  }
   // CLI: "(proxy: http://127.0.0.1:10809 -> https://ayase.cn)"
   const proxyPair = text.match(/\(proxy:\s*([^)]+)\)/i)?.[1]?.trim() || null;
   const proxyLocal =
@@ -261,6 +309,13 @@ export function classifyPromptRefusal(result) {
     raw = [status ? `HTTP ${status}` : null, 'Bad Gateway', proxy].filter(Boolean).join(' ').trim();
   }
 
+  if (
+    category === 'custom_model_auth' ||
+    isCustomModelAuthFailureMessage(raw) ||
+    isCustomModelAuthFailureMessage(result?.errorMessage)
+  ) {
+    return { kind: 'custom_model_auth', message: raw, statusCode: unwrapped.statusCode || 401 };
+  }
   if (category === 'auth') {
     return { kind: 'auth', message: raw, statusCode: unwrapped.statusCode };
   }

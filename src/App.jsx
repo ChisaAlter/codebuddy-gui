@@ -3,7 +3,7 @@ import { useStore } from './store';
 import ReplicaSidebar from './components/ReplicaSidebar';
 import ReplicaChatView from './components/ReplicaChatView';
 import ActionConfirmDialog from './components/ActionConfirmDialog';
-import appIconUrl from '../build/icon.png';
+import appIconUrl from '../build/icon-mark.png';
 import { guiActionForShortcut, guiShortcutAllowedInInput, shortcutFromKeyboardEvent } from './lib/gui-keybindings';
 import { applyDocumentLocale, resolveLocaleMode } from './lib/i18n';
 
@@ -174,10 +174,10 @@ function LoginView() {
       </div>
       <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-6 shadow-lg">
         <div className="mb-5 flex items-center gap-2">
-          <img src={appIconUrl} alt="CodeBuddy GUI" className="h-9 w-9 rounded-md" />
+          <img src={appIconUrl} alt="CodeBuddy Desktop" className="h-9 w-9 object-contain" />
           <div className="min-w-0">
             <div className="text-base font-semibold" style={{ color: 'var(--color-accent-brand)' }}>
-              CodeBuddy GUI
+              CodeBuddy Desktop
             </div>
             <div className="truncate text-xs text-[var(--color-text-muted)]" title={activeProjectName}>
               登录项目：{activeProjectName}
@@ -733,6 +733,13 @@ export default function App() {
 
   useEffect(() => {
     let quitInProgress = false;
+    const withTimeout = (promise, ms, label) =>
+      Promise.race([
+        Promise.resolve(promise),
+        new Promise((_, reject) => {
+          window.setTimeout(() => reject(new Error(`${label || 'operation'} timed out after ${ms}ms`)), ms);
+        }),
+      ]);
     const unsubscribe = window.electronAPI?.onQuitRequested?.(async ({ requestId } = {}) => {
       if (quitInProgress) return;
       quitInProgress = true;
@@ -740,25 +747,48 @@ export default function App() {
       const cancelQuit = (reason) => window.electronAPI?.cancelQuit?.(requestId, reason);
       try {
         const state = useStore.getState();
-        const confirmed = await state.confirmDirtyFileAction('退出应用');
-        if (!confirmed) {
-          cancelQuit('dirty-file-cancelled');
-          return;
+        // Dirty editor needs a visible window + user choice; never time-box the dialog itself.
+        if (state.fileDirty && state.selectedFile) {
+          try {
+            window.electronAPI?.windowShow?.();
+            window.electronAPI?.holdQuit?.(requestId);
+            window.focus?.();
+          } catch (_) {}
+          const confirmed = await state.confirmDirtyFileAction('退出应用');
+          if (!confirmed) {
+            cancelQuit('dirty-file-cancelled');
+            return;
+          }
+          // Dialog done — re-arm a short hard deadline for the remaining persist/confirm path.
+          try {
+            window.electronAPI?.resumeQuit?.(requestId, 2500);
+          } catch (_) {}
         }
-        await useStore.getState().persistActiveProjectWorkspaceState?.({ discardDirty: true });
-        const saved = useStore.getState().flushProductStateSync?.();
-        if (!saved) {
-          useStore.setState({
-            error: useStore.getState().error || '退出已取消：无法保存最终项目状态，请处理保存问题后重试。',
-          });
-          cancelQuit('product-state-save-failed');
-          return;
+        // Cap disk/persist work so tray “完全退出” cannot stall for many seconds.
+        try {
+          await withTimeout(
+            useStore.getState().persistActiveProjectWorkspaceState?.({ discardDirty: true }),
+            900,
+            'persist workspace',
+          );
+        } catch (persistError) {
+          console.warn('[quit] persist workspace skipped:', persistError?.message || persistError);
         }
+        try {
+          useStore.getState().flushProductStateSync?.();
+        } catch (flushError) {
+          console.warn('[quit] flush product state failed:', flushError?.message || flushError);
+        }
+        // Prefer exiting over blocking: previous path cancelled quit when sync save failed.
         if (!window.electronAPI?.confirmQuit) throw new Error('应用退出接口不可用');
         window.electronAPI.confirmQuit(requestId);
       } catch (error) {
-        useStore.setState({ error: '退出已取消：' + (error?.message || '保存项目状态失败') });
-        cancelQuit(error?.message || 'renderer-quit-error');
+        console.warn('[quit] forcing confirm after error:', error?.message || error);
+        try {
+          window.electronAPI?.confirmQuit?.(requestId);
+        } catch (_) {
+          cancelQuit(error?.message || 'renderer-quit-error');
+        }
       } finally {
         quitInProgress = false;
       }

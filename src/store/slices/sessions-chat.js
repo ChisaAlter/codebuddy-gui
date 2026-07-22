@@ -1861,20 +1861,29 @@ export function createSessionsChatSlice(set, get, ctx) {
         // 必须显式鉴权类别/文案才算登录失效。网络 502/代理失败也是 refusal，绝不能踢登录。
         // CLI 常把 category 塞进 errorMessage JSON（无顶层 category），统一走 classify。
         const classifiedKind = classifyPromptRefusal(result).kind;
+        // custom_model_auth = wrong/missing custom endpoint key; never kick cloud login.
         const refusalKind =
-          classifiedKind === 'auth' || classifiedKind === 'network'
+          classifiedKind === 'auth' ||
+          classifiedKind === 'network' ||
+          classifiedKind === 'custom_model_auth'
             ? classifiedKind
-            : result?.category === 'auth'
-              ? 'auth'
-              : result?.category === 'network' || result?.category === 'proxy'
-                ? 'network'
-                : /鉴权失败|authentication required|请.*登录|sign in to your account|auth-type:cli-external-link/i.test(
-                      message,
-                    )
-                  ? 'auth'
-                  : /502|503|504|ECONNREFUSED|代理|proxy|Bad Gateway|连接被拒绝|网络|模型请求失败/i.test(message)
-                    ? 'network'
-                    : 'refusal';
+            : result?.category === 'custom_model_auth'
+              ? 'custom_model_auth'
+              : result?.category === 'auth'
+                ? 'auth'
+                : result?.category === 'network' || result?.category === 'proxy'
+                  ? 'network'
+                  : /自定义模型鉴权|custom_model_auth|Authentication failed.*for model|differs from the current product endpoint/i.test(
+                        message,
+                      )
+                    ? 'custom_model_auth'
+                    : /鉴权失败|authentication required|请.*登录|sign in to your account|auth-type:cli-external-link/i.test(
+                          message,
+                        )
+                      ? 'auth'
+                      : /502|503|504|ECONNREFUSED|代理|proxy|Bad Gateway|连接被拒绝|网络|模型请求失败/i.test(message)
+                        ? 'network'
+                        : 'refusal';
         const authFailed = refusalKind === 'auth';
         if (authFailed) {
           // 本地 ACP 已 connected，但云端 token 失效：只切到登录恢复。

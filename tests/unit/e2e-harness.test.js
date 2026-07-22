@@ -2004,14 +2004,14 @@ describe('desktop E2E harness public contract', () => {
         },
         {
           type: 'page',
-          title: 'CodeBuddy GUI',
+          title: 'CodeBuddy Desktop',
           url: 'http://127.0.0.1:54321/index.html',
           webSocketDebuggerUrl: 'ws://127.0.0.1:43123/devtools/page/codebuddy',
         },
       ],
     });
 
-    expect(target.title).toBe('CodeBuddy GUI');
+    expect(target.title).toBe('CodeBuddy Desktop');
     expect(target.url).toBe('http://127.0.0.1:54321/index.html');
     expect(target.debugPort).toBe(43123);
   });
@@ -2579,7 +2579,7 @@ describe('desktop E2E harness public contract', () => {
 
   it('inspectProcesses and cleanupOwned restrict cleanup to the launched process tree', async () => {
     let processes = [
-      processFixture(100, 1, 'CodeBuddy GUI.exe'),
+      processFixture(100, 1, 'CodeBuddy Desktop.exe'),
       processFixture(101, 100, 'electron.exe'),
       processFixture(102, 101, 'node.exe'),
       processFixture(900, 1, 'unrelated-electron.exe'),
@@ -2607,7 +2607,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('cleanupOwned post-verifies the initial owned PID set even when taskkill reports success', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const child = processFixture(101, 100, 'node.exe');
     const unrelated = processFixture(900, 1, 'unrelated-node.exe');
     let processes = [root, child, unrelated];
@@ -2632,7 +2632,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('cleanupOwned treats termination races as clean when the owned tree is gone on verification', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const child = processFixture(101, 100, 'node.exe');
     let processes = [root, child];
     const cleaned = await driver.cleanupOwned({
@@ -2675,7 +2675,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('cannot kill an unrelated replacement swapped after cleanup inspection but before held-object termination', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const replacement = processFixture(100, 1, 'unrelated.exe', {
       executablePath: 'C:\\Other\\unrelated.exe',
       commandLine: 'C:\\Other\\unrelated.exe --serve',
@@ -2713,7 +2713,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('cleans an exactly tracked child after the root exits and the child is reparented', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const child = processFixture(101, 100, 'node.exe');
     let processes = [{ ...child, parentPid: 1 }];
     const killed = [];
@@ -2736,7 +2736,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('adopts and cleans a late descendant observed under the exact tracked root at cleanup start', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const lateChild = processFixture(999, 100, 'late-child.exe');
     let processes = [root, lateChild];
     const killed = [];
@@ -2761,7 +2761,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('fails loudly without killing an identity-incomplete late descendant', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const lateChild = {
       pid: 999,
       parentPid: 100,
@@ -2809,7 +2809,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('tracks exact descendants across reparenting and releases its sampling timer', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const child = processFixture(101, 100, 'node.exe');
     let reads = 0;
     let tick = null;
@@ -2839,7 +2839,7 @@ describe('desktop E2E harness public contract', () => {
   });
 
   it('uses a one-second interval, skips overlapping ticks, and performs one final tracker sample', async () => {
-    const root = processFixture(100, 1, 'CodeBuddy GUI.exe');
+    const root = processFixture(100, 1, 'CodeBuddy Desktop.exe');
     const lateChild = processFixture(101, 100, 'late-child.exe');
     let reads = 0;
     let tick = null;

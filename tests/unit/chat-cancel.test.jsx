@@ -238,39 +238,73 @@ describe('ReplicaChatView cancellation', () => {
 
   it('keeps tool records manually collapsible without status updates reopening them', async () => {
     mocks.isAwaitingResponse = false;
+    // WebUI: ≥2 finished tools auto-collapse into “N 个工具已执行”; single tools stay as light rows.
     mocks.timeline = [
       { id: 'user-1', type: 'message', role: 'user', content: '检查项目' },
-      { id: 'tool-1', type: 'tool_call', role: 'assistant', status: 'running', title: 'Read files' },
+      {
+        id: 'tool-1',
+        type: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        title: 'Read files',
+        toolName: 'Read',
+        rawInput: { path: 'src/a.js' },
+      },
+      {
+        id: 'tool-2',
+        type: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        title: 'Grep',
+        toolName: 'Grep',
+        rawInput: { pattern: 'foo' },
+      },
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const findExecutionButton = () =>
-      Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('执行记录'));
-    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('false');
+    // While tools are running the list stays expanded (no collapsed summary yet).
+    expect(container.textContent).toContain('Read files');
+    expect(container.textContent).toContain('Grep');
+    expect(container.textContent).not.toContain('执行记录');
+
+    const findToolButton = (label) =>
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes(label));
 
     await act(async () => {
-      findExecutionButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      findToolButton('Read files').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+    expect(findToolButton('Read files').getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('输入');
 
     mocks.timeline = [
       mocks.timeline[0],
       { ...mocks.timeline[1], status: 'completed' },
+      { ...mocks.timeline[2], status: 'completed' },
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
-    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+    // Completing tools must not reset a manually expanded detail row.
+    expect(findToolButton('Read files').getAttribute('aria-expanded')).toBe('true');
 
     mocks.timeline = [
       ...mocks.timeline,
-      { id: 'final-1', type: 'message', role: 'assistant', content: '最终回答' },
+      { id: 'final-1', type: 'message', role: 'assistant', content: '最终回答', streaming: false },
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
-    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('false');
+
+    const findCollapsedSummary = () =>
+      Array.from(container.querySelectorAll('button')).find((button) =>
+        button.textContent.includes('个工具已执行'),
+      );
+    expect(findCollapsedSummary()).toBeTruthy();
+    expect(findCollapsedSummary().getAttribute('aria-expanded')).toBe('false');
+    // Collapsed summary hides individual tool chrome until reopened.
+    expect(container.textContent).not.toContain('Read files');
 
     await act(async () => {
-      findExecutionButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      findCollapsedSummary().dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(findExecutionButton().getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('Read files');
+    expect(container.textContent).toContain('Grep');
   });
 
   it('shows a live response activity indicator before the first model chunk arrives', async () => {
@@ -367,15 +401,11 @@ describe('ReplicaChatView cancellation', () => {
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    const executionButton = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent.includes('执行记录'),
-    );
-    expect(executionButton.getAttribute('aria-expanded')).toBe('false');
-    expect(container.textContent).not.toContain('352ef271-15b4-4bcd-94b5-c057e5faa7ad');
-
-    await act(async () => executionButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    // Checkpoints stay in the execution group as a merged internal summary — never raw ids.
+    expect(container.textContent).toContain('Edit file');
     expect(container.textContent).toContain('已合并 1 条内部进度');
     expect(container.textContent).not.toContain('352ef271-15b4-4bcd-94b5-c057e5faa7ad');
+    expect(container.textContent).not.toContain('执行记录');
   });
   it('renders resolved permissions as a compact row without protocol identifiers', async () => {
     mocks.isAwaitingResponse = false;

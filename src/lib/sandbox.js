@@ -17,7 +17,7 @@ export function normalizeSandboxId(sandboxId) {
 export function sandboxErrorMessage(error, fallback = 'Sandbox 操作失败') {
   const message = error?.message || fallback;
   if (/E2B_API_KEY environment variable is required/i.test(message)) {
-    return `缺少 E2B_API_KEY。请先在启动 CodeBuddy GUI 的环境中配置该变量。CLI 返回：${message}`;
+    return `缺少 E2B_API_KEY。请先在启动 CodeBuddy Desktop 的环境中配置该变量。CLI 返回：${message}`;
   }
   return message;
 }

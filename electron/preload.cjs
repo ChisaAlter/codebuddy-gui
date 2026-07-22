@@ -14,7 +14,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),
   windowClose: () => ipcRenderer.send('window:close'),
+  windowShow: () => ipcRenderer.send('window:show'),
   acknowledgeQuit: (requestId) => ipcRenderer.send('app:acknowledgeQuit', requestId),
+  holdQuit: (requestId) => ipcRenderer.send('app:holdQuit', requestId),
+  resumeQuit: (requestId, resumeMs) => ipcRenderer.send('app:resumeQuit', { requestId, resumeMs }),
   confirmQuit: (requestId) => ipcRenderer.send('app:confirmQuit', requestId),
   cancelQuit: (requestId, reason) => ipcRenderer.send('app:cancelQuit', { requestId, reason }),
   onQuitRequested: (handler) => {

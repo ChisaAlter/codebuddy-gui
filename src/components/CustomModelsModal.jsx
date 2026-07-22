@@ -84,11 +84,20 @@ function payloadFromDraft(draft) {
   return model;
 }
 
-/** WebUI Xh: select presets + Custom… number input */
-function PresetField({ label, value, presets, disabled, step, formatLabel, onChange }) {
-  const inPresets = presets.includes(value);
-  const selectValue = inPresets ? value : '__custom__';
+/**
+ * WebUI-style preset select + Custom… number input.
+ * Selecting Custom… always reveals the free-form input (even when the current
+ * value already matches a preset — previously that stuck on the preset option).
+ * Remount via `key` when opening create/edit so customMode re-inits from draft.
+ */
+function PresetField({ label, value, presets, disabled, step, formatLabel, onChange, customLabel = 'Custom…' }) {
+  const [customMode, setCustomMode] = useState(
+    () => String(value || '') !== '' && !presets.includes(String(value)),
+  );
+  const inPresets = !customMode && presets.includes(String(value));
+  const selectValue = inPresets ? String(value) : '__custom__';
   const fmt = formatLabel || ((v) => v);
+
   return (
     <label className="custom-models-field">
       <span>{label}</span>
@@ -99,9 +108,12 @@ function PresetField({ label, value, presets, disabled, step, formatLabel, onCha
         onChange={(event) => {
           const next = event.target.value;
           if (next === '__custom__') {
-            onChange(value && !Number.isNaN(Number(value)) ? value : presets[0]);
+            setCustomMode(true);
+            // Keep a numeric seed so the input is not blank, but stay in custom mode.
+            if (!value || Number.isNaN(Number(value))) onChange(presets[0]);
             return;
           }
+          setCustomMode(false);
           onChange(next);
         }}
       >
@@ -110,7 +122,7 @@ function PresetField({ label, value, presets, disabled, step, formatLabel, onCha
             {fmt(preset)}
           </option>
         ))}
-        <option value="__custom__">Custom…</option>
+        <option value="__custom__">{customLabel}</option>
       </select>
       {!inPresets ? (
         <input
@@ -119,7 +131,10 @@ function PresetField({ label, value, presets, disabled, step, formatLabel, onCha
           step={step}
           value={value}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            setCustomMode(true);
+            onChange(event.target.value);
+          }}
           placeholder={presets[0]}
         />
       ) : null}
@@ -211,21 +226,35 @@ export default function CustomModelsModal({ onClose }) {
     setLoading(true);
     setError(null);
     try {
-      // Prefer runtime API (WebUI path); fall back to Electron local models.json.
-      let list = [];
+      // Prefer disk (source of truth for Desktop). Merge with runtime list when available
+      // so a successful runtime-only create still appears before the next disk reload.
+      let diskList = [];
+      if (window.electronAPI?.listModelConfigs) {
+        try {
+          const snap = await window.electronAPI.listModelConfigs();
+          diskList = Array.isArray(snap?.models) ? snap.models : [];
+        } catch {
+          diskList = [];
+        }
+      }
+      let runtimeList = [];
       if (apiBase) {
         try {
           const payload = await listCustomModels(apiBase, true);
-          list = Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
+          runtimeList = Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
         } catch {
-          list = [];
+          runtimeList = [];
         }
       }
-      if (!list.length && window.electronAPI?.listModelConfigs) {
-        const snap = await window.electronAPI.listModelConfigs();
-        list = Array.isArray(snap?.models) ? snap.models : [];
+      if (diskList.length) {
+        const byId = new Map(diskList.map((m) => [m.id, m]));
+        for (const model of runtimeList) {
+          if (model?.id && !byId.has(model.id)) byId.set(model.id, model);
+        }
+        setModels(Array.from(byId.values()));
+      } else {
+        setModels(runtimeList);
       }
-      setModels(list);
     } catch (err) {
       setError(err?.message || t('settings.customModels.loadFailed'));
       setModels([]);
@@ -309,31 +338,48 @@ export default function CustomModelsModal({ onClose }) {
       const model = payloadFromDraft(draft);
       if (editingId && !draft.apiKey.trim()) {
         const prev = models.find((m) => m.id === editingId);
+        // Electron list redacts secrets; keep key only when runtime still returned it.
         if (prev?.apiKey) model.apiKey = prev.apiKey;
       }
 
-      if (apiBase) {
-        const result = await saveCustomModel(
-          {
-            model,
-            previousId: editingId && editingId !== id ? editingId : undefined,
-            visible: false,
-            global: true,
-          },
-          apiBase,
-        );
-        setModels(Array.isArray(result?.models) ? result.models : models);
-      } else if (window.electronAPI?.saveModelConfig) {
+      // Always persist to models.json first (WebUI + Desktop share this file).
+      // Then notify the running CLI so product sync / model_update can refresh pickers.
+      let diskSaved = false;
+      if (window.electronAPI?.saveModelConfig) {
         const next = await window.electronAPI.saveModelConfig({
           ...draft,
           id,
           name: model.name,
           url,
-          includeInAvailableModels: false,
-          preserveApiKey: Boolean(editingId),
+          // Never write models.json availableModels (CLI hard whitelist would hide built-ins).
+          preserveApiKey: true,
+          originalId: editingId || undefined,
         });
         setModels(Array.isArray(next?.models) ? next.models : []);
-      } else {
+        diskSaved = true;
+      }
+
+      if (apiBase) {
+        try {
+          const result = await saveCustomModel(
+            {
+              model,
+              previousId: editingId && editingId !== id ? editingId : undefined,
+              // Request inclusion so the model shows up in session availableModels after sync.
+              visible: true,
+              global: true,
+            },
+            apiBase,
+          );
+          if (Array.isArray(result?.models) && result.models.length) {
+            setModels(result.models);
+          }
+        } catch (runtimeError) {
+          // Disk is source of truth when runtime is down or rejects; surface soft error only if no disk write.
+          if (!diskSaved) throw runtimeError;
+          console.warn('[custom-models] runtime save failed after disk write:', runtimeError?.message || runtimeError);
+        }
+      } else if (!diskSaved) {
         throw new Error(t('settings.customModels.saveFailed'));
       }
       // refresh from source of truth
@@ -352,13 +398,21 @@ export default function CustomModelsModal({ onClose }) {
     setSaving(true);
     setError(null);
     try {
-      if (apiBase) {
-        const result = await deleteCustomModel(deleteTarget.id, apiBase, true);
-        setModels(Array.isArray(result?.models) ? result.models : []);
-      } else if (window.electronAPI?.deleteModelConfig) {
+      let diskDeleted = false;
+      if (window.electronAPI?.deleteModelConfig) {
         const next = await window.electronAPI.deleteModelConfig(deleteTarget.id);
         setModels(Array.isArray(next?.models) ? next.models : []);
-      } else {
+        diskDeleted = true;
+      }
+      if (apiBase) {
+        try {
+          const result = await deleteCustomModel(deleteTarget.id, apiBase, true);
+          if (Array.isArray(result?.models)) setModels(result.models);
+        } catch (runtimeError) {
+          if (!diskDeleted) throw runtimeError;
+          console.warn('[custom-models] runtime delete failed after disk delete:', runtimeError?.message || runtimeError);
+        }
+      } else if (!diskDeleted) {
         throw new Error(t('settings.customModels.deleteFailed'));
       }
       await load();
@@ -516,6 +570,7 @@ export default function CustomModelsModal({ onClose }) {
               </label>
               <div className="custom-models-field-row">
                 <PresetField
+                  key={`maxInput-${editingId || 'new'}-${view}`}
                   label={t('settings.customModels.field.maxInputTokens')}
                   value={draft.maxInputTokens}
                   presets={INPUT_PRESETS}
@@ -524,6 +579,7 @@ export default function CustomModelsModal({ onClose }) {
                   onChange={(v) => setField('maxInputTokens', v)}
                 />
                 <PresetField
+                  key={`maxOutput-${editingId || 'new'}-${view}`}
                   label={t('settings.customModels.field.maxOutputTokens')}
                   value={draft.maxOutputTokens}
                   presets={OUTPUT_PRESETS}
@@ -532,6 +588,7 @@ export default function CustomModelsModal({ onClose }) {
                   onChange={(v) => setField('maxOutputTokens', v)}
                 />
                 <PresetField
+                  key={`temp-${editingId || 'new'}-${view}`}
                   label={t('settings.customModels.field.temperature')}
                   value={draft.temperature}
                   presets={TEMP_PRESETS}

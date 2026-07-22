@@ -1,7 +1,7 @@
 {
   "name": "codebuddy-gui",
   "version": "1.0.1",
-  "description": "Multi-project desktop client for CodeBuddy CLI",
+  "description": "Multi-project desktop client for CodeBuddy CLI (CodeBuddy Desktop)",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
   "homepage": "https://github.com/ChisaAlter/codebuddy-gui",
@@ -69,7 +69,7 @@
   },
   "build": {
     "appId": "com.codebuddy.gui",
-    "productName": "CodeBuddy GUI",
+    "productName": "CodeBuddy Desktop",
     "directories": {
       "output": "dist"
     },
@@ -85,14 +85,15 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CodeBuddy GUI",
-      "uninstallDisplayName": "CodeBuddy GUI",
+      "shortcutName": "CodeBuddy Desktop",
+      "uninstallDisplayName": "CodeBuddy Desktop",
       "deleteAppDataOnUninstall": false
     },
     "files": [
       "out/**/*",
       "electron/**/*",
       "build/icon.png",
+      "build/icon-mark.png",
       "build/icon.ico",
       "LICENSE",
       "package.json"
