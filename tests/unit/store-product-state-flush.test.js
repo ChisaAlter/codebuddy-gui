@@ -73,6 +73,7 @@ describe('store product state flush', () => {
       },
       guiSettings: {},
       error: null,
+      productStateLoaded: true,
     });
   });
 

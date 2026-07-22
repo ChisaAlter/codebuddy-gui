@@ -56,6 +56,7 @@ describe('store sidebar session mutations', () => {
       activateThread,
       newSession,
       error: null,
+      productStateLoaded: true,
     });
   });
 
