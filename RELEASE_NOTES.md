@@ -1,36 +1,35 @@
-# CodeBuddy GUI 1.0.2
+# CodeBuddy GUI 1.0.3
 
-1.0.2 基于当前 master 的稳定性与品牌收口版本：修复登录循环与 502 误报，统一 CodeBuddy Desktop 品牌，提升 CLI 兼容版本至 2.125.0，并增强退出可靠性与侧栏/聊天可测性。
+1.0.3 在 1.0.2 之上完成 **CLI 2.125 桌面能力接线**：附加工作目录、插件市场自动更新与 HTTP 更新、插件列表无限滚动、文件检查点预览与回退、AskUserQuestion 取消语义锁死，以及 Skills / Agents 只读面板。
 
 ## 本版本重点
 
-### 登录与鉴权
+### CLI 2.125 适配
+
+- 附加工作目录（`workspace-dirs`）：composer 可选目录、项目偏好持久化，并与 CLI `POST/DELETE/sync` 对齐。
+- 插件市场 `autoUpdate` 与 `POST /api/v1/plugins/update`：HTTP 优先更新，失败回落现有 CLI `plugin update`。
+- 插件列表无限滚动、回到顶部与类型筛选（Skills / MCP / Hooks / Tools）。
+- 文件变更检查点：Changes 面板支持 diff 预览与按路径 / 检查点回退（`/internal/file-changes/*`，diff 使用绝对路径）。
+- AskUserQuestion 取消：跳过/取消走 `resolveInterruption(deny)` 或 `{ outcome: 'cancelled' }`，**不**调用整轮 `session/cancel`；单测与 live smoke 锁定。
+- Skills / Agents 只读页：无公开列表 API 时降级为空态或插件元数据，不伪造可写成功。
+- `fetchJson` 正确处理 **204 No Content**（workspace-dirs / auto-update 等 mutation）。
+
+### 聊天与体验
+
+- 聊天滚动辅助、时间线与取消语义相关单测扩展。
+- 侧栏入口与路由接入 Skills / Agents 页面。
+
+## 1.0.2
+
+1.0.2 基于当时 master 的稳定性与品牌收口版本：修复登录循环与 502 误报，统一 CodeBuddy Desktop 品牌，提升 CLI 兼容版本至 2.125.0，并增强退出可靠性与侧栏/聊天可测性。
 
 - 将网络/代理 502 与云端鉴权失败正确分类，避免发消息后被误判为需要重新登录。
 - 解析 CLI JSON `errorMessage`，透出代理与模型端点详情，便于排查连接问题。
 - 登录成功后软恢复磁盘 OAuth；账户鉴权边界与侧栏身份卡展示一并收紧。
-
-### 产品状态与退出
-
 - `product-state` 拒绝空项目列表覆盖有效状态；未 hydrate 时跳过 flush，防止状态被清空。
 - 托盘完全退出缩短超时，并支持脏文件对话框 hold，避免未保存内容在退出链中丢失。
-- 退出与 quit-request 控制器可测性增强，异常时保持应用打开并反馈原因。
-
-### 品牌 Desktop 化
-
-- 产品名与快捷方式统一为 **CodeBuddy Desktop**（安装包资产名仍为 `CodeBuddy-GUI-Setup-<version>.exe`）。
-- 品牌图标与侧栏身份卡（仅展示 Desktop 版本）同步更新。
-
-### CLI 兼容
-
-- 最低 / 推荐 CodeBuddy CLI 版本提升至 **2.125.0**；低于该版本仍会阻断项目运行时启动。
-- 设置页 fallback 与文档说明同步，避免已安装 2.125.0 时仍提示“高于验证版本”。
-
-### 聊天、侧栏与运维
-
-- 附件选择拆分对话框构建逻辑；侧栏「新对话」在已有项目下直接新建会话。
-- 自定义模型配置、聊天模式高亮、取消语义与作曲器菜单无障碍/i18n 完善。
-- MCP / Sandbox / 运维视图 destructive 操作与 e2e 路由夹具可测性扩展。
+- 产品名与快捷方式统一为 **CodeBuddy Desktop**；最低 / 推荐 CLI **2.125.0**。
+- 附件选择、侧栏新对话、自定义模型、模式高亮与运维视图可测性增强。
 
 ## 1.0.1
 

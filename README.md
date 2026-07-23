@@ -2,7 +2,7 @@
 
 CodeBuddy GUI 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
 
-**当前版本：[1.0.2](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.2)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-gui/releases)
+**当前版本：[1.0.3](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-gui/releases)
 
 ## 主要功能
 
@@ -48,7 +48,7 @@ npm run build
 构建会生成：
 
 - 前端产物：`out/dist/`
-- Windows 安装包：`dist/CodeBuddy-GUI-Setup-<version>.exe`（例如 `CodeBuddy-GUI-Setup-1.0.2.exe`）
+- Windows 安装包：`dist/CodeBuddy-GUI-Setup-<version>.exe`（例如 `CodeBuddy-GUI-Setup-1.0.3.exe`）
 
 Windows 打包若最终因 `rcedit`、`EBUSY` 或 `EPERM` 瞬时资源写入错误退出，会等待 2 秒并自动重试一次；其他构建错误不会被重试或隐藏。
 
@@ -65,6 +65,7 @@ npm run build:dir
 从 GitHub Releases 下载 Windows 安装包：
 
 - 最新发行版：https://github.com/ChisaAlter/codebuddy-gui/releases/latest  
+- 1.0.3：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3  
 - 1.0.2：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.2  
 - 1.0.1：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.1  
 
@@ -84,7 +85,7 @@ npm run release:prepare
 npm run release:prepare -- -AllowUnsigned
 ```
 
-随后可用 `gh release create v<version> ...` 将上述资产上传到 GitHub Releases（见已发布的 [v1.0.2](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.2)）。
+随后可用 `gh release create v<version> ...` 将上述资产上传到 GitHub Releases（见已发布的 [v1.0.3](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3)）。
 
 ## 数据与运行时
 
