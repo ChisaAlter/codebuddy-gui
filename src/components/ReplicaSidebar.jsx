@@ -399,6 +399,18 @@ const ITEM_ICONS = {
       <path d="M8 2l2 4 4 2-4 2-2 4-2-4-4-2 4-2z" />
     </svg>
   ),
+  skills: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M3 3h10v10H3zM6 6h4M6 9h3" />
+    </svg>
+  ),
+  agents: (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="5" cy="6" r="2" />
+      <circle cx="11" cy="6" r="2" />
+      <path d="M2 13c0-2 1.5-3 3-3s3 1 3 3M8 13c0-2 1.5-3 3-3s3 1 3 3" />
+    </svg>
+  ),
   mcp: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <circle cx="4" cy="8" r="2" />

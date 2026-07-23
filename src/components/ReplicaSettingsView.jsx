@@ -910,6 +910,22 @@ export default function ReplicaSettingsView() {
     label: m.name || m.id || m.modelId,
   }));
   const currentModelName = useStore((s) => s.models.find(m => m.id === s.currentModel || m.modelId === s.currentModel)?.name || s.currentModel || '');
+  // User default model (CLI settings.model): prefer picker from known models, keep free-typed id if missing.
+  const defaultModelValue = String(settings?.model || currentModel || '').trim();
+  const defaultModelOptions = (() => {
+    const seen = new Set();
+    const options = [{ value: '', label: t('settings.item.model.unset') || '—' }];
+    for (const opt of modelOptions) {
+      const value = String(opt.value || '').trim();
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      options.push({ value, label: opt.label || value });
+    }
+    if (defaultModelValue && !seen.has(defaultModelValue)) {
+      options.push({ value: defaultModelValue, label: defaultModelValue });
+    }
+    return options;
+  })();
   const modeOptions = (modes || []).map((m) => ({
     value: m.id || m.modeId,
     label: getSessionModeLabel(m, m.id || m.modeId),
@@ -1186,12 +1202,20 @@ export default function ReplicaSettingsView() {
               desc={t('settings.item.model.desc')}
               feedback={rowFeedback.model}
               control={
-                <TextInput
-                  scopeKey={activeProjectId}
-                  value={settings?.model || currentModelName || currentModel || ''}
-                  debounceMs={600}
-                  onChange={(v) => updateSetting('model', v)}
-                />
+                modelOptions.length > 0 || defaultModelValue ? (
+                  <Select
+                    value={defaultModelValue}
+                    options={defaultModelOptions}
+                    onChange={(value) => updateSetting('model', value || undefined)}
+                  />
+                ) : (
+                  <TextInput
+                    scopeKey={activeProjectId}
+                    value={settings?.model || currentModelName || currentModel || ''}
+                    debounceMs={600}
+                    onChange={(v) => updateSetting('model', v)}
+                  />
+                )
               }
             />
             <SettingRow

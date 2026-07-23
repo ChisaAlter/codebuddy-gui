@@ -44,7 +44,17 @@ import {
   addMarketplace as apiAddMarketplace,
   removeMarketplace as apiRemoveMarketplace,
   fetchMarketplaces as apiFetchMarketplaces,
+  setMarketplaceAutoUpdate as apiSetMarketplaceAutoUpdate,
+  updatePluginHttp as apiUpdatePluginHttp,
 } from './lib/ops';
+import {
+  normalizeWorkspaceDirList,
+  normalizeWorkspaceDirPath,
+  addWorkspaceDir as apiAddWorkspaceDir,
+  removeWorkspaceDir as apiRemoveWorkspaceDir,
+  syncWorkspaceDirs as apiSyncWorkspaceDirs,
+} from './lib/workspace-dirs';
+import { updateInstalledPlugin as cliUpdateInstalledPlugin } from './lib/plugin-maintenance';
 import { closeAssistantStream } from './lib/timeline';
 import {
   activeProject,
@@ -623,6 +633,11 @@ export const useStore = create((set, get) => {
   pluginError: null,
   marketplaceError: null,
   pluginBusy: null, // 当前操作中的插件名/动作，避免 UI 重入
+  workspaceExtraDirs: [],
+  workspaceDirsBusy: false,
+  workspaceDirsError: null,
+  /** Absolute file paths from ACP `_codebuddy.ai/checkpoint` events, keyed by checkpoint id. */
+  agentCheckpointPathsById: {},
   timeline: [],
   // 发消息后等 agent 首 SSE 块期间：UI 需立即显"思考中"态（发送键变终止键）
   // 收到 agent_message_chunk/agent_thought_chunk/tool_call 等真内容事件时清
@@ -1748,6 +1763,7 @@ export const useStore = create((set, get) => {
       get().refreshStats(),
       get().refreshTasks(),
       get().refreshTraces(),
+      get().syncWorkspaceExtraDirs(),
     ]);
   },
 
@@ -2426,7 +2442,9 @@ export const useStore = create((set, get) => {
     const busyKey = `addMkt:${id}`;
     set({ pluginBusy: busyKey, marketplaceError: null });
     try {
-      await apiAddMarketplace(id, config || {});
+      const payload = { ...(config || {}) };
+      if (payload.autoUpdate === undefined) payload.autoUpdate = true;
+      await apiAddMarketplace(id, payload);
       if (projectId === get().activeProjectId) await get().refreshMarketplaces();
       if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
       return true;
@@ -2453,6 +2471,194 @@ export const useStore = create((set, get) => {
       }
       return false;
     }
+  },
+
+  async setMarketplaceAutoUpdateById(id, autoUpdate) {
+    const marketplaceId = String(id || '').trim();
+    if (!marketplaceId) return false;
+    const projectId = get().activeProjectId;
+    const busyKey = `autoMkt:${marketplaceId}`;
+    set({ pluginBusy: busyKey, marketplaceError: null });
+    try {
+      await apiSetMarketplaceAutoUpdate(marketplaceId, autoUpdate);
+      if (projectId === get().activeProjectId) await get().refreshMarketplaces();
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
+      return true;
+    } catch (err) {
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, marketplaceError: err?.message || '更新市场自动更新失败' });
+      }
+      return false;
+    }
+  },
+
+  /**
+   * Update plugin: HTTP first, then CLI fallback (plan T2).
+   * @returns {{ ok: boolean, via?: 'http'|'cli', output?: string, truncated?: boolean, error?: string }}
+   */
+  async updatePluginByName(pluginId, options = {}) {
+    const plugin = String(pluginId || '').trim();
+    if (!plugin) return { ok: false, error: '插件 ID 不能为空' };
+    const projectId = get().activeProjectId;
+    const busyKey = `update:${plugin}`;
+    set({ pluginBusy: busyKey, pluginError: null });
+    const scope = options.scope || 'user';
+    const cwd = options.cwd || get().projectsById[projectId]?.workspacePath || '';
+    try {
+      try {
+        await apiUpdatePluginHttp(plugin, {
+          scope,
+          waitForApply: options.waitForApply,
+        });
+        if (projectId === get().activeProjectId) await get().refreshPlugins();
+        if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
+        return { ok: true, via: 'http', output: 'HTTP 更新已完成' };
+      } catch (httpError) {
+        if (!cwd) throw httpError;
+        const result = await cliUpdateInstalledPlugin({ plugin, scope, cwd });
+        if (projectId === get().activeProjectId) await get().refreshPlugins();
+        if (projectId === get().activeProjectId && get().pluginBusy === busyKey) set({ pluginBusy: null });
+        return {
+          ok: true,
+          via: 'cli',
+          output: result?.output || '',
+          truncated: Boolean(result?.truncated),
+        };
+      }
+    } catch (err) {
+      const message = err?.message || '更新插件失败';
+      if (projectId === get().activeProjectId && get().pluginBusy === busyKey) {
+        set({ pluginBusy: null, pluginError: message });
+      }
+      return { ok: false, error: message };
+    }
+  },
+
+  _readWorkspaceExtraDirsFromProject(projectId) {
+    const project = get().projectsById[projectId];
+    return normalizeWorkspaceDirList(project?.preferences?.workspaceExtraDirs);
+  },
+
+  async _persistWorkspaceExtraDirs(projectId, dirs) {
+    const list = normalizeWorkspaceDirList(dirs);
+    const project = get().projectsById[projectId];
+    if (!project) return false;
+    set((state) => ({
+      workspaceExtraDirs: list,
+      projectsById: {
+        ...state.projectsById,
+        [projectId]: {
+          ...state.projectsById[projectId],
+          preferences: {
+            ...(state.projectsById[projectId].preferences || {}),
+            workspaceExtraDirs: list,
+          },
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+    return get().persistProductState();
+  },
+
+  async syncWorkspaceExtraDirs(projectId = get().activeProjectId) {
+    if (!projectId) {
+      set({ workspaceExtraDirs: [], workspaceDirsError: null, workspaceDirsBusy: false });
+      return true;
+    }
+    const dirs = get()._readWorkspaceExtraDirsFromProject(projectId);
+    set({
+      workspaceExtraDirs: dirs,
+      workspaceDirsBusy: true,
+      workspaceDirsError: null,
+    });
+    try {
+      const synced = await apiSyncWorkspaceDirs(dirs);
+      if (get().activeProjectId !== projectId) return false;
+      const next = normalizeWorkspaceDirList(synced);
+      set({ workspaceExtraDirs: next, workspaceDirsBusy: false, workspaceDirsError: null });
+      if (JSON.stringify(next) !== JSON.stringify(dirs)) {
+        await get()._persistWorkspaceExtraDirs(projectId, next);
+      }
+      return true;
+    } catch (error) {
+      if (get().activeProjectId !== projectId) return false;
+      set({
+        workspaceDirsBusy: false,
+        workspaceDirsError: error?.message || '同步附加工作目录失败',
+      });
+      return false;
+    }
+  },
+
+  async addWorkspaceExtraDir(dirPath) {
+    const projectId = get().activeProjectId;
+    if (!projectId) return false;
+    const path = normalizeWorkspaceDirPath(dirPath);
+    if (!path) {
+      set({ workspaceDirsError: '工作目录路径不能为空' });
+      return false;
+    }
+    const current = normalizeWorkspaceDirList(get().workspaceExtraDirs);
+    if (current.some((item) => item.toLowerCase() === path.toLowerCase())) return true;
+    const next = [...current, path];
+    set({ workspaceDirsBusy: true, workspaceDirsError: null, workspaceExtraDirs: next });
+    try {
+      await apiAddWorkspaceDir(path);
+      if (get().activeProjectId !== projectId) return false;
+      await get()._persistWorkspaceExtraDirs(projectId, next);
+      if (get().activeProjectId === projectId) set({ workspaceDirsBusy: false });
+      return true;
+    } catch (error) {
+      if (get().activeProjectId !== projectId) return false;
+      set({
+        workspaceExtraDirs: current,
+        workspaceDirsBusy: false,
+        workspaceDirsError: error?.message || '添加附加工作目录失败',
+      });
+      return false;
+    }
+  },
+
+  async removeWorkspaceExtraDir(dirPath) {
+    const projectId = get().activeProjectId;
+    if (!projectId) return false;
+    const path = normalizeWorkspaceDirPath(dirPath);
+    if (!path) return false;
+    const current = normalizeWorkspaceDirList(get().workspaceExtraDirs);
+    const next = current.filter((item) => item.toLowerCase() !== path.toLowerCase());
+    if (next.length === current.length) return true;
+    set({ workspaceDirsBusy: true, workspaceDirsError: null, workspaceExtraDirs: next });
+    try {
+      await apiRemoveWorkspaceDir(path);
+      if (get().activeProjectId !== projectId) return false;
+      await get()._persistWorkspaceExtraDirs(projectId, next);
+      if (get().activeProjectId === projectId) set({ workspaceDirsBusy: false });
+      return true;
+    } catch (error) {
+      if (get().activeProjectId !== projectId) return false;
+      set({
+        workspaceExtraDirs: current,
+        workspaceDirsBusy: false,
+        workspaceDirsError: error?.message || '移除附加工作目录失败',
+      });
+      return false;
+    }
+  },
+
+  async chooseAndAddWorkspaceExtraDir() {
+    if (!window.electronAPI?.chooseWorkspace) {
+      set({ workspaceDirsError: '目录选择不可用（IPC 缺失）' });
+      return false;
+    }
+    let path = null;
+    try {
+      path = await window.electronAPI.chooseWorkspace();
+    } catch (error) {
+      set({ workspaceDirsError: error?.message || '目录选择失败' });
+      return false;
+    }
+    if (!path) return null;
+    return get().addWorkspaceExtraDir(path);
   },
 
   async refreshMetrics() {

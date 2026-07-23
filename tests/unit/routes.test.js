@@ -61,6 +61,8 @@ describe('ROUTES 常量', () => {
     expect(ROUTES).toContain('tasks');
     expect(ROUTES).toContain('archived');
     expect(ROUTES).toContain('plugins');
+    expect(ROUTES).toContain('skills');
+    expect(ROUTES).toContain('agents');
     expect(ROUTES).toContain('editor');
     expect(ROUTES).toContain('changes');
     expect(ROUTES).toContain('stats');

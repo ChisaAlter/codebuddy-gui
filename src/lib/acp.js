@@ -1221,17 +1221,30 @@ export class AcpClient {
 
 export async function fetchJson(path, init = {}) {
   const response = await requestCodeBuddy(path, init);
-  if (!response.ok) {
-    let detail = '';
+  // CLI 2.125 often returns 204 No Content for workspace-dirs POST/DELETE/sync,
+  // plugins/update, marketplaces/auto-update, etc. Empty bodies must not call json().
+  if (response.status === 204) {
+    return null;
+  }
+  const text = await response.text().catch(() => '');
+  let payload = null;
+  if (text) {
     try {
-      const payload = await response.json();
-      detail = payload?.error?.message || payload?.error || payload?.message || '';
+      payload = JSON.parse(text);
     } catch (_) {
-      /* 非 JSON 错误响应保留 HTTP 状态 */
+      payload = text;
     }
+  }
+  if (!response.ok) {
+    const detail =
+      (payload && typeof payload === 'object'
+        ? payload?.error?.message || payload?.error || payload?.message
+        : null) || '';
     throw new Error(detail || `${response.status} ${response.statusText}`);
   }
-  return response.json();
+  // Successful empty body (rare non-204) → null; callers already use `??` / optional chaining.
+  if (payload == null || payload === '') return null;
+  return payload;
 }
 
 // ===== 鉴权 =====

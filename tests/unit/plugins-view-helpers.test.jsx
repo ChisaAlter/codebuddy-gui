@@ -42,8 +42,11 @@ vi.mock('../../src/store', () => {
     togglePluginByName: mocks.togglePluginByName,
     addMarketplaceById: vi.fn(),
     removeMarketplaceById: vi.fn(),
+    setMarketplaceAutoUpdateById: vi.fn(),
+    updatePluginByName: vi.fn().mockResolvedValue({ ok: true, via: 'http', output: 'ok' }),
     refreshMarketplaces: mocks.refreshMarketplaces,
     restartProjectRuntime: vi.fn(),
+    guiSettings: { locale: 'zh' },
     activeProjectId: 'project-1',
     projectsById: { 'project-1': { workspacePath: 'C:/Project' } },
   };

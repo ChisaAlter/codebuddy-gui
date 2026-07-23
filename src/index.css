@@ -940,13 +940,14 @@ select {
   background: color-mix(in srgb, var(--color-accent-green) 70%, transparent);
 }
 
-/* Assistant prose: slightly clearer separation from chrome rows */
+/* Assistant prose lives inside WebUI-style outer mb-2; no extra bottom margin. */
 .chat-assistant-message {
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
-.chat-assistant-message + .execution-group,
+/* Standalone thinking (before tools) still sits above execution chrome tightly. */
 .thinking-block + .execution-group,
-.execution-group + .chat-assistant-message {
+.execution-group + [data-chat-role='assistant'],
+[data-chat-role='assistant'] + .execution-group {
   margin-top: 2px;
 }
 .thinking-block-streaming .thinking-block-content:after {
@@ -2641,10 +2642,16 @@ select {
 .responsive-plugin-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
 }
+.plugins-list-scroll {
+  max-height: min(70vh, 920px);
+  overflow: auto;
+  padding-bottom: 8px;
+}
 .responsive-market-form {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(160px, 1fr) minmax(260px, 2fr) auto;
+  align-items: center;
 }
 
 @media (max-width: 760px) {

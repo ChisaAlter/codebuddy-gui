@@ -220,6 +220,48 @@ export function createSessionsChatSlice(set, get, ctx) {
       return;
     }
     if (su === 'interruption_request') {
+      // CLI 2.125 surfaces AskUserQuestion as interruption_request (WebUI parity):
+      // map to a question card so cancel uses resolveInterruption(deny) / cancelled outcome,
+      // never session/cancel.
+      const toolName = update.toolName || update.toolTitle || '';
+      if (toolName === 'AskUserQuestion') {
+        const rawQuestions =
+          (Array.isArray(update.toolInput?.questions) && update.toolInput.questions) ||
+          (Array.isArray(update.toolInput?.schema?.questions) && update.toolInput.schema.questions) ||
+          [];
+        const questions = rawQuestions.map((question, index) => ({
+          id: question.id || `q_${index}`,
+          question: question.question || '',
+          header: question.header || '',
+          options: (question.options || [])
+            .map((option) =>
+              typeof option === 'string'
+                ? { label: option, value: option, description: '' }
+                : {
+                    label: option.label || option.value || option.id || '',
+                    value: option.value || option.id || option.label || '',
+                    description: option.description || '',
+                  },
+            )
+            .filter((option) => option.value),
+          multiSelect: Boolean(question.multiSelect),
+        }));
+        const questionUpdate = {
+          sessionUpdate: 'question_request',
+          toolCallId: update.toolCallId || update.interruptionId,
+          sessionId: update.sessionId || null,
+          questions,
+          responseMode: 'interruption',
+          source: 'interruption',
+          interruptionId: update.interruptionId || null,
+        };
+        const requestId = questionUpdate.toolCallId;
+        if (requestId && runtime.questions.some((item) => sessionActionItemMatches(item, requestId))) return;
+        get().patchThreadRuntime(threadId, { questions: [...runtime.questions, questionUpdate] });
+        get().appendThreadTimelineEvent(threadId, 'question_request', questionUpdate);
+        get().updateThreadRecord(threadId, { status: 'waiting', unread: get().activeThreadId !== threadId });
+        return;
+      }
       const requestIds = [update.interruptionId, update.toolCallId].filter(Boolean);
       if (
         requestIds.some((requestId) =>
@@ -337,6 +379,33 @@ export function createSessionsChatSlice(set, get, ctx) {
     }
     if (type === 'interruption_request' || type === 'question_request') {
       get().handleThreadSessionUpdate(threadId, { ...(detail || {}), sessionUpdate: type });
+      return;
+    }
+    if (type === 'checkpoint') {
+      // Live 2.125: checkpoint list may omit files[]; events carry absolute uri list.
+      const payload = detail || {};
+      const checkpoint = payload.checkpoint || payload;
+      const id = checkpoint?.id || payload.checkpointId || '';
+      const rawFiles =
+        checkpoint?.fileChanges?.files ||
+        checkpoint?.files ||
+        checkpoint?.paths ||
+        [];
+      const paths = (Array.isArray(rawFiles) ? rawFiles : [])
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          return item?.uri || item?.path || item?.filePath || item?.file || '';
+        })
+        .map((p) => String(p || '').trim())
+        .filter(Boolean);
+      if (id && paths.length) {
+        set((state) => ({
+          agentCheckpointPathsById: {
+            ...(state.agentCheckpointPathsById || {}),
+            [id]: paths,
+          },
+        }));
+      }
       return;
     }
     if (type === 'interaction_requests_invalidated') {
@@ -1518,8 +1587,24 @@ export function createSessionsChatSlice(set, get, ctx) {
       try {
         const client = get().getThreadClient(threadId);
         if (!client) throw new Error('当前会话未连接');
-        const cancelled = await client.cancelQuestionAnswers(toolCallId);
-        if (!cancelled) throw new Error('当前问题不支持取消，请提交答案');
+        // Prefer JSON-RPC result `{ outcome: 'cancelled' }` when `_codebuddy.ai/question` is pending.
+        // CLI 2.125 often delivers AskUserQuestion as interruption only — WebUI cancel uses
+        // resolveInterruption(toolCallId, 'deny') which server-side maps to skip_question + approve
+        // (session continues; never session/cancel).
+        let cancelled = false;
+        try {
+          cancelled = await client.cancelQuestionAnswers(toolCallId);
+        } catch (_) {
+          cancelled = false;
+        }
+        if (!cancelled) {
+          await client.request('_codebuddy.ai/resolveInterruption', {
+            sessionId,
+            toolCallId,
+            decision: 'deny',
+          });
+          cancelled = true;
+        }
         const currentThread = get().threadsById[threadId];
         if (!currentThread || currentThread.sessionId !== sessionId) return true;
         get().applyQuestionResolution(threadId, toolCallId, 'cancelled');

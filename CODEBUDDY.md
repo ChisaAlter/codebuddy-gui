@@ -78,6 +78,9 @@ npm run format
 - **布局**：模型与思考强度放在 `composer-picker-cluster` 中贴近排列，与发送键用 `ml-4` 拉开；窄窗依赖 `truncate` + `min-w-0`，发送键 `shrink-0`。
 - **发送 / 停止**：对齐 WebUI——圆形 `ArrowUp` 发送、圆形 `Square` 停止（`lucide-react`）。
 - **附件**：回形针菜单仅 **图片 / 文件** 两档；主进程 `attachment:choose` 按 `kind` 过滤。不做 WebUI 加号网格 / 右侧历史抽屉（见 `docs/composer-actions-decision.md`）。
+- **附加工作目录**（CLI 2.121+）：composer 旁文件夹按钮管理 `workspaceExtraDirs`（项目 `preferences` 持久化），经 `POST/DELETE /api/v1/workspace-dirs` 与 `PUT .../sync` 同步到运行时。
+- **插件更新**：优先 `POST /api/v1/plugins/update`，失败回落 `pluginMaintenance:update` CLI；市场支持 `autoUpdate`。
+- **Agent 文件检查点回退**：变更页调用 `/internal/file-changes/*`；AskUserQuestion 取消仅 `{ outcome: 'cancelled' }`，不得整轮 `session/cancel`。
 - **品牌图标**：`build/icon.png` + `build/icon.ico`（窗口、托盘、通知、登录、侧栏、安装包）；`tests/unit/branding-icons.test.js` 用 SHA256 锁定。
 
 ## 持久化

@@ -623,7 +623,7 @@ async function main(signal) {
   });
   check(
     'all routes were reached by clicking sidebar controls',
-    routeResults.length === 19,
+    routeResults.length === 21,
     `routes=${routeResults.length}`,
   );
 

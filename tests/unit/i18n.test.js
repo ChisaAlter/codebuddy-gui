@@ -97,5 +97,11 @@ describe('i18n', () => {
     expect(translate('en', 'question.cancel')).toBe('Cancel');
     expect(translate('zh', 'composer.effort.disabled')).toBe('关闭');
     expect(translate('en', 'composer.effort.enabled')).toBe('Default');
+    expect(translate('zh', 'composer.workspaceDirs')).toBe('附加工作目录');
+    expect(translate('en', 'composer.workspaceDirs.add')).toBe('Add directory');
+    expect(translate('zh', 'plugins.backToTop')).toBe('回到顶部');
+    expect(translate('en', 'plugins.autoUpdate')).toBe('Auto update');
+    expect(translate('zh', 'skills.title')).toBe('技能');
+    expect(translate('en', 'agents.scopedMcp')).toBe('Scoped MCP');
   });
 });

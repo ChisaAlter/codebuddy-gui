@@ -17,8 +17,16 @@ import {
   isFullAccessMode,
   isUltracodeEffort,
 } from '../lib/session-mode-labels';
+import {
+  isNearBottom as isChatNearBottom,
+  resolveChatScrollRestore,
+  saveChatScrollPosition,
+} from '../lib/chat-scroll';
 import { groupTimelineForDisplay } from '../lib/timeline';
 import { resolveLocaleMode, translate } from '../lib/i18n';
+
+/** Survives route unmount so returning from settings restores transcript position. */
+const chatScrollMemoryByThreadId = new Map();
 
 function useResolvedTheme() {
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'dark');
@@ -558,15 +566,21 @@ function ThinkingCard({ item }) {
     }
   }, [item.content, streaming, expanded]);
 
-  const durationLabel = useMemo(() => {
+  // WebUI uF: duration is whole seconds — streaming ticks live; done uses stored
+  // thinkingDuration (integer). Header is 已思考（用时 {n} 秒）, not a mixed duration string.
+  const durationSeconds = useMemo(() => {
+    const startedAt = Number(item.createdAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return 0;
+    if (streaming) {
+      return Math.max(0, Math.round((now - startedAt) / 1000));
+    }
     const endedAt = resolveThinkingEndedAt(item, now);
-    return formatThinkingDuration(item.createdAt, endedAt, streaming);
+    return Math.max(0, Math.round((endedAt - startedAt) / 1000));
   }, [item.createdAt, item.completedAt, item.streaming, now, streaming]);
 
-  // WebUI: streaming → 思考中; done → 已思考（用时 …） — never "用时 0 秒"
   const headerText = streaming
     ? t('thinking.thinking')
-    : `${t('thinking.done')}${t('thinking.duration', { duration: durationLabel })}`;
+    : `${t('thinking.done')}${t('thinking.seconds', { n: durationSeconds })}`;
 
   if (!streaming && !hasContent) return null;
 
@@ -850,7 +864,9 @@ function ExecutionGroup({ items, autoCollapse = false }) {
     setExpandedOverride(next);
   };
 
-  if (toolCount === 0 && internalEventCount === 0) return null;
+  // Pure checkpoint / task / goal noise with zero tool rows must not become a fake
+  // “turn ended” footer (“本轮没有可展示的工具调用” + “已合并 N 条内部进度”).
+  if (toolCount === 0) return null;
 
   // Single running/finished tool with no siblings: render the row directly (WebUI does not wrap in a summary).
   if (toolCount === 1 && internalEventCount === 0 && !preferCollapsed) {
@@ -864,6 +880,8 @@ function ExecutionGroup({ items, autoCollapse = false }) {
   // WebUI only shows the “N 个工具已执行” chrome when the group is (or can be) collapsed.
   // While tools are still running, just list the light rows with an optional left rail.
   const showGroupChrome = preferCollapsed || expandedOverride !== null || (!running && toolCount >= 2);
+  // Internal events stay folded silently — no “已合并 N 条内部进度” footer (felt like a wrong ending).
+  const showRail = toolCount > 1;
 
   return (
     <div className="execution-group mb-2 flex w-full flex-col gap-0">
@@ -897,21 +915,14 @@ function ExecutionGroup({ items, autoCollapse = false }) {
               ) : null}
             </button>
           ) : null}
-          <div className={`relative ${toolCount > 1 || internalEventCount > 0 ? 'ml-1.5 pl-4' : ''}`}>
-            {toolCount > 1 || internalEventCount > 0 ? (
+          <div className={`relative ${showRail ? 'ml-1.5 pl-4' : ''}`}>
+            {showRail ? (
               <div className="absolute bottom-1 left-0 top-1 w-px bg-[var(--color-border-default)]" aria-hidden="true" />
             ) : null}
             <div className="flex flex-col gap-0.5">
-              {toolItems.length ? (
-                toolItems.map((item, index) => <ToolCallBlock key={item.id || index} item={item} />)
-              ) : (
-                <div className="px-1 py-1 text-[12px] text-[var(--color-text-muted)]">{t('execution.emptyTools')}</div>
-              )}
-              {internalEventCount > 0 ? (
-                <div className="px-1 py-1 text-[11px] text-[var(--color-text-muted)]">
-                  {t('execution.mergedInternal', { n: internalEventCount })}
-                </div>
-              ) : null}
+              {toolItems.map((item, index) => (
+                <ToolCallBlock key={item.id || index} item={item} />
+              ))}
             </div>
           </div>
         </>
@@ -1408,7 +1419,11 @@ function QuestionCard({ item }) {
   const toolCallId = item.meta?.toolCallId || item.raw?.toolCallId || item.toolCallId;
   const questions = item.meta?.questions || item.raw?.questions || [];
   const resolved = item.status === 'answered' || item.status === 'cancelled' || item.status === 'expired';
-  const cancellable = (item.meta?.responseMode || item.raw?.responseMode) === 'json-rpc';
+  // json-rpc: `_codebuddy.ai/question` cancel → { outcome: 'cancelled' }
+  // interruption: AskUserQuestion permission path → resolveInterruption(deny) / skip (WebUI parity)
+  const responseMode = item.meta?.responseMode || item.raw?.responseMode;
+  const source = item.meta?.source || item.raw?.source;
+  const cancellable = responseMode === 'json-rpc' || responseMode === 'interruption' || source === 'interruption';
   const [answers, setAnswers] = useState(item.meta?.submittedAnswers || {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1658,8 +1673,13 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
     return <QuestionCard item={item} />;
   }
 
-  // 历史会话里可能仍有 mode_update 条目；不在对话记录展示。
-  if (item.type === 'mode_update' || item.type === 'current_mode_update') {
+  // 历史会话里可能仍有 mode_update / status_change / model_update；不在对话记录展示。
+  if (
+    item.type === 'mode_update' ||
+    item.type === 'current_mode_update' ||
+    item.type === 'status_change' ||
+    item.type === 'model_update'
+  ) {
     return null;
   }
 
@@ -1732,21 +1752,29 @@ const TimelineItem = React.memo(function TimelineItem({ item }) {
   }
 
   if (item.role === 'assistant') {
+    // Thinking + markdown share one unit (no double card gap); outer mb-6 matches user turn rhythm.
+    const thinking = item.thinking && typeof item.thinking === 'object' ? item.thinking : null;
+    const text = typeof item.content === 'string' ? item.content : '';
+    const hasText = text.trim().length > 0;
+    if (!thinking && !hasText && !item.streaming) return null;
     return (
-      <div className="chat-assistant-message group mb-2">
-        {/* WebUI: markdown-body text-chat text-text-primary */}
-        <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
-          {item.content ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-              {item.content}
-            </ReactMarkdown>
-          ) : item.streaming ? (
-            '...'
-          ) : (
-            ''
-          )}
-        </div>
-        {item.content && <CopyButton text={item.content} />}
+      <div className="mb-6 w-full" data-chat-role="assistant">
+        {thinking ? <ThinkingCard item={thinking} /> : null}
+        {hasText || item.streaming ? (
+          <div className="chat-assistant-message group">
+            {/* WebUI: markdown-body text-chat text-text-primary */}
+            <div className="markdown-body text-chat text-text-primary text-[var(--color-text-primary)]">
+              {hasText ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                  {text}
+                </ReactMarkdown>
+              ) : (
+                '...'
+              )}
+            </div>
+            {hasText ? <CopyButton text={text} /> : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1760,6 +1788,8 @@ export default function ReplicaChatView() {
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
+  const scrollRestorePendingRef = useRef(true);
+  const userDetachedScrollRef = useRef(false);
   const textareaRef = useRef(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
@@ -2170,33 +2200,178 @@ export default function ReplicaChatView() {
     [setInput],
   );
 
-  // Keep following only while the reader remains at the bottom.
+  const persistScrollPosition = useCallback(() => {
+    const el = scrollContainerRef.current;
+    const threadId = activeThreadId;
+    if (!el || !threadId) return;
+    saveChatScrollPosition(chatScrollMemoryByThreadId, threadId, {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    });
+  }, [activeThreadId]);
+
+  // Thread change or remount: restore saved scroll (or bottom) after layout paints.
   useEffect(() => {
-    if (messagesEndRef.current && isStreaming && shouldAutoScrollRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
-    }
-  }, [timeline, isStreaming]);
+    scrollRestorePendingRef.current = true;
+    userDetachedScrollRef.current = false;
+    const threadId = activeThreadId;
+    let cancelled = false;
+    let attempts = 0;
+
+    const applyRestore = () => {
+      if (cancelled) return;
+      // User already scrolled away; do not yank them back to saved/bottom.
+      if (userDetachedScrollRef.current) {
+        scrollRestorePendingRef.current = false;
+        return;
+      }
+      const el = scrollContainerRef.current;
+      if (!el) {
+        if (attempts < 12) {
+          attempts += 1;
+          requestAnimationFrame(applyRestore);
+        } else {
+          scrollRestorePendingRef.current = false;
+        }
+        return;
+      }
+      const hasMessages = (timeline || []).length > 0;
+      // Wait one more frame if tall content hasn't laid out yet.
+      if (hasMessages && el.scrollHeight <= el.clientHeight + 1 && attempts < 12) {
+        attempts += 1;
+        requestAnimationFrame(applyRestore);
+        return;
+      }
+      if (userDetachedScrollRef.current) {
+        scrollRestorePendingRef.current = false;
+        return;
+      }
+      const saved = threadId ? chatScrollMemoryByThreadId.get(threadId) : null;
+      const restored = resolveChatScrollRestore(saved, {
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        hasMessages,
+      });
+      el.scrollTop = restored.scrollTop;
+      shouldAutoScrollRef.current = restored.stickBottom;
+      setShowScrollBtn(restored.showScrollBtn);
+      scrollRestorePendingRef.current = false;
+    };
+
+    requestAnimationFrame(applyRestore);
+    return () => {
+      cancelled = true;
+      // Capture position before unmount (settings / other routes).
+      persistScrollPosition();
+    };
+    // Intentionally not depending on timeline: streaming tokens must not re-trigger restore.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restore on thread/route remount
+  }, [activeThreadId, activeProjectId, persistScrollPosition]);
+
+  // History / late layout: re-apply saved mid-scroll if content arrived after first paint at top.
+  useEffect(() => {
+    if (scrollRestorePendingRef.current || userDetachedScrollRef.current) return;
+    const el = scrollContainerRef.current;
+    const threadId = activeThreadId;
+    if (!el || !threadId) return;
+    const saved = chatScrollMemoryByThreadId.get(threadId);
+    if (!saved || saved.stickBottom) return;
+    if (el.scrollTop > 0 || el.scrollHeight <= el.clientHeight + 1) return;
+    if (!(Number(saved.top) > 0)) return;
+    const restored = resolveChatScrollRestore(saved, {
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      hasMessages: (timeline || []).length > 0,
+    });
+    el.scrollTop = restored.scrollTop;
+    shouldAutoScrollRef.current = restored.stickBottom;
+    setShowScrollBtn(restored.showScrollBtn);
+  }, [timeline.length, activeThreadId]);
+
+  const scrollTranscriptToBottom = useCallback(
+    (behavior = 'auto') => {
+      const el = scrollContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+      if (behavior === 'smooth') {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+      if (el && activeThreadId) {
+        saveChatScrollPosition(chatScrollMemoryByThreadId, activeThreadId, {
+          scrollTop: el.scrollHeight,
+          scrollHeight: el.scrollHeight,
+          clientHeight: el.clientHeight,
+        });
+      }
+      setShowScrollBtn(false);
+    },
+    [activeThreadId],
+  );
+
+  // Stick to bottom while following: new messages, streaming tokens, or busy status.
+  useEffect(() => {
+    if (scrollRestorePendingRef.current) return;
+    if (!shouldAutoScrollRef.current || userDetachedScrollRef.current) return;
+    if (!isStreaming && (timeline || []).length === 0) return;
+    scrollTranscriptToBottom('auto');
+  }, [timeline, isStreaming, scrollTranscriptToBottom]);
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    shouldAutoScrollRef.current = isNearBottom;
-    setShowScrollBtn(!isNearBottom);
-  }, []);
+    if (scrollRestorePendingRef.current && !userDetachedScrollRef.current) return;
+    const nearBottom = isChatNearBottom({
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    });
+    shouldAutoScrollRef.current = nearBottom;
+    // Only mark detached when clearly not at bottom (user scrolled up).
+    if (!nearBottom) userDetachedScrollRef.current = true;
+    else userDetachedScrollRef.current = false;
+    setShowScrollBtn(!nearBottom);
+    if (activeThreadId) {
+      saveChatScrollPosition(chatScrollMemoryByThreadId, activeThreadId, {
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      });
+    }
+  }, [activeThreadId]);
 
-  const handleWheel = useCallback((event) => {
-    const el = scrollContainerRef.current;
-    if (event.deltaY >= 0 || !el || el.scrollHeight <= el.clientHeight + 1) return;
-    shouldAutoScrollRef.current = false;
-    setShowScrollBtn(true);
-  }, []);
+  const handleWheel = useCallback(
+    (event) => {
+      const el = scrollContainerRef.current;
+      if (event.deltaY >= 0 || !el || el.scrollHeight <= el.clientHeight + 1) return;
+      shouldAutoScrollRef.current = false;
+      userDetachedScrollRef.current = true;
+      scrollRestorePendingRef.current = false;
+      setShowScrollBtn(true);
+      if (activeThreadId) {
+        saveChatScrollPosition(chatScrollMemoryByThreadId, activeThreadId, {
+          scrollTop: el.scrollTop,
+          scrollHeight: el.scrollHeight,
+          clientHeight: el.clientHeight,
+        });
+        const saved = chatScrollMemoryByThreadId.get(activeThreadId);
+        if (saved) {
+          chatScrollMemoryByThreadId.set(activeThreadId, { ...saved, stickBottom: false });
+        }
+      }
+    },
+    [activeThreadId],
+  );
 
   const jumpToLatest = useCallback(() => {
     shouldAutoScrollRef.current = true;
-    setShowScrollBtn(false);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, []);
+    userDetachedScrollRef.current = false;
+    scrollRestorePendingRef.current = false;
+    scrollTranscriptToBottom('smooth');
+  }, [scrollTranscriptToBottom]);
 
   const onSubmit = useCallback(async () => {
     const value = input.trim();
@@ -2215,11 +2390,21 @@ export default function ReplicaChatView() {
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }, 0);
     setChatError(null);
+    // Sending always re-engages follow-latest (even if user was reading older messages).
     shouldAutoScrollRef.current = true;
+    userDetachedScrollRef.current = false;
+    scrollRestorePendingRef.current = false;
+    scrollTranscriptToBottom('auto');
     try {
       const sent = await sendPrompt(value);
       if (isCurrent() && !sent) {
         setChatError(consumeStoreError(t('error.sendFailedRestored')));
+      } else if (isCurrent()) {
+        // User bubble / first token may paint after await — stick again.
+        requestAnimationFrame(() => {
+          if (!shouldAutoScrollRef.current || userDetachedScrollRef.current) return;
+          scrollTranscriptToBottom('auto');
+        });
       }
     } catch (err) {
       if (isCurrent())
@@ -2228,7 +2413,16 @@ export default function ReplicaChatView() {
       clearTimeout(releaseTimer);
       if (sendLaunchInFlightRef.current === operation) sendLaunchInFlightRef.current = null;
     }
-  }, [activeProjectId, activeThreadId, canSend, input, pendingAttachments.length, sendPrompt, t]);
+  }, [
+    activeProjectId,
+    activeThreadId,
+    canSend,
+    input,
+    pendingAttachments.length,
+    scrollTranscriptToBottom,
+    sendPrompt,
+    t,
+  ]);
 
   const resumePromptQueue = useCallback(async () => {
     if (queueActionInFlightRef.current || !activeThreadId || !canSend || isStreaming) return;
@@ -2738,35 +2932,47 @@ const ChatComposer = React.memo(function ChatComposer({
   const t = useUiTranslate();
   const [composerHeight, setComposerHeight] = useState(readStoredComposerHeight);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showWorkspaceDirsMenu, setShowWorkspaceDirsMenu] = useState(false);
+  const workspaceExtraDirs = useStore((s) => s.workspaceExtraDirs || []);
+  const workspaceDirsBusy = useStore((s) => s.workspaceDirsBusy);
+  const workspaceDirsError = useStore((s) => s.workspaceDirsError);
+  const chooseAndAddWorkspaceExtraDir = useStore((s) => s.chooseAndAddWorkspaceExtraDir);
+  const removeWorkspaceExtraDir = useStore((s) => s.removeWorkspaceExtraDir);
   const resizeDragRef = useRef(null);
   const imageCapability = Boolean(
     capabilities?.promptCapabilities?.image || capabilities?.prompt_capabilities?.image,
   );
 
   const closeAttachMenu = useCallback(() => setShowAttachMenu(false), []);
+  const closeWorkspaceDirsMenu = useCallback(() => setShowWorkspaceDirsMenu(false), []);
   const pickAttachments = useCallback(
     async (kind) => {
       setShowAttachMenu(false);
+      setShowWorkspaceDirsMenu(false);
       await chooseAttachments({ kind });
     },
     [chooseAttachments],
   );
 
   useEffect(() => {
-    if (showModePicker || showModelPicker || showEffortPicker) setShowAttachMenu(false);
+    if (showModePicker || showModelPicker || showEffortPicker) {
+      setShowAttachMenu(false);
+      setShowWorkspaceDirsMenu(false);
+    }
   }, [showModePicker, showModelPicker, showEffortPicker]);
 
   useEffect(() => {
-    if (!showAttachMenu) return undefined;
+    if (!showAttachMenu && !showWorkspaceDirsMenu) return undefined;
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         setShowAttachMenu(false);
+        setShowWorkspaceDirsMenu(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showAttachMenu]);
+  }, [showAttachMenu, showWorkspaceDirsMenu]);
 
   useEffect(() => {
     try {
@@ -3034,6 +3240,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     setShowModePicker(false);
                     setShowModelPicker(false);
                     setShowEffortPicker(false);
+                    setShowWorkspaceDirsMenu(false);
                     setShowAttachMenu((open) => !open);
                   }}
                   disabled={droppingAttachments}
@@ -3093,6 +3300,103 @@ const ChatComposer = React.memo(function ChatComposer({
               <div className="relative">
                 <button
                   type="button"
+                  className="flex h-7 items-center justify-center gap-0.5 rounded-full px-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-50"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowModePicker(false);
+                    setShowModelPicker(false);
+                    setShowEffortPicker(false);
+                    setShowAttachMenu(false);
+                    setShowWorkspaceDirsMenu((open) => !open);
+                  }}
+                  disabled={connectionState !== 'connected' || workspaceDirsBusy}
+                  title={t('composer.workspaceDirs')}
+                  aria-label={t('composer.workspaceDirs')}
+                  aria-expanded={showWorkspaceDirsMenu}
+                  aria-haspopup="menu"
+                  data-testid="composer-workspace-dirs-btn"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M2 4.5h4l1.2 1.5H14v6.5a1 1 0 01-1 1H3a1 1 0 01-1-1V4.5z" />
+                    <path d="M5 8h6M8 5.5v5" />
+                  </svg>
+                  {workspaceExtraDirs.length > 0 ? (
+                    <span className="min-w-[14px] rounded-full bg-[var(--color-bg-tertiary)] px-1 text-[10px] leading-4 text-[var(--color-text-secondary)]">
+                      {workspaceExtraDirs.length}
+                    </span>
+                  ) : null}
+                </button>
+                {showWorkspaceDirsMenu && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      style={{ left: 'var(--sidebar-width, 252px)' }}
+                      onClick={closeWorkspaceDirsMenu}
+                      aria-hidden="true"
+                    />
+                    <div
+                      role="menu"
+                      aria-label={t('composer.workspaceDirs')}
+                      data-testid="composer-workspace-dirs-menu"
+                      className="composer-menu composer-menu--open absolute bottom-full left-0 mb-1 z-20 w-72"
+                    >
+                      <div className="border-b border-[var(--color-border-muted)] px-3 py-2 text-[11px] font-medium text-[var(--color-text-secondary)]">
+                        {t('composer.workspaceDirs')}
+                        {workspaceDirsBusy ? ` · ${t('composer.workspaceDirs.syncing')}` : ''}
+                      </div>
+                      {workspaceExtraDirs.length === 0 ? (
+                        <div className="px-3 py-2 text-[11px] leading-4 text-[var(--color-text-muted)]">
+                          {t('composer.workspaceDirs.empty')}
+                        </div>
+                      ) : (
+                        <ul className="max-h-48 overflow-auto py-1">
+                          {workspaceExtraDirs.map((dir) => (
+                            <li
+                              key={dir}
+                              className="flex items-start gap-2 px-3 py-1.5 text-[11px] text-[var(--color-text-primary)]"
+                            >
+                              <span className="min-w-0 flex-1 break-all" title={dir}>{dir}</span>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="shrink-0 text-[var(--color-error)] hover:underline disabled:opacity-50"
+                                disabled={workspaceDirsBusy}
+                                onClick={async () => {
+                                  await removeWorkspaceExtraDir(dir);
+                                }}
+                              >
+                                {t('composer.workspaceDirs.remove')}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {workspaceDirsError ? (
+                        <div className="border-t border-[var(--color-border-muted)] px-3 py-1.5 text-[11px] text-[var(--color-error)]">
+                          {workspaceDirsError}
+                        </div>
+                      ) : null}
+                      <div className="border-t border-[var(--color-border-muted)] p-1">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="composer-menu-item w-full px-3 py-1.5 text-left text-xs disabled:opacity-50"
+                          disabled={workspaceDirsBusy || connectionState !== 'connected'}
+                          onClick={async () => {
+                            const result = await chooseAndAddWorkspaceExtraDir();
+                            if (result) setShowWorkspaceDirsMenu(true);
+                          }}
+                        >
+                          {t('composer.workspaceDirs.add')}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  type="button"
                   className={`composer-picker-trigger flex items-center gap-1 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-primary)] px-2.5 py-1 text-xs transition-colors disabled:opacity-50 ${
                     isFullAccessMode(currentMode)
                       ? 'composer-picker-trigger--special'
@@ -3103,6 +3407,7 @@ const ChatComposer = React.memo(function ChatComposer({
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowAttachMenu(false);
+                    setShowWorkspaceDirsMenu(false);
                     setShowModePicker(!showModePicker);
                   }}
                 >
@@ -3159,6 +3464,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowAttachMenu(false);
+                      setShowWorkspaceDirsMenu(false);
                       setShowModelPicker(!showModelPicker);
                     }}
                   >
@@ -3210,6 +3516,7 @@ const ChatComposer = React.memo(function ChatComposer({
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowAttachMenu(false);
+                      setShowWorkspaceDirsMenu(false);
                       setShowEffortPicker(!showEffortPicker);
                     }}
                     title={t('composer.effort')}

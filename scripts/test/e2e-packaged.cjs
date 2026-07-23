@@ -282,7 +282,7 @@ async function main(signal) {
   });
   check(
     'packaged renderer reached all routes through sidebar clicks',
-    routeResults.length === 19,
+    routeResults.length === 21,
     `routes=${routeResults.length}`,
   );
 

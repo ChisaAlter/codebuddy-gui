@@ -2,13 +2,21 @@ import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import { copyTextToClipboard } from '../lib/clipboard';
-import { previewPluginDependencyPrune, prunePluginDependencies, updateInstalledPlugin } from '../lib/plugin-maintenance';
+import { previewPluginDependencyPrune, prunePluginDependencies } from '../lib/plugin-maintenance';
+import {
+  PLUGIN_KIND_OPTIONS,
+  filterPlugins,
+  slicePluginPage,
+} from '../lib/plugins-list';
+import { resolveLocaleMode, translate } from '../lib/i18n';
 
 const PLUGIN_SCOPE_LABELS = {
   user: '用户全局',
   project: '项目共享',
   local: '项目本机',
 };
+
+const PLUGIN_PAGE_SIZE = 30;
 
 export function normalizedPluginScope(value) {
   return Object.hasOwn(PLUGIN_SCOPE_LABELS, value) ? value : 'user';
@@ -20,7 +28,24 @@ export function validMaintenancePluginId(value) {
 }
 
 export default function ReplicaPluginsView() {
-  const { plugins, refreshPlugins, marketplaces, pluginError, marketplaceError, pluginBusy, installPluginByName, uninstallPluginByName, togglePluginByName, addMarketplaceById, removeMarketplaceById, refreshMarketplaces, restartProjectRuntime } = useStore(useShallow((state) => ({
+  const {
+    plugins,
+    refreshPlugins,
+    marketplaces,
+    pluginError,
+    marketplaceError,
+    pluginBusy,
+    installPluginByName,
+    uninstallPluginByName,
+    togglePluginByName,
+    addMarketplaceById,
+    removeMarketplaceById,
+    setMarketplaceAutoUpdateById,
+    updatePluginByName,
+    refreshMarketplaces,
+    restartProjectRuntime,
+    guiSettings,
+  } = useStore(useShallow((state) => ({
     plugins: state.plugins,
     refreshPlugins: state.refreshPlugins,
     marketplaces: state.marketplaces,
@@ -32,15 +57,22 @@ export default function ReplicaPluginsView() {
     togglePluginByName: state.togglePluginByName,
     addMarketplaceById: state.addMarketplaceById,
     removeMarketplaceById: state.removeMarketplaceById,
+    setMarketplaceAutoUpdateById: state.setMarketplaceAutoUpdateById,
+    updatePluginByName: state.updatePluginByName,
     refreshMarketplaces: state.refreshMarketplaces,
     restartProjectRuntime: state.restartProjectRuntime,
+    guiSettings: state.guiSettings,
   })));
   const activeProjectId = useStore((state) => state.activeProjectId);
   const activeWorkspacePath = useStore((state) => state.projectsById[state.activeProjectId]?.workspacePath || '');
+  const locale = resolveLocaleMode(guiSettings?.locale);
+  const t = React.useCallback((key, vars) => translate(locale, key, vars), [locale]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all'); // 'all' | 'enabled' | 'disabled'
+  const [kindFilter, setKindFilter] = React.useState('all');
+  const [visibleCount, setVisibleCount] = React.useState(PLUGIN_PAGE_SIZE);
   const [showInstallModal, setShowInstallModal] = React.useState(false);
   const [installId, setInstallId] = React.useState('');
   const [installMarketplace, setInstallMarketplace] = React.useState('');
@@ -57,6 +89,7 @@ export default function ReplicaPluginsView() {
   // 市场增删表单态
   const [newMktId, setNewMktId] = React.useState('');
   const [newMktUrl, setNewMktUrl] = React.useState('');
+  const [newMktAutoUpdate, setNewMktAutoUpdate] = React.useState(true);
   const [mktBusy, setMktBusy] = React.useState(false);
   const [mktMsg, setMktMsg] = React.useState(null);
   const projectGenerationRef = React.useRef(0);
@@ -64,6 +97,8 @@ export default function ReplicaPluginsView() {
   const refreshInFlightRef = React.useRef(null);
   const pluginActionInFlightRef = React.useRef(null);
   const marketplaceActionInFlightRef = React.useRef(null);
+  const listScrollRef = React.useRef(null);
+  const loadMoreSentinelRef = React.useRef(null);
 
   const handleRefresh = React.useCallback(async () => {
     if (refreshInFlightRef.current) return false;
@@ -118,6 +153,9 @@ export default function ReplicaPluginsView() {
     setRestartNeeded(false);
     setNewMktId('');
     setNewMktUrl('');
+    setNewMktAutoUpdate(true);
+    setKindFilter('all');
+    setVisibleCount(PLUGIN_PAGE_SIZE);
     setMktBusy(false);
     setMktMsg(null);
     refreshInFlightRef.current = null;
@@ -128,23 +166,35 @@ export default function ReplicaPluginsView() {
 
   const pluginsList = Array.isArray(plugins) ? plugins : [];
 
-  // Search + status filter
-  const filtered = pluginsList.filter((p) => {
-    if (statusFilter === 'enabled' && !(p.status === 'enabled' || p.enabled)) return false;
-    if (statusFilter === 'disabled' && (p.status === 'enabled' || p.enabled)) return false;
-    if (!searchTerm.trim()) return true;
-    const q = searchTerm.toLowerCase();
-    const searchable = [
-      p.name,
-      p.description,
-      p.marketplace,
-      p.installScope || p.scope,
-      typeof p.author === 'string' ? p.author : p.author?.name,
-      ...(Array.isArray(p.keywords) ? p.keywords : []),
-      ...(Array.isArray(p.skills) ? p.skills.map((skill) => skill.name) : []),
-    ].filter(Boolean).join(' ').toLowerCase();
-    return searchable.includes(q);
-  });
+  const filtered = React.useMemo(
+    () => filterPlugins(pluginsList, { query: searchTerm, status: statusFilter, kind: kindFilter }),
+    [pluginsList, searchTerm, statusFilter, kindFilter],
+  );
+
+  React.useEffect(() => {
+    setVisibleCount(PLUGIN_PAGE_SIZE);
+  }, [searchTerm, statusFilter, kindFilter, pluginsList.length]);
+
+  const page = React.useMemo(
+    () => slicePluginPage(filtered, visibleCount, PLUGIN_PAGE_SIZE),
+    [filtered, visibleCount],
+  );
+
+  React.useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    const root = listScrollRef.current;
+    if (!sentinel || !page.hasMore) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((current) => Math.min(filtered.length, current + PLUGIN_PAGE_SIZE));
+        }
+      },
+      { root: root || null, rootMargin: '120px', threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [page.hasMore, filtered.length, page.visible]);
 
   const isEnabled = (p) => p.status === 'enabled' || p.enabled;
 
@@ -202,14 +252,24 @@ export default function ReplicaPluginsView() {
         ok = await removeMarketplaceById(action.id);
       } else if (action.type === 'update') {
         setMaintenanceBusy(`update:${action.id}`);
-        const result = await updateInstalledPlugin({
-          plugin: action.id,
-          scope: action.scope,
-          cwd: activeWorkspacePath,
-        });
+        const result = typeof updatePluginByName === 'function'
+          ? await updatePluginByName(action.id, { scope: action.scope, cwd: activeWorkspacePath })
+          : { ok: false, error: '更新接口不可用' };
         if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
-        setMaintenanceOutput({ title: `更新输出 · ${action.label}`, content: result.output, truncated: result.truncated });
-        setMaintenanceNotice({ type: 'success', message: `${action.label} 更新命令已完成。重启当前项目运行时后生效。` });
+        if (!result?.ok) {
+          setActionDialogError(result?.error || useStore.getState().pluginError || '更新插件失败');
+          return;
+        }
+        const viaLabel = result.via === 'http' ? 'HTTP' : 'CLI';
+        setMaintenanceOutput({
+          title: `更新输出 · ${action.label} (${viaLabel})`,
+          content: result.output || `${viaLabel} 更新已完成`,
+          truncated: Boolean(result.truncated),
+        });
+        setMaintenanceNotice({
+          type: 'success',
+          message: `${action.label} 已通过 ${viaLabel} 更新。重启当前项目运行时后生效。`,
+        });
         setRestartNeeded(true);
       } else if (action.type === 'prune') {
         setMaintenanceBusy('prune');
@@ -437,6 +497,18 @@ export default function ReplicaPluginsView() {
               已禁用
             </button>
           </div>
+          <div className="tab-group" data-testid="plugins-kind-filter">
+            {PLUGIN_KIND_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={`tab ${kindFilter === option.id ? 'active' : ''}`}
+                onClick={() => setKindFilter(option.id)}
+              >
+                {t(option.labelKey)}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Loading skeleton */}
@@ -481,8 +553,28 @@ export default function ReplicaPluginsView() {
             </p>
           </div>
         ) : (
-          <div className="responsive-plugin-grid">
-            {filtered.map((p, idx) => {
+          <div ref={listScrollRef} className="plugins-list-scroll" data-testid="plugins-list-scroll">
+            {filtered.length > PLUGIN_PAGE_SIZE ? (
+              <div className="mb-3 flex items-center justify-between gap-2 text-[11px] text-[var(--color-text-muted)]">
+                <span data-testid="plugins-infinite-range">
+                  {t('plugins.infiniteRange', { visible: page.visible, total: page.total })}
+                </span>
+                <button
+                  type="button"
+                  className="btn-ghost px-2 py-1 text-[11px]"
+                  data-testid="plugins-back-to-top"
+                  onClick={() => {
+                    const node = listScrollRef.current;
+                    if (node && typeof node.scrollTo === 'function') node.scrollTo({ top: 0, behavior: 'smooth' });
+                    else window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                >
+                  {t('plugins.backToTop')}
+                </button>
+              </div>
+            ) : null}
+            <div className="responsive-plugin-grid">
+            {page.items.map((p, idx) => {
               const enabled = isEnabled(p);
               const scope = p.installScope || p.scope;
               const pluginId = p.id || p.name;
@@ -585,6 +677,14 @@ export default function ReplicaPluginsView() {
                 </div>
               );
             })}
+            </div>
+            <div
+              ref={loadMoreSentinelRef}
+              className="py-3 text-center text-[11px] text-[var(--color-text-muted)]"
+              data-testid="plugins-infinite-sentinel"
+            >
+              {page.hasMore ? t('plugins.infiniteLoading') : t('plugins.infiniteEnd')}
+            </div>
           </div>
         ))}
 
@@ -692,7 +792,7 @@ export default function ReplicaPluginsView() {
                     : actionDialog.type === 'remove-marketplace'
                       ? '该市场来源将从配置中删除，已安装插件不会在此操作中卸载。'
                       : actionDialog.type === 'update'
-                        ? '将调用 CodeBuddy CLI 更新到该来源的最新版本。更新完成后需要重启项目运行时才能应用。'
+                        ? '将优先通过 HTTP 更新，失败时回落 CLI。更新完成后需要重启项目运行时才能应用。'
                         : '将删除 dry-run 已确认的失效自动依赖。主动安装的插件不会被此操作移除。'}
                 </p>
               </div>
@@ -765,6 +865,15 @@ export default function ReplicaPluginsView() {
               className="input-field"
               aria-label="市场 URL"
             />
+            <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+              <input
+                type="checkbox"
+                checked={newMktAutoUpdate}
+                onChange={(e) => setNewMktAutoUpdate(e.target.checked)}
+                data-testid="marketplace-auto-update-on-add"
+              />
+              {t('plugins.autoUpdateOnAdd')}
+            </label>
             <button
               className="btn-primary text-xs"
               disabled={mktBusy || pluginOperationActive || !newMktId.trim() || !newMktUrl.trim()}
@@ -779,7 +888,10 @@ export default function ReplicaPluginsView() {
                 setMktBusy(true);
                 setMktMsg(null);
                 try {
-                  const ok = await addMarketplaceById(marketplaceId, { url: marketplaceUrl });
+                  const ok = await addMarketplaceById(marketplaceId, {
+                    url: marketplaceUrl,
+                    autoUpdate: newMktAutoUpdate,
+                  });
                   if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
                   if (ok) {
                     setNewMktId((current) => current.trim() === marketplaceId ? '' : current);
@@ -808,7 +920,10 @@ export default function ReplicaPluginsView() {
             <div className="space-y-1.5">
               {(marketplaces || []).map((mkt, idx) => {
                 const id = mkt.id || mkt.marketplaceId || mkt.name || `mkt-${idx}`;
-                const busy = pluginBusy === `rmMkt:${id}`;
+                const busy = pluginBusy === `rmMkt:${id}` || pluginBusy === `autoMkt:${id}`;
+                const hasAutoUpdateField = typeof mkt.autoUpdate === 'boolean'
+                  || typeof mkt.auto_update === 'boolean';
+                const autoUpdateOn = mkt.autoUpdate === true || mkt.auto_update === true;
                 return (
                   <div key={id} className="flex items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-3 py-2">
                     <div className="flex-1 min-w-0">
@@ -819,6 +934,31 @@ export default function ReplicaPluginsView() {
                       {mkt.description && <div className="mt-0.5 truncate text-[11px] text-[var(--color-text-muted)]" title={mkt.description}>{mkt.description}</div>}
                       {(mkt.source || mkt.url) && <div className="truncate text-[11px] text-[var(--color-text-muted)]" title={mkt.source || mkt.url}>{mkt.source || mkt.url}</div>}
                     </div>
+                    {hasAutoUpdateField && typeof setMarketplaceAutoUpdateById === 'function' ? (
+                      <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]" title={t('plugins.autoUpdate')}>
+                        <input
+                          type="checkbox"
+                          checked={autoUpdateOn}
+                          disabled={mktBusy || pluginOperationActive}
+                          data-testid={`marketplace-auto-update-${id}`}
+                          onChange={async (event) => {
+                            const operation = beginMarketplaceAction();
+                            if (!operation) return;
+                            const projectId = activeProjectId;
+                            const generation = projectGenerationRef.current;
+                            setMktMsg(null);
+                            try {
+                              const ok = await setMarketplaceAutoUpdateById(id, event.target.checked);
+                              if (projectId !== useStore.getState().activeProjectId || generation !== projectGenerationRef.current) return;
+                              if (!ok) setMktMsg(useStore.getState().marketplaceError || '切换自动更新失败');
+                            } finally {
+                              finishMarketplaceAction(operation);
+                            }
+                          }}
+                        />
+                        {t('plugins.autoUpdate')}
+                      </label>
+                    ) : null}
                     <button
                       disabled={mktBusy || pluginOperationActive}
                       className="btn-ghost shrink-0 text-xs text-[var(--color-error)]"
@@ -829,7 +969,7 @@ export default function ReplicaPluginsView() {
                         detail: mkt.source || mkt.url || mkt.description || '',
                       })}
                     >
-                      {busy ? '删除中...' : '删除'}
+                      {busy ? '处理中...' : '删除'}
                     </button>
                   </div>
                 );

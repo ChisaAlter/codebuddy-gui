@@ -18,6 +18,13 @@ import {
 } from '../lib/git';
 import { useStore } from '../store';
 import { downloadFile } from '../lib/fs';
+import {
+  REVERT_SCOPES,
+  extractCheckpointFilePaths,
+  fetchFileChangeCheckpoints,
+  fetchFileChangeDiff,
+  revertFileChanges,
+} from '../lib/file-changes';
 
 function DiffBlock({ diff }) {
   if (!diff) {
@@ -90,6 +97,7 @@ function formatUntrackedPreview(path, content) {
 
 export default function ReplicaChangesView() {
   const workspacePath = useStore((state) => state.workspacePath);
+  const fileCheckpointingEnabled = useStore((state) => state.settings?.fileCheckpointingEnabled !== false);
   const [items, setItems] = useState([]);
   const [branch, setBranch] = useState('');
   const [branches, setBranches] = useState([]);
@@ -104,11 +112,17 @@ export default function ReplicaChangesView() {
   const [operationValue, setOperationValue] = useState('');
   const [operationError, setOperationError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [checkpoints, setCheckpoints] = useState([]);
+  const [checkpointError, setCheckpointError] = useState('');
+  const [checkpointBusy, setCheckpointBusy] = useState(false);
+  const [checkpointDiff, setCheckpointDiff] = useState('');
+  const [checkpointDiffPath, setCheckpointDiffPath] = useState('');
+  const [revertDialog, setRevertDialog] = useState(null);
   const loadRequestRef = useRef(0);
   const diffRequestRef = useRef(0);
   const writeRequestRef = useRef(0);
   const writeBusyRef = useRef(false);
-  const writeBusy = busy || committing;
+  const writeBusy = busy || committing || checkpointBusy;
 
   async function loadAll(keepSelection = true) {
     const requestId = ++loadRequestRef.current;
@@ -147,6 +161,87 @@ export default function ReplicaChangesView() {
     }
   }
 
+  async function loadCheckpoints() {
+    if (!fileCheckpointingEnabled) {
+      setCheckpoints([]);
+      setCheckpointError('文件检查点已在设置中关闭');
+      return;
+    }
+    setCheckpointBusy(true);
+    setCheckpointError('');
+    try {
+      const list = await fetchFileChangeCheckpoints();
+      const pathMap = useStore.getState().agentCheckpointPathsById || {};
+      const merged = (Array.isArray(list) ? list : []).map((cp) => {
+        const id = cp?.id || cp?.checkpointId || '';
+        const fromEvent = id ? pathMap[id] || [] : [];
+        const fromList = extractCheckpointFilePaths(cp);
+        const seen = new Set();
+        const paths = [];
+        for (const p of [...fromList, ...fromEvent]) {
+          const key = String(p || '').toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          paths.push(p);
+        }
+        return paths.length ? { ...cp, paths, files: paths } : cp;
+      });
+      setCheckpoints(merged);
+    } catch (error) {
+      setCheckpoints([]);
+      setCheckpointError(error?.message || '加载检查点失败');
+    } finally {
+      setCheckpointBusy(false);
+    }
+  }
+
+  function formatCheckpointDiffPayload(payload) {
+    if (payload == null) return '';
+    if (typeof payload === 'string') return payload;
+    if (payload.diff || payload.content) return String(payload.diff || payload.content);
+    // Live 2.125: { path, oldText, newText }
+    if (payload.oldText != null || payload.newText != null) {
+      const pathLine = payload.path ? `path: ${payload.path}\n` : '';
+      return `${pathLine}----- old -----\n${payload.oldText ?? ''}\n----- new -----\n${payload.newText ?? ''}`;
+    }
+    return JSON.stringify(payload, null, 2);
+  }
+
+  function checkpointFilePaths(cp) {
+    return extractCheckpointFilePaths(cp);
+  }
+
+  async function previewAgentDiff(filePath) {
+    const path = String(filePath || '').trim();
+    if (!path) return;
+    setCheckpointDiffPath(path);
+    setCheckpointDiff('加载中…');
+    try {
+      // 2.125: relative path often 404; absolute uri from checkpoint works.
+      const payload = await fetchFileChangeDiff(path);
+      setCheckpointDiff(formatCheckpointDiffPayload(payload) || '无可显示 diff');
+    } catch (error) {
+      setCheckpointDiff(`加载失败: ${error?.message || error}`);
+    }
+  }
+
+  async function confirmAgentRevert() {
+    if (!revertDialog || !fileCheckpointingEnabled) return;
+    setCheckpointBusy(true);
+    setCheckpointError('');
+    try {
+      await revertFileChanges(revertDialog);
+      setRevertDialog(null);
+      setStatusText('Agent 文件回退已完成');
+      await loadCheckpoints();
+      await loadAll(true);
+    } catch (error) {
+      setCheckpointError(error?.message || '回退失败');
+    } finally {
+      setCheckpointBusy(false);
+    }
+  }
+
   useEffect(() => {
     loadRequestRef.current += 1;
     diffRequestRef.current += 1;
@@ -161,8 +256,14 @@ export default function ReplicaChangesView() {
     setOperationDialog(null);
     setOperationValue('');
     setOperationError('');
+    setCheckpoints([]);
+    setCheckpointError('');
+    setCheckpointDiff('');
+    setCheckpointDiffPath('');
+    setRevertDialog(null);
     loadAll(false);
-  }, [workspacePath]);
+    loadCheckpoints();
+  }, [workspacePath, fileCheckpointingEnabled]);
 
   useEffect(() => {
     async function loadDiff() {
@@ -379,7 +480,87 @@ export default function ReplicaChangesView() {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 bg-[var(--color-bg-primary)]">
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--color-bg-primary)]">
+        <div className="shrink-0 border-b border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] px-4 py-3" data-testid="agent-checkpoints-panel">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">Agent Checkpoints</div>
+              <div className="text-xs text-[var(--color-text-secondary)]">CLI 文件检查点 / 回退（`/internal/file-changes/*`）</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                disabled={checkpointBusy || !fileCheckpointingEnabled}
+                onClick={loadCheckpoints}
+              >
+                {checkpointBusy ? '刷新中…' : '刷新检查点'}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost text-xs text-[var(--color-error)]"
+                disabled={checkpointBusy || !fileCheckpointingEnabled}
+                onClick={() => setRevertDialog({})}
+                title="丢弃当前全部 Agent 文件变更"
+              >
+                回退全部文件变更
+              </button>
+            </div>
+          </div>
+          {!fileCheckpointingEnabled ? (
+            <div className="text-xs text-[var(--color-accent-yellow)]">已关闭 fileCheckpointing，无法执行 Agent 回退。</div>
+          ) : checkpointError ? (
+            <div className="text-xs text-[var(--color-error)]">{checkpointError}</div>
+          ) : checkpoints.length === 0 ? (
+            <div className="text-xs text-[var(--color-text-muted)]">暂无检查点（或当前运行时未返回列表）</div>
+          ) : (
+            <div className="max-h-36 space-y-1 overflow-auto">
+              {checkpoints.map((cp, index) => {
+                const id = cp.id || cp.checkpointId || `cp-${index}`;
+                const label = cp.label || cp.name || cp.title || id;
+                const paths = checkpointFilePaths(cp);
+                const additions = Number(cp.additions || cp.fileChanges?.totalAdditions || 0);
+                const deletions = Number(cp.deletions || cp.fileChanges?.totalDeletions || 0);
+                const fileHint = paths.length
+                  ? ` · ${paths.length} 文件`
+                  : (additions || deletions)
+                    ? ` · +${additions}/-${deletions}`
+                    : '';
+                return (
+                  <div key={id} className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-primary)] px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium text-[var(--color-text-primary)]">{label}</div>
+                      <div className="truncate text-[10px] text-[var(--color-text-muted)]">{id}{fileHint}</div>
+                    </div>
+                    {paths[0] ? (
+                      <button type="button" className="btn-ghost px-2 py-0.5 text-[11px]" disabled={checkpointBusy} onClick={() => previewAgentDiff(paths[0])}>
+                        预览
+                      </button>
+                    ) : null}
+                    {[...REVERT_SCOPES].map((scope) => (
+                      <button
+                        key={scope}
+                        type="button"
+                        className="btn-ghost px-2 py-0.5 text-[11px]"
+                        disabled={checkpointBusy}
+                        onClick={() => setRevertDialog({ checkpointId: id, scope })}
+                      >
+                        回退·{scope === 'Code' ? '代码' : scope === 'Conversation' ? '对话' : '两者'}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {checkpointDiffPath ? (
+            <div className="mt-2 max-h-40 overflow-auto rounded-md border border-[var(--color-border-muted)] bg-[var(--color-bg-code)] p-2 font-mono text-[11px] text-[var(--color-text-secondary)]">
+              <div className="mb-1 text-[10px] text-[var(--color-text-muted)]">{checkpointDiffPath}</div>
+              <pre className="whitespace-pre-wrap break-words">{checkpointDiff}</pre>
+            </div>
+          ) : null}
+        </div>
+      <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 w-[clamp(300px,32vw,380px)] shrink-0 flex-col border-r border-[var(--color-border-default)] bg-[var(--color-bg-secondary)]">
           <div className="border-b border-[var(--color-border-default)] p-3">
             <div className="mb-2 text-[11px] uppercase tracking-wide text-[var(--color-text-muted)]">
@@ -533,6 +714,37 @@ export default function ReplicaChangesView() {
           <DiffBlock diff={diff} />
         </div>
       </div>
+      </div>
+
+      {revertDialog ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="确认 Agent 回退"
+        >
+          <div className="w-full max-w-sm rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-secondary)] p-5 shadow-xl">
+            <div className="text-sm font-semibold text-[var(--color-text-primary)]">确认 Agent 回退</div>
+            <p className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
+              {revertDialog.checkpointId
+                ? `将按检查点 ${revertDialog.checkpointId} 回退，范围：${revertDialog.scope}。`
+                : '将丢弃当前全部 Agent 文件变更（不改对话历史）。'}
+              此操作可能无法撤销。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button className="btn-ghost px-3 py-1.5 text-xs" disabled={checkpointBusy} onClick={() => setRevertDialog(null)}>取消</button>
+              <button
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-white"
+                style={{ background: 'var(--color-accent-red)' }}
+                disabled={checkpointBusy || !fileCheckpointingEnabled}
+                onClick={confirmAgentRevert}
+              >
+                {checkpointBusy ? '回退中…' : '确认回退'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {operationDialog ? (
         <div

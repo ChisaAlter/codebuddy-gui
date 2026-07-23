@@ -19,6 +19,8 @@ const ROUTE_EXPECTATIONS = Object.freeze([
   { route: 'editor', navLabel: '编辑器', navGroup: '工作区', expected: { role: 'textbox', name: '搜索文件名' } },
   { route: 'changes', navLabel: '变更', navGroup: '工作区', expected: { role: 'textbox', name: '输入提交信息...' } },
   { route: 'plugins', navLabel: '插件', navGroup: '工作区', expected: { role: 'textbox', name: '搜索插件名称或描述...' } },
+  { route: 'skills', navLabel: '技能', navGroup: '工作区', expected: { role: 'heading', name: '技能' } },
+  { route: 'agents', navLabel: 'Agents', navGroup: '工作区', expected: { role: 'heading', name: 'Agents' } },
   { route: 'mcp', navLabel: 'MCP', navGroup: '工作区', expected: { role: 'textbox', name: '搜索名称、类型或地址...' } },
   { route: 'sandboxes', navLabel: 'Sandboxes', navGroup: '工作区', expected: { role: 'textbox', name: '搜索 ID、别名、模板或项目路径...' } },
   { route: 'stats', navLabel: '统计', navGroup: '可观测', expected: { role: 'button', name: '刷新' } },

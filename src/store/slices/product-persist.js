@@ -50,10 +50,10 @@ export function createProductPersistSlice(set, get, ctx) {
 
   appendThreadTimelineEvent(threadId, eventType, payload) {
     const runtime = get().threadRuntimeById[threadId] || emptyThreadRuntime();
+    // Thinking duration anchors at first thought chunk (WebUI LIVE); promptStartedAt
+    // remains for response-activity chrome only — do not pass it as thinkingStartedAt.
     get().patchThreadRuntime(threadId, {
-      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId, {
-        thinkingStartedAt: runtime.historyReplayActive ? null : runtime.promptStartedAt,
-      }),
+      timeline: reduceAcpEvent(runtime.timeline, eventType, payload, threadId),
       isAwaitingResponse:
         eventType === 'agent_message_chunk' || eventType === 'agent_thought_chunk' || eventType === 'tool_call'
           ? false

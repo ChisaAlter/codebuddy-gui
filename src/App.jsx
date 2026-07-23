@@ -15,6 +15,8 @@ const ReplicaChangesView = lazy(() => import('./components/ReplicaChangesView'))
 const ReplicaWorkersView = lazy(() => import('./components/ReplicaWorkersView'));
 const ReplicaMetricsView = lazy(() => import('./components/ReplicaMetricsView'));
 const ReplicaPluginsView = lazy(() => import('./components/ReplicaPluginsView'));
+const ReplicaSkillsView = lazy(() => import('./components/ReplicaSkillsView'));
+const ReplicaAgentsView = lazy(() => import('./components/ReplicaAgentsView'));
 const ReplicaMcpView = lazy(() => import('./components/ReplicaMcpView'));
 const ReplicaSandboxesView = lazy(() => import('./components/ReplicaSandboxesView'));
 const ReplicaStatsView = lazy(() => import('./components/ReplicaStatsView'));
@@ -433,6 +435,8 @@ const ROUTE_TITLES = {
   editor: '编辑器',
   changes: '变更',
   plugins: '插件',
+  skills: '技能',
+  agents: 'Agents',
   mcp: 'MCP',
   sandboxes: 'Sandboxes',
   stats: '统计',
@@ -552,6 +556,12 @@ function MainContent() {
       break;
     case 'plugins':
       content = <ReplicaPluginsView />;
+      break;
+    case 'skills':
+      content = <ReplicaSkillsView />;
+      break;
+    case 'agents':
+      content = <ReplicaAgentsView />;
       break;
     case 'mcp':
       content = <ReplicaMcpView />;

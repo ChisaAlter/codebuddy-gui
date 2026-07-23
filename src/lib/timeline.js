@@ -254,6 +254,22 @@ export function groupTimelineForDisplay(timeline) {
           index += 1;
         }
         const merged = mergeConsecutiveThinkingEntries(cluster);
+        // WebUI co-locates thinking on the assistant message (thinking block + markdown
+        // in one unit). Attach when the next entry is that answer — not when tools
+        // interrupt (those stay as a standalone thinking card before the execution group).
+        const next = turn[index];
+        if (
+          merged &&
+          next?.type === 'message' &&
+          next?.role === 'assistant'
+        ) {
+          grouped.push({
+            ...next,
+            thinking: merged,
+          });
+          index += 1;
+          continue;
+        }
         if (merged) grouped.push(merged);
         continue;
       }
@@ -435,7 +451,9 @@ function findLastContiguousThinking(timeline) {
   return null;
 }
 
-function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = null) {
+// WebUI LIVE: thinking clock starts at the first agent_thought_chunk, not at prompt send.
+// (Desktop previously back-dated createdAt to promptStartedAt, inflating "用时 N 秒".)
+function mergeThinkingChunk(timeline, payload, dedupeScope) {
   const next = [...timeline];
   const messageId = payload?.messageId || null;
   const content = getText(payload?.content) || (typeof payload?.message === 'string' ? payload.message : '');
@@ -483,18 +501,13 @@ function mergeThinkingChunk(timeline, payload, dedupeScope, thinkingStartedAt = 
   }
   if (isDuplicateHistoryChunk(dedupeScope, payload, messageId)) return next;
   const receivedAt = Date.now();
-  const normalizedStartedAt = Number(thinkingStartedAt);
-  const createdAt =
-    Number.isFinite(normalizedStartedAt) && normalizedStartedAt > 0 && normalizedStartedAt <= receivedAt
-      ? normalizedStartedAt
-      : receivedAt;
   next.push(
     createTimelineEntry({
       type: 'thinking',
       role: 'assistant',
       content: content || getText(payload?.content) || payload?.message || '',
       streaming: true,
-      createdAt,
+      createdAt: receivedAt,
       raw: payload,
       meta: payload,
       messageId,
@@ -543,7 +556,8 @@ function mergeToolCall(timeline, payload, isUpdate = false) {
   return next;
 }
 
-export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'global', context = {}) {
+// context is accepted for call-site compatibility (e.g. tests); thinking duration no longer uses it.
+export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'global', _context = {}) {
   if (eventType === 'message') {
     if (payload?.messageId && payload?.content) {
       return mergeAssistantChunk(timeline, payload, dedupeScope);
@@ -552,7 +566,7 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
   }
 
   if (eventType === 'agent_thought_chunk' || payload?.sessionUpdate === 'agent_thought_chunk') {
-    return mergeThinkingChunk(timeline, payload, dedupeScope, context.thinkingStartedAt);
+    return mergeThinkingChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'agent_message_chunk' || payload?.sessionUpdate === 'agent_message_chunk') {
@@ -572,7 +586,7 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
   }
 
   if (eventType === 'thinking' || payload?.type === 'thinking' || payload?.sessionUpdate === 'thinking') {
-    return mergeThinkingChunk(timeline, payload, dedupeScope, context.thinkingStartedAt);
+    return mergeThinkingChunk(timeline, payload, dedupeScope);
   }
 
   if (eventType === 'interruption_request' || payload?.sessionUpdate === 'interruption_request' || payload?.type === 'interruption') {
@@ -685,9 +699,9 @@ export function reduceAcpEvent(timeline, eventType, payload, dedupeScope = 'glob
 
   if (eventType === 'session_end' || payload?.sessionUpdate === 'session_end') return timeline;
 
-  if (eventType === 'status_change' || eventType === 'model_update') {
-    return pushSystemEvent(timeline, eventType, payload);
-  }
+  // status_change drives thread.status elsewhere; model_update is chrome outside the stream.
+  // Do not paint protocol separators in the chat timeline (WebUI has no "状态变更" lines).
+  if (eventType === 'status_change' || eventType === 'model_update') return timeline;
 
   return pushSystemEvent(timeline, eventType, payload);
 }

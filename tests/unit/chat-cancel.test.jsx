@@ -65,6 +65,11 @@ vi.mock('../../src/store', () => ({
       clearPromptSuggestion: vi.fn(),
       promptSuggestion: null,
       settings: {},
+      workspaceExtraDirs: [],
+      workspaceDirsBusy: false,
+      workspaceDirsError: null,
+      chooseAndAddWorkspaceExtraDir: vi.fn(),
+      removeWorkspaceExtraDir: vi.fn(),
     });
   },
 }));
@@ -386,7 +391,7 @@ describe('ReplicaChatView cancellation', () => {
     ).toBe('正在生成回答');
   });
 
-  it('hides checkpoint identifiers behind one compact internal-progress summary', async () => {
+  it('hides checkpoint identifiers and does not show merged-internal chrome under tools', async () => {
     mocks.isAwaitingResponse = false;
     mocks.timeline = [
       { id: 'user-compact', type: 'message', role: 'user', content: '继续' },
@@ -401,9 +406,10 @@ describe('ReplicaChatView cancellation', () => {
     ];
     await act(async () => root.render(React.createElement(ReplicaChatView)));
 
-    // Checkpoints stay in the execution group as a merged internal summary — never raw ids.
+    // Tool row stays visible; checkpoint raw ids / internal-progress footer stay hidden.
     expect(container.textContent).toContain('Edit file');
-    expect(container.textContent).toContain('已合并 1 条内部进度');
+    expect(container.textContent).not.toContain('已合并');
+    expect(container.textContent).not.toContain('内部进度');
     expect(container.textContent).not.toContain('352ef271-15b4-4bcd-94b5-c057e5faa7ad');
     expect(container.textContent).not.toContain('执行记录');
   });
@@ -459,6 +465,64 @@ describe('ReplicaChatView cancellation', () => {
       'React UI',
     ]);
   });
+
+  it('does not end a turn with empty-tool / merged-internal execution chrome', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      { id: 'user-1', type: 'message', role: 'user', content: '打包' },
+      { id: 'think-1', type: 'thinking', role: 'assistant', content: '检查打包脚本', streaming: false },
+      { id: 'cp-1', type: 'checkpoint', meta: { event: 'created' } },
+      {
+        id: 'answer-1',
+        type: 'message',
+        role: 'assistant',
+        content: '打包完成',
+        streaming: false,
+      },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    expect(container.textContent).toContain('打包完成');
+    expect(container.textContent).not.toContain('本轮没有可展示的工具调用');
+    expect(container.textContent).not.toContain('已合并');
+    expect(container.textContent).not.toContain('内部进度');
+  });
+
+  it('co-locates thinking with the following assistant answer like WebUI Px', async () => {
+    mocks.isAwaitingResponse = false;
+    mocks.timeline = [
+      { id: 'user-co', type: 'message', role: 'user', content: '你好' },
+      {
+        id: 'think-co',
+        type: 'thinking',
+        role: 'assistant',
+        content: '先打个招呼',
+        streaming: false,
+        createdAt: 1000,
+        completedAt: 4500,
+      },
+      {
+        id: 'answer-co',
+        type: 'message',
+        role: 'assistant',
+        content: '你好，有什么可以帮忙的？',
+        streaming: false,
+      },
+    ];
+    await act(async () => root.render(React.createElement(ReplicaChatView)));
+
+    // WebUI: 已思考（用时 N 秒） with integer seconds, then markdown in one unit.
+    expect(container.textContent).toContain('已思考');
+    expect(container.textContent).toContain('（用时 4 秒）');
+    expect(container.textContent).toContain('你好，有什么可以帮忙的？');
+    const assistantUnit = container.querySelector('[data-chat-role="assistant"]');
+    expect(assistantUnit).toBeTruthy();
+    expect(assistantUnit.querySelector('.thinking-block')).toBeTruthy();
+    expect(assistantUnit.querySelector('.markdown-body.text-chat')).toBeTruthy();
+    // Collapsed by default when not streaming (WebUI default).
+    expect(assistantUnit.querySelector('.thinking-block-content')).toBeNull();
+  });
+
   it('does not render a completed sub-second thought as zero seconds', () => {
     expect(formatThinkingDuration(1000, 1500, false)).toBe('<1 秒');
     expect(formatThinkingDuration(1000, 5500, false)).toBe('4 秒');

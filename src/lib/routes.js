@@ -6,6 +6,8 @@ export const ROUTES = [
   'tasks',
   'archived',
   'plugins',
+  'skills',
+  'agents',
   'mcp',
   'sandboxes',
   'editor',

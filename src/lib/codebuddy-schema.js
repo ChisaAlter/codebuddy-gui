@@ -17,6 +17,8 @@ export const NAV_GROUPS = [
       { id: 'editor', label: '编辑器' },
       { id: 'changes', label: '变更' },
       { id: 'plugins', label: '插件' },
+      { id: 'skills', label: '技能' },
+      { id: 'agents', label: 'Agents' },
       { id: 'mcp', label: 'MCP' },
       { id: 'sandboxes', label: 'Sandboxes' },
     ],
@@ -65,7 +67,7 @@ export const SETTINGS_GROUPS = [
     id: 'modelAndReasoning',
     title: '模型与推理',
     items: [
-      { key: 'model', label: '默认模型', type: 'text' },
+      { key: 'model', label: '默认模型', type: 'select' },
       {
         key: 'reasoningEffort',
         label: '推理努力级别',

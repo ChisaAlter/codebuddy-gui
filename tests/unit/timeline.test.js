@@ -39,7 +39,7 @@ describe('reduceAcpEvent - timeline 归并', () => {
     now.mockRestore();
   });
 
-  it('使用 prompt 发出时间作为思考计时起点', () => {
+  it('首个 thought chunk 到达时刻为思考计时起点（对齐 WebUI LIVE，不回写 prompt 发出时间）', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(7000);
     const next = reduceAcpEvent(
       [],
@@ -49,8 +49,17 @@ describe('reduceAcpEvent - timeline 归并', () => {
       { thinkingStartedAt: 2000 },
     );
 
-    expect(next[0]).toMatchObject({ type: 'thinking', createdAt: 2000, streaming: true });
+    expect(next[0]).toMatchObject({ type: 'thinking', createdAt: 7000, streaming: true });
     now.mockRestore();
+  });
+
+  it('status_change 与 model_update 不写入对话时间线', () => {
+    const base = pushUserMessage([], '你好');
+    const afterStatus = reduceAcpEvent(base, 'status_change', { status: 'idle', role: 'system' });
+    const afterModel = reduceAcpEvent(afterStatus, 'model_update', { modelId: 'x' });
+    expect(afterStatus).toEqual(base);
+    expect(afterModel).toEqual(base);
+    expect(afterModel.some((e) => e.type === 'status_change' || e.type === 'model_update')).toBe(false);
   });
 
   it('保留已持久化的思考结束时间', () => {
@@ -295,6 +304,22 @@ describe('execution timeline grouping', () => {
     expect(grouped[1].items.map((item) => item.id)).toEqual(['write', 'checkpoint', 'run']);
   });
 
+  it('still groups internal-only clusters (UI hides them; must not split the turn)', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '看一下' },
+      { id: 'think', type: 'thinking', role: 'assistant', content: '…', streaming: false },
+      { id: 'cp', type: 'checkpoint', meta: { event: 'created' } },
+      { id: 'final', type: 'message', role: 'assistant', content: '好了', streaming: false },
+    ]);
+    const groups = grouped.filter((item) => item.type === 'execution_group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items.map((item) => item.id)).toEqual(['cp']);
+    // Thinking stays standalone when a checkpoint sits between it and the answer.
+    expect(grouped.some((item) => item.type === 'thinking')).toBe(true);
+    // Answer remains the last visible content after the (UI-hidden) group.
+    expect(grouped[grouped.length - 1]).toMatchObject({ id: 'final', type: 'message' });
+  });
+
   it('collapses every execution group in a turn only after the final answer starts', () => {
     const grouped = groupTimelineForDisplay([
       { id: 'user', type: 'message', role: 'user', content: '分析项目' },
@@ -368,7 +393,7 @@ describe('execution timeline grouping', () => {
     ])).toMatchObject({ status: '有失败项', tone: 'error' });
   });
 
-  it('merges consecutive thinking entries into one display card', () => {
+  it('merges consecutive thinking and co-locates it on the following assistant answer (WebUI Px)', () => {
     const grouped = groupTimelineForDisplay([
       { id: 'user', type: 'message', role: 'user', content: '/init' },
       {
@@ -401,15 +426,17 @@ describe('execution timeline grouping', () => {
       { id: 'answer', type: 'message', role: 'assistant', content: '完成', streaming: false },
     ]);
 
-    const thinkingCards = grouped.filter((item) => item.type === 'thinking');
-    expect(thinkingCards).toHaveLength(1);
-    expect(thinkingCards[0]).toMatchObject({
+    // No standalone thinking card — WebUI renders thinking inside the assistant message unit.
+    expect(grouped.filter((item) => item.type === 'thinking')).toHaveLength(0);
+    const answer = grouped.find((item) => item.id === 'answer');
+    expect(answer).toMatchObject({ type: 'message', role: 'assistant', content: '完成' });
+    expect(answer.thinking).toMatchObject({
       content: '先看目录结构。\n\n再读核心模块。\n\n最后写 CODEBUDDY.md。',
       streaming: false,
       createdAt: 1000,
       completedAt: 5000,
     });
-    expect(thinkingCards[0].items).toHaveLength(3);
+    expect(answer.thinking.items).toHaveLength(3);
   });
 
   it('does not merge thinking across tool calls', () => {
@@ -423,6 +450,26 @@ describe('execution timeline grouping', () => {
     expect(thinkingCards).toHaveLength(2);
     expect(thinkingCards.map((item) => item.content)).toEqual(['准备读文件', '继续分析']);
     expect(grouped.some((item) => item.type === 'execution_group')).toBe(true);
+  });
+
+  it('keeps thinking standalone when tools interrupt before the answer', () => {
+    const grouped = groupTimelineForDisplay([
+      { id: 'user', type: 'message', role: 'user', content: '分析' },
+      {
+        id: 't1',
+        type: 'thinking',
+        role: 'assistant',
+        content: '先读文件',
+        streaming: false,
+        createdAt: 1,
+        completedAt: 2,
+      },
+      { id: 'tool', type: 'tool_call', status: 'completed', title: 'Read' },
+      { id: 'answer', type: 'message', role: 'assistant', content: '结论', streaming: false },
+    ]);
+
+    expect(grouped.filter((item) => item.type === 'thinking')).toHaveLength(1);
+    expect(grouped.find((item) => item.id === 'answer')?.thinking).toBeUndefined();
   });
 
   it('keeps streaming flag when any merged thinking part is still open', () => {

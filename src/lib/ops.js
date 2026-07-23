@@ -572,15 +572,53 @@ export async function browseMarketplace(marketplaceId, query) {
 
 // ===== Plugin Marketplaces 增删（对照源 bundle）=====
 
-/** 新增插件市场 */
+/** 新增插件市场（2.122+ 可选 autoUpdate） */
 export async function addMarketplace(marketplaceId, config = {}) {
   if (!marketplaceId) throw new Error('marketplace id 不能为空');
   const source = String(config.source || config.url || '').trim();
   if (!source) throw new Error('marketplace source 不能为空');
+  const body = { name: marketplaceId, source };
+  if (config.autoUpdate === true || config.autoUpdate === false) {
+    body.autoUpdate = Boolean(config.autoUpdate);
+  }
   const payload = await fetchJson('/api/v1/plugins/marketplaces', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: marketplaceId, source }),
+    body: JSON.stringify(body),
+  });
+  return payload?.data || payload || null;
+}
+
+/** 开启/关闭市场自动更新（POST /api/v1/plugins/marketplaces/auto-update） */
+export async function setMarketplaceAutoUpdate(marketplaceId, autoUpdate) {
+  if (!marketplaceId) throw new Error('marketplace id 不能为空');
+  const payload = await fetchJson('/api/v1/plugins/marketplaces/auto-update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      marketplace: String(marketplaceId).trim(),
+      autoUpdate: Boolean(autoUpdate),
+    }),
+  });
+  return payload?.data || payload || null;
+}
+
+/**
+ * HTTP 更新已安装插件到最新（POST /api/v1/plugins/update）。
+ * body: { plugin, scope?, waitForApply? }
+ */
+export async function updatePluginHttp(pluginId, options = {}) {
+  const plugin = String(pluginId || '').trim();
+  if (!plugin) throw new Error('plugin 不能为空');
+  const body = { plugin };
+  if (options.scope) body.scope = String(options.scope);
+  if (options.waitForApply === true || options.waitForApply === false) {
+    body.waitForApply = Boolean(options.waitForApply);
+  }
+  const payload = await fetchJson('/api/v1/plugins/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
   return payload?.data || payload || null;
 }
