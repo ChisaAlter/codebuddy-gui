@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { hasCompletePromptResponse, useStore } from '../../src/store';
+import { hasCompletePromptResponse, hasUsableAssistantBody, useStore } from '../../src/store';
 
 function runtime(overrides = {}) {
   return {
@@ -113,6 +113,23 @@ describe('store prompt session selection', () => {
         promptStartedAt,
       ),
     ).toBe(false);
+  });
+
+  it('treats pre-tool assistant narrative as a usable body even without a post-tool summary', () => {
+    const promptStartedAt = 1000;
+    const prompt = { id: 'prompt-1', type: 'message', role: 'user', content: 'hello', createdAt: promptStartedAt };
+    const timeline = [
+      prompt,
+      { id: 'early-1', type: 'message', role: 'assistant', content: '按上次建议直接更新现有 CODEBUDDY.md。', createdAt: 1100 },
+      { id: 'tool-1', type: 'tool_call', role: 'assistant', status: 'completed', createdAt: 1200 },
+      { id: 'tool-2', type: 'tool_call', role: 'assistant', status: 'completed', createdAt: 1300 },
+    ];
+
+    expect(hasCompletePromptResponse(timeline, 'prompt-1', promptStartedAt)).toBe(false);
+    expect(hasUsableAssistantBody(timeline, 'prompt-1', promptStartedAt)).toBe(true);
+    expect(hasUsableAssistantBody([prompt, { id: 'think-1', type: 'thinking', content: '…' }], 'prompt-1', promptStartedAt)).toBe(
+      false,
+    );
   });
 
   it('does not call session/prompt when neither the thread record nor runtime has a session id', async () => {
@@ -546,6 +563,52 @@ describe('store prompt session selection', () => {
     expect(useStore.getState().threadsById['thread-1'].status).toBe('error');
     expect(useStore.getState().error).toContain('最终正文未送达');
     expect(useStore.getState().threadsById['thread-1'].draft).toBe('');
+  });
+
+  it('soft-succeeds when tools finish without a post-tool summary but pre-tool body already arrived', async () => {
+    request.mockImplementationOnce(async () => {
+      const promptRunId = useStore.getState().threadRuntimeById['thread-1'].activePromptRunId;
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-ready',
+          _client: { source: 'request', promptRunId },
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'pre-tool',
+            content: { type: 'text', text: '按上次建议直接更新现有 CODEBUDDY.md。' },
+          },
+        },
+      });
+      useStore.getState().handleConversationEvent({
+        threadId: 'thread-1',
+        type: 'session/update',
+        detail: {
+          sessionId: 'session-ready',
+          _client: { source: 'request', promptRunId },
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-read-1',
+            title: 'Read CODEBUDDY.md',
+            status: 'completed',
+          },
+        },
+      });
+      return { stopReason: 'end_turn' };
+    });
+
+    await expect(useStore.getState().runThreadPrompt('thread-1', '/init')).resolves.toBe(true);
+
+    const state = useStore.getState();
+    expect(state.threadsById['thread-1'].status).toBe('idle');
+    expect(state.error).toBeNull();
+    expect(
+      state.threadRuntimeById['thread-1'].timeline.some((item) =>
+        String(item.content || '').includes('CODEBUDDY.md'),
+      ),
+    ).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it('does not force re-login when prompt refusal is a network/proxy 502', async () => {

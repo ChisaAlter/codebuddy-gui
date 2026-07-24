@@ -494,7 +494,7 @@ describe('AcpClient GET SSE notification stream', () => {
     }
   });
 
-  it('drops uncorrelated notification content while another prompt is active', async () => {
+  it('queues uncorrelated notification content while another prompt is active, then delivers with last run id', async () => {
     vi.useFakeTimers();
     try {
       const client = new AcpClient();
@@ -516,10 +516,47 @@ describe('AcpClient GET SSE notification stream', () => {
         },
         'notification',
       );
-      await vi.advanceTimersByTimeAsync(100);
-
+      // Still held while the prompt POST is active (POST is preferred when it carries the same chunk).
       expect(updates).toEqual([]);
+      await vi.advanceTimersByTimeAsync(100);
+      // Fallback delivers after PROMPT_NOTIFICATION_FALLBACK_MS with the active/last run id.
+      expect(updates).toHaveLength(1);
+      expect(updates[0].update.content.text).toBe('UNKNOWN_LATE');
+      expect(updates[0]._client).toMatchObject({ source: 'notification', promptRunId: 'run-current' });
       unregister();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('correlates late SSE without requestId to the last prompt run after the stream closes', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new AcpClient();
+      const updates = [];
+      client.on('session/update', (event) => updates.push(event.detail));
+      const unregister = client.trackActivePrompt('s-late-sse', () => {}, { promptRunId: 'run-just-finished' });
+      unregister();
+      updates.length = 0;
+
+      client.handleIncomingRpc(
+        {
+          method: 'session/update',
+          params: {
+            sessionId: 's-late-sse',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: 'late-final',
+              content: { type: 'text', text: 'LATE_FINAL_BODY' },
+            },
+          },
+        },
+        'notification',
+      );
+
+      expect(updates).toHaveLength(1);
+      expect(updates[0].update.content.text).toBe('LATE_FINAL_BODY');
+      expect(updates[0]._client).toMatchObject({ promptRunId: 'run-just-finished' });
     } finally {
       vi.useRealTimers();
     }

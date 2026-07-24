@@ -1,8 +1,24 @@
-# CodeBuddy GUI 1.0.3
+# CodeBuddy Desktop 1.0.4
 
-1.0.3 在 1.0.2 之上完成 **CLI 2.125 桌面能力接线**：附加工作目录、插件市场自动更新与 HTTP 更新、插件列表无限滚动、文件检查点预览与回退、AskUserQuestion 取消语义锁死，以及 Skills / Agents 只读面板。
+1.0.4 修复多工具回合中 **迟到 SSE 最终正文** 被丢弃或误报「最终正文未送达」的问题；GitHub 仓库统一为 `codebuddy-desktop`，自述文档与产品名对齐 **CodeBuddy Desktop**。
 
 ## 本版本重点
+
+### 流式回复可靠性
+
+- GET SSE 上无 `requestId` 的 `agent_message_chunk`：在 prompt 活跃时改为入队；prompt 结束后短时内仍关联最近一次 `promptRunId`。
+- 最终回复 grace 窗口延长至 1.5s，覆盖 RPC `end_turn` 后仍到达的摘要块。
+- 回合内已有非空助手正文（含工具前叙述）时 **软成功**：保留已展示内容，不再强制历史恢复或硬错误横幅。
+- 单测覆盖 late SSE 关联、pre-tool body 可用性与 soft-success 路径。
+
+### 文档与仓库
+
+- README 标题与链接改为 **CodeBuddy Desktop** / `ChisaAlter/codebuddy-desktop`。
+- `package.json` homepage / repository 指向重命名后的 GitHub 仓库。
+
+## 1.0.3
+
+1.0.3 完成 **CLI 2.125 桌面能力接线**：附加工作目录、插件市场自动更新与 HTTP 更新、插件列表无限滚动、文件检查点预览与回退、AskUserQuestion 取消语义锁死，以及 Skills / Agents 只读面板。
 
 ### CLI 2.125 适配
 

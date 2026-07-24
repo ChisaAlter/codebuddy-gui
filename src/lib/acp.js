@@ -9,6 +9,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 const LONG_REQUEST_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INCOMING_EVENT_FINGERPRINTS = 4000;
 const PROMPT_NOTIFICATION_FALLBACK_MS = 80;
+// After session/prompt's POST stream settles, late GET-SSE chunks may still arrive.
+// Keep the last promptRunId long enough for store grace + history recovery to correlate them.
+const LATE_PROMPT_CORRELATION_MS = 5000;
 const PROMPT_CONTENT_SESSION_UPDATES = new Set([
   'agent_message_chunk',
   'agent_thought_chunk',
@@ -260,6 +263,8 @@ export class AcpClient {
     this.incomingEventOccurrences = new Map();
     this.pendingPromptNotifications = new Map();
     this.promptRunIdByRequestId = new Map();
+    // sessionId → { promptRunId, expiresAt } for late SSE without requestId
+    this.lastPromptContextBySession = new Map();
     this.sessionCancelSupported = null;
 
     // 重连相关
@@ -406,10 +411,19 @@ export class AcpClient {
       message?.method === 'session/update' && PROMPT_CONTENT_SESSION_UPDATES.has(sessionUpdate);
     const requestId = promptContentEvent ? promptEventRequestId(message) : null;
     const mappedPromptRunId = requestId ? this.promptRunIdByRequestId.get(requestId) : null;
-    const eventContext = mappedPromptRunId ? { promptRunId: mappedPromptRunId } : context;
+    // Prefer explicit request mapping, then caller context, then last known run for this session
+    // (covers late GET-SSE chunks without codebuddy.ai/requestId after POST settles).
+    const eventContext = mappedPromptRunId
+      ? { promptRunId: mappedPromptRunId }
+      : context?.promptRunId
+        ? context
+        : this.latePromptContext(sessionId);
     if (source === 'notification' && promptContentEvent) {
       if (this.hasActivePrompt(sessionId)) {
-        if (requestId) this.queuePromptNotification(message);
+        // Always queue while a prompt is live. POST cancels the same fingerprint when it
+        // already delivered the chunk. Previously only requestId-tagged notifications were
+        // queued, so final agent_message_chunk on SSE-only (no requestId) were hard-dropped.
+        this.queuePromptNotification(message);
         return;
       }
     }
@@ -421,6 +435,7 @@ export class AcpClient {
         }
         this.promptRunIdByRequestId.set(requestId, context.promptRunId);
       }
+      if (context?.promptRunId) this.rememberPromptContext(sessionId, context);
     }
     if (!this.shouldProcessIncomingEvent(message, source)) return;
 
@@ -629,6 +644,28 @@ export class AcpClient {
     return true;
   }
 
+  rememberPromptContext(sessionId, context = null) {
+    const key = String(sessionId || '').trim();
+    const promptRunId = context?.promptRunId || null;
+    if (!key || !promptRunId) return;
+    this.lastPromptContextBySession.set(key, {
+      promptRunId,
+      expiresAt: Date.now() + LATE_PROMPT_CORRELATION_MS,
+    });
+  }
+
+  latePromptContext(sessionId) {
+    const key = String(sessionId || '').trim();
+    if (!key) return null;
+    const last = this.lastPromptContextBySession.get(key);
+    if (!last) return null;
+    if (Date.now() >= last.expiresAt) {
+      this.lastPromptContextBySession.delete(key);
+      return null;
+    }
+    return { promptRunId: last.promptRunId };
+  }
+
   trackActivePrompt(sessionId, cancel, context = null) {
     const key = String(sessionId || '').trim();
     if (!key || typeof cancel !== 'function') return () => {};
@@ -636,11 +673,14 @@ export class AcpClient {
     const handles = this.activePromptRequests.get(key) || new Set();
     handles.add(handle);
     this.activePromptRequests.set(key, handles);
+    this.rememberPromptContext(key, context);
     return () => {
       const current = this.activePromptRequests.get(key);
       if (!current) return;
       current.delete(handle);
       if (current.size === 0) this.activePromptRequests.delete(key);
+      // Extend correlation window so post-stream SSE can still attach this run id.
+      this.rememberPromptContext(key, context);
     };
   }
 
@@ -975,6 +1015,7 @@ export class AcpClient {
     this.incomingEventOccurrences.clear();
     this.clearPendingPromptNotifications();
     this.promptRunIdByRequestId.clear();
+    this.lastPromptContextBySession.clear();
 
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);

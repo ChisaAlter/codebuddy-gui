@@ -25,6 +25,22 @@ export function hasCompletePromptResponse(timeline, promptEntryId, promptStarted
   );
 }
 
+/**
+ * Non-empty assistant text anywhere in this turn (including text before tools).
+ * Used as a soft success path when the model ends after tools without a post-tool
+ * summary, so the user keeps the already-visible body instead of a hard error banner.
+ */
+export function hasUsableAssistantBody(timeline, promptEntryId, promptStartedAt) {
+  const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
+  if (!turnEntries) return false;
+  return turnEntries.some(
+    (item) =>
+      item?.type === 'message' &&
+      item?.role === 'assistant' &&
+      String(item.content || '').trim().length > 0,
+  );
+}
+
 export function hasPromptRunActivity(timeline, promptEntryId, promptStartedAt) {
   const turnEntries = promptTurnEntries(timeline, promptEntryId, promptStartedAt);
   if (!turnEntries) return false;

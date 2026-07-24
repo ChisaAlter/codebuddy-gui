@@ -1,26 +1,29 @@
-# CodeBuddy GUI
+# CodeBuddy Desktop
 
-CodeBuddy GUI 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
+CodeBuddy Desktop 是 CodeBuddy CLI 的本地 Electron 桌面客户端，面向多项目、多对话并行编码工作流。界面和产品状态由本地应用管理，每个项目使用独立的 CodeBuddy 运行时和工作目录。
 
-**当前版本：[1.0.3](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-gui/releases)
+**当前版本：[1.0.4](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.4)** · [变更说明](./RELEASE_NOTES.md) · [全部发行版](https://github.com/ChisaAlter/codebuddy-desktop/releases)
+
+仓库：[`ChisaAlter/codebuddy-desktop`](https://github.com/ChisaAlter/codebuddy-desktop)（产品名 **CodeBuddy Desktop**；安装包文件名仍为 `CodeBuddy-GUI-Setup-<version>.exe`）。
 
 ## 主要功能
 
 - 持久化管理多个本地项目，重启后恢复活动项目、对话、草稿和界面状态；连续输入草稿时会合并冗余写盘，切换和退出仍保存最终快照。
 - 同一项目内创建多个对话，并让不同项目和对话并行工作。
-- 聊天输入栏可切换会话 **模式 / 模型 / 思考强度**：乐观更新、文案翻转与菜单进出动画；窄窗口下模型与思考强度贴近成组，与发送按钮拉开间距且不易被挤没。
-- 发送 / 停止按钮对齐 CodeBuddy WebUI（圆形上箭头发送、圆形实心方块停止）；附件入口拆成 **图片 / 文件** 选择，也支持剪贴板粘贴与拖放；具体输入能力以当前 CodeBuddy 运行时声明为准。
-- 内置文件树和 Monaco 编辑器，支持创建、重命名、删除、编辑和保存文件，并保护未保存修改；编辑器仅加载实际使用的语言高亮和单一 worker。
+- 聊天输入栏可切换会话 **模式 / 模型 / 思考强度**（含 Full Access、Delegate、effort `max`）：乐观更新、文案翻转与菜单进出动画；窄窗口下模型与思考强度贴近成组。
+- 发送 / 停止按钮对齐 CodeBuddy WebUI；附件入口支持 **图片 / 文件**、剪贴板粘贴与拖放；composer 可附加 **额外工作目录**（`workspace-dirs`），与 CLI 同步并按项目偏好持久化。
+- 流式会话更稳妥：迟到的 GET SSE `agent_message_chunk` 会关联最近一次 prompt；多工具回合若已有可用助手正文，不再误报「最终正文未送达」。
+- 内置文件树和 Monaco 编辑器，支持创建、重命名、删除、编辑和保存；**Changes** 面板可预览 diff 并按路径 / 检查点回退（CLI 2.125 `/internal/file-changes`）。
 - 内置项目级终端，多面板输出和布局随项目持久化；标题栏快捷键帮助支持鼠标、键盘和外部点击关闭。
 - 提供 Git 状态、diff、暂存、提交、拉取、推送和分支操作。
-- 提供真实的任务、插件、MCP、Sandbox、实例、Workers、统计、链路、指标、日志和运行监控页面；实例页同时管理项目运行时与 CodeBuddy 后台会话，可启动后台任务、查看日志、打开本机 Endpoint、在 Windows Terminal/PowerShell 中交互接管，以及终止任务；Workers 页可启停 Daemon，并管理 Windows 登录自启动任务；MCP 页面支持 user、project、local 三种作用域的配置查看、状态、工具列表、添加和删除；Sandbox 页面可查看 E2B 状态、别名和项目映射，并通过 CodeBuddy CLI 终止或清理实例。
-- 插件页支持安装、启停、卸载和更新插件，并可按 user、project、local 作用域预览和清理失效自动依赖；需要重载时可直接重启当前项目运行时。
+- 提供真实的任务、**插件**、**Skills**、**Agents**、MCP、Sandbox、实例、Workers、统计、链路、指标、日志和运行监控页面；插件支持市场 `autoUpdate`、HTTP 更新（失败回落 CLI）、无限滚动与类型筛选；Skills / Agents 为只读列表（无公开 API 时安全空态）。
+- 实例页同时管理项目运行时与 CodeBuddy 后台会话；Workers 页可启停 Daemon 与 Windows 登录自启动；MCP 支持 user / project / local 作用域；Sandbox 可查看 E2B 状态与清理实例。
+- AskUserQuestion 取消 / 跳过不会整轮 `session/cancel`，与 CLI 2.125 中断语义一致。
 - 对不受当前 CodeBuddy 版本支持的操作显示明确的不可用或错误状态，不模拟成功。
 - 提供原生窗口拖动、最小化、最大化和关闭到系统托盘；支持最低 900×640 的窄窗口与分屏场景，再次启动应用会唤回已有窗口。
-- 窗口隐藏或未聚焦时，可通过桌面通知获知后台任务完成或失败，并点击回到对应对话；完全退出前会保存最终项目状态，保存失败则取消退出并保留应用现场。
+- 窗口隐藏或未聚焦时，可通过桌面通知获知后台任务完成或失败；完全退出前会保存最终项目状态。
 - 应用品牌图标为青色像素机器人头（窗口、托盘、通知、登录页、侧栏与安装包共用）。
-- 设置页可检查 GitHub Releases 中的 GUI 新版本，直接发起对应 Windows 安装包下载，也可打开本项目发布页查看完整说明。
-- 设置页可查看已安装的 CodeBuddy CLI 版本、运行限时诊断，并在用户确认后检查更新、安装最新版或指定版本进行回滚；安装后可直接重启当前项目运行时。
+- 设置页可检查 GitHub Releases 中的新版本并下载 Windows 安装包；可查看 / 安装 / 回滚 CodeBuddy CLI（最低与推荐 **2.125.0**）。
 
 ## 开发运行
 
@@ -48,7 +51,7 @@ npm run build
 构建会生成：
 
 - 前端产物：`out/dist/`
-- Windows 安装包：`dist/CodeBuddy-GUI-Setup-<version>.exe`（例如 `CodeBuddy-GUI-Setup-1.0.3.exe`）
+- Windows 安装包：`dist/CodeBuddy-GUI-Setup-<version>.exe`（例如 `CodeBuddy-GUI-Setup-1.0.4.exe`）
 
 Windows 打包若最终因 `rcedit`、`EBUSY` 或 `EPERM` 瞬时资源写入错误退出，会等待 2 秒并自动重试一次；其他构建错误不会被重试或隐藏。
 
@@ -64,10 +67,11 @@ npm run build:dir
 
 从 GitHub Releases 下载 Windows 安装包：
 
-- 最新发行版：https://github.com/ChisaAlter/codebuddy-gui/releases/latest  
-- 1.0.3：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3  
-- 1.0.2：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.2  
-- 1.0.1：https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.1  
+- 最新发行版：https://github.com/ChisaAlter/codebuddy-desktop/releases/latest  
+- 1.0.4：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.4  
+- 1.0.3：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.3  
+- 1.0.2：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.2  
+- 1.0.1：https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.1  
 
 校验安装包时可对照 Release 中的 `SHA256SUMS.txt`。未签名安装包在 Windows 上可能触发 SmartScreen 提示，属预期行为（本机发布可选用 `-AllowUnsigned`）。
 
@@ -85,7 +89,7 @@ npm run release:prepare
 npm run release:prepare -- -AllowUnsigned
 ```
 
-随后可用 `gh release create v<version> ...` 将上述资产上传到 GitHub Releases（见已发布的 [v1.0.3](https://github.com/ChisaAlter/codebuddy-gui/releases/tag/v1.0.3)）。
+随后可用 `gh release create v<version> ...` 将上述资产上传到 GitHub Releases（见已发布的 [v1.0.4](https://github.com/ChisaAlter/codebuddy-desktop/releases/tag/v1.0.4)）。
 
 ## 数据与运行时
 

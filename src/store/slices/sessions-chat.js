@@ -13,7 +13,11 @@ import { deleteSession as apiDeleteSession, renameSession as apiRenameSession } 
 import { saveGuiSettings } from '../../lib/gui-settings';
 import { classifyPromptRefusal, normalizeLastAccountUser } from '../../lib/account-auth';
 import { isCliPermissionBypassMode } from '../../lib/session-mode-labels';
-import { hasCompletePromptResponse, hasPromptRunActivity } from '../helpers/prompt-completion';
+import {
+  hasCompletePromptResponse,
+  hasPromptRunActivity,
+  hasUsableAssistantBody,
+} from '../helpers/prompt-completion';
 import {
   emptyThreadRuntime,
   responseTerminalRuntimePatch,
@@ -1844,6 +1848,8 @@ export function createSessionsChatSlice(set, get, ctx) {
 
     const hasFinalResponse = () =>
       hasCompletePromptResponse(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
+    const hasUsableBody = () =>
+      hasUsableAssistantBody(get().threadRuntimeById[threadId]?.timeline, promptEntryId, promptStartedAt);
     const recoverPromptHistory = async () => {
       if (!runIsCurrent()) return false;
       get().patchThreadRuntime(threadId, { historyReplayActive: true });
@@ -1864,7 +1870,8 @@ export function createSessionsChatSlice(set, get, ctx) {
           get().patchThreadRuntime(threadId, { historyReplayActive: false });
         }
       }
-      return hasFinalResponse();
+      // History may only restore the pre-tool narrative; treat that as recovered too.
+      return hasFinalResponse() || hasUsableBody();
     };
     try {
       if (!runIsCurrent() || ['cancelled', 'cancelling'].includes(get().threadsById[threadId]?.status)) return false;
@@ -2017,13 +2024,22 @@ export function createSessionsChatSlice(set, get, ctx) {
       }
 
       const graceDeadline = Date.now() + FINAL_RESPONSE_GRACE_MS;
-      while (runIsCurrent() && !hasFinalResponse() && Date.now() < graceDeadline) {
+      while (
+        runIsCurrent() &&
+        !hasFinalResponse() &&
+        !hasUsableBody() &&
+        Date.now() < graceDeadline
+      ) {
         await waitForMilliseconds(25);
       }
 
-      if (runIsCurrent() && !hasFinalResponse()) await recoverPromptHistory();
+      // Prefer a post-tool final answer. If only pre-tool narrative is present, skip history
+      // reload (user already sees the body). Reload only when the turn has no usable text.
+      if (runIsCurrent() && !hasFinalResponse() && !hasUsableBody()) {
+        await recoverPromptHistory();
+      }
       if (!runIsCurrent()) return false;
-      if (!hasFinalResponse()) {
+      if (!hasFinalResponse() && !hasUsableBody()) {
         const incompleteError = new Error('回复已结束，但最终正文未送达；自动历史恢复也未找到完整回答。');
         incompleteError.promptAccepted = true;
         throw incompleteError;

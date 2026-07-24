@@ -96,7 +96,10 @@ import { createProductPersistSlice } from './store/slices/product-persist';
 import { createProjectsRuntimeSlice } from './store/slices/projects-runtime';
 import { createSessionsChatSlice } from './store/slices/sessions-chat';
 
-export { hasCompletePromptResponse } from './store/helpers/prompt-completion';
+export {
+  hasCompletePromptResponse,
+  hasUsableAssistantBody,
+} from './store/helpers/prompt-completion';
 export { runtimeAuthScopeChanged } from './store/helpers/runtime-auth';
 export {
   formatCodeBuddyAccountLabel,
@@ -284,7 +287,9 @@ const PROMPT_CONTENT_SESSION_UPDATES = new Set([
   'tool_call',
   'tool_call_update',
 ]);
-const FINAL_RESPONSE_GRACE_MS = 250;
+// Wait for late agent_message_chunk that may only arrive on GET SSE after RPC end_turn.
+// 250ms was too short for multi-tool turns where the final summary trails the result frame.
+const FINAL_RESPONSE_GRACE_MS = 1500;
 
 function threadResponseInProgress(state, threadId) {
   const thread = state.threadsById[threadId];

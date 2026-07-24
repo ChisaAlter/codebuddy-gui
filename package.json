@@ -1,13 +1,13 @@
 {
   "name": "codebuddy-gui",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Multi-project desktop client for CodeBuddy CLI (CodeBuddy Desktop)",
   "author": "ChisaAlter",
   "copyright": "Copyright 2026 ChisaAlter",
-  "homepage": "https://github.com/ChisaAlter/codebuddy-gui",
+  "homepage": "https://github.com/ChisaAlter/codebuddy-desktop",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ChisaAlter/codebuddy-gui.git"
+    "url": "https://github.com/ChisaAlter/codebuddy-desktop.git"
   },
   "main": "electron/main.cjs",
   "license": "MIT",

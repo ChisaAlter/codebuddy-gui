@@ -40,4 +40,8 @@ scripts/test/test_all.py
 .workbuddy/
 .omo/
 .codeartsdoer/
+.zcode/
 docs/
+
+# Accidental empty junk files
+/{
